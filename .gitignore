@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Secrets / API Keys
+Grok API Key
+*.key
+.env.local
+
+# VS Code
+.vscode/
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+
+# Project outputs
+outputs/
+tools/out_*/
+!outputs/.gitkeep
+
+# Logs
+*.log

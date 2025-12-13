@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  lint-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pre-commit pytest ruff black isort
+      - name: Run pre-commit
+        run: |
+          pre-commit run --all-files || true
+      - name: Run pytest
+        run: |
+          pytest -q
+
+  e2e-demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build demo project and run pipeline
+        shell: bash
+        run: |
+          set -e
+          DEMO=demo_proj
+          mkdir -p $DEMO/game
+          python - <<'PY'
+          import os, textwrap, pathlib
+          demo = os.environ.get('DEMO', 'demo_proj')
+          path = pathlib.Path(demo) / 'game' / 'script.rpy'
+          path.parent.mkdir(parents=True, exist_ok=True)
+          content = textwrap.dedent("""\
+          label start:
+              e "Hello, world!"
+              "Click to continue"
+              menu:
+                  "Go outside":
+                      jump outside
+                  "Stay home":
+                      "OK"
+          label outside:
+              "You went out."
+          """)
+          path.write_text(content, encoding='utf-8')
+          PY
+          # Extract
+          python renpy_batch_tools/extract_rpy_batch.py $DEMO -o outputs/extract --workers auto
+          # Prefill (using bundled dictionaries if any)
+          python renpy_batch_tools/prefill_with_dictionary.py outputs/extract/project_en_for_grok.jsonl data/dictionaries -o outputs/prefilled/demo_prefilled.jsonl --case-insensitive --dict-backend memory
+          # Validate (+ HTML)
+          python renpy_batch_tools/validate_translations_batch.py outputs/extract/project_en_for_grok.jsonl outputs/prefilled/demo_prefilled.jsonl --qa-json outputs/qa/qa.json --qa-tsv outputs/qa/qa.tsv --qa-html outputs/qa/qa.html --ignore-ui-punct
+          # Patch (advanced, mirror outputs)
+          python renpy_batch_tools/patch_rpy_batch.py $DEMO outputs/prefilled/demo_prefilled.jsonl -o outputs/out_patch --advanced
+          # Build CN package (auto prefers mirror)
+          python renpy_batch_tools/build_cn_package.py $DEMO -o outputs/build_cn --mode auto --zh-mirror outputs/out_patch --lang zh_CN
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-pipeline-artifacts
+          path: |
+            outputs/extract/**
+            outputs/prefilled/**
+            outputs/out_patch/**
+            outputs/build_cn/**
+            outputs/qa/**

@@ -1,0 +1,206 @@
+"""
+Unified logging system for Ren'Py translation tools.
+
+Provides:
+- Structured logging with levels (DEBUG, INFO, WARNING, ERROR)
+- File and console output
+- Rich formatting support
+- Performance timing utilities
+"""
+
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Optional
+from contextlib import contextmanager
+
+try:
+    from rich.logging import RichHandler
+    from rich.console import Console
+    _HAS_RICH = True
+except ImportError:
+    _HAS_RICH = False
+
+
+class TranslationLogger:
+    """Logger wrapper with convenience methods."""
+    
+    def __init__(
+        self,
+        name: str = "renpy_tools",
+        level: int = logging.INFO,
+        log_file: Optional[Path] = None,
+        use_rich: bool = True
+    ):
+        """
+        Initialize logger.
+        
+        Args:
+            name: Logger name
+            level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+            log_file: Optional file path for log output
+            use_rich: Use rich formatting if available
+        """
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(level)
+        self.logger.handlers = []  # Clear existing handlers
+        
+        # Console handler
+        if use_rich and _HAS_RICH:
+            console_handler = RichHandler(
+                rich_tracebacks=True,
+                markup=True,
+                show_time=True,
+                show_path=False
+            )
+        else:
+            console_handler = logging.StreamHandler(sys.stdout)
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            console_handler.setFormatter(formatter)
+        
+        console_handler.setLevel(level)
+        self.logger.addHandler(console_handler)
+        
+        # File handler
+        if log_file:
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            file_handler.setFormatter(file_formatter)
+            file_handler.setLevel(logging.DEBUG)  # Log everything to file
+            self.logger.addHandler(file_handler)
+    
+    def debug(self, msg: str, *args, **kwargs):
+        """Log debug message."""
+        self.logger.debug(msg, *args, **kwargs)
+    
+    def info(self, msg: str, *args, **kwargs):
+        """Log info message."""
+        self.logger.info(msg, *args, **kwargs)
+    
+    def warning(self, msg: str, *args, **kwargs):
+        """Log warning message."""
+        self.logger.warning(msg, *args, **kwargs)
+    
+    def error(self, msg: str, *args, **kwargs):
+        """Log error message."""
+        self.logger.error(msg, *args, **kwargs)
+    
+    def critical(self, msg: str, *args, **kwargs):
+        """Log critical message."""
+        self.logger.critical(msg, *args, **kwargs)
+    
+    def exception(self, msg: str, *args, **kwargs):
+        """Log exception with traceback."""
+        self.logger.exception(msg, *args, **kwargs)
+    
+    @contextmanager
+    def timer(self, operation: str, level: int = logging.INFO):
+        """
+        Context manager for timing operations.
+        
+        Usage:
+            with logger.timer("Processing files"):
+                # do work
+                pass
+        """
+        start = time.time()
+        self.logger.log(level, f"Starting: {operation}")
+        try:
+            yield
+        finally:
+            elapsed = time.time() - start
+            self.logger.log(level, f"Completed: {operation} (took {elapsed:.2f}s)")
+
+
+# Global logger instance
+_default_logger: Optional[TranslationLogger] = None
+
+
+def get_logger(
+    name: str = "renpy_tools",
+    level: int = logging.INFO,
+    log_file: Optional[Path] = None,
+    use_rich: bool = True
+) -> TranslationLogger:
+    """
+    Get or create global logger instance.
+    
+    Args:
+        name: Logger name
+        level: Logging level
+        log_file: Optional log file path
+        use_rich: Use rich formatting
+        
+    Returns:
+        TranslationLogger instance
+    """
+    global _default_logger
+    if _default_logger is None:
+        _default_logger = TranslationLogger(
+            name=name,
+            level=level,
+            log_file=log_file,
+            use_rich=use_rich
+        )
+    return _default_logger
+
+
+def setup_logger(
+    name: str = "renpy_tools",
+    level: int = logging.INFO,
+    log_file: Optional[Path] = None,
+    use_rich: bool = True
+) -> TranslationLogger:
+    """
+    Setup and configure global logger.
+    
+    Args:
+        name: Logger name
+        level: Logging level
+        log_file: Optional log file path
+        use_rich: Use rich formatting
+        
+    Returns:
+        Configured TranslationLogger instance
+    """
+    global _default_logger
+    _default_logger = TranslationLogger(
+        name=name,
+        level=level,
+        log_file=log_file,
+        use_rich=use_rich
+    )
+    return _default_logger
+
+
+# 创建默认的模块级 logger 实例
+logger = get_logger()
+
+
+if __name__ == "__main__":
+    # Test logger
+    logger = get_logger(level=logging.DEBUG)
+    
+    logger.debug("This is a debug message")
+    logger.info("This is an info message")
+    logger.warning("This is a warning message")
+    logger.error("This is an error message")
+    
+    with logger.timer("Test operation"):
+        time.sleep(1)
+    
+    # Test file logging
+    log_file = Path("test.log")
+    file_logger = setup_logger(log_file=log_file)
+    file_logger.info("This message goes to both console and file")
+    
+    if log_file.exists():
+        print(f"\nLog file contents:\n{log_file.read_text()}")
+        log_file.unlink()
