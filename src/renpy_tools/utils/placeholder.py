@@ -184,6 +184,6 @@ def compute_semantic_signature(s: str) -> str:
     """
     norm = normalize_for_signature(s)
     if cached is not None:
-        return cached("sig", "v2", norm, lambda x: "sig:v2:" + hashlib.sha1(x.encode('utf-8')).hexdigest()[:12])
-    h = hashlib.sha1(norm.encode('utf-8')).hexdigest()
+        return cached("sig", "v2", norm, lambda x: "sig:v2:" + hashlib.sha256(x.encode('utf-8')).hexdigest()[:12])
+    h = hashlib.sha256(norm.encode('utf-8')).hexdigest()
     return "sig:v2:" + h[:12]

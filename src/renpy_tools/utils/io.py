@@ -177,13 +177,24 @@ def write_jsonl_lines(
     return count
 
 
-def append_jsonl_line(path: str | Path, obj: Dict[str, Any]) -> None:
+def append_jsonl_line(path: str | Path, obj: Dict[str, Any]) -> bool:
     """追加单行到 JSONL 文件
 
     Args:
         path: 文件路径
         obj: 要追加的对象
+
+    Returns:
+        是否成功写入
     """
-    p = ensure_parent_dir(path)
-    with p.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    try:
+        p = ensure_parent_dir(path)
+        with p.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        return True
+    except (OSError, IOError) as e:
+        logger.error(f"Failed to append to JSONL file {path}: {e}")
+        return False
+    except (TypeError, ValueError) as e:
+        logger.error(f"Failed to serialize object to JSON: {e}")
+        return False

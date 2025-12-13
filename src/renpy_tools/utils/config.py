@@ -48,6 +48,22 @@ class TranslationConfig:
     last_project_root: Optional[str] = None
     recent_projects: list[str] = field(default_factory=list)
 
+    def __post_init__(self):
+        """Validate field values after initialization."""
+        # Validate numeric fields
+        if self.workers < 1:
+            logger.warning(f"workers must be >= 1, got {self.workers}, using 1")
+            self.workers = 1
+        if self.chunk_size < 1:
+            logger.warning(f"chunk_size must be >= 1, got {self.chunk_size}, using 1")
+            self.chunk_size = 1
+        if self.max_tokens < 1:
+            logger.warning(f"max_tokens must be >= 1, got {self.max_tokens}, using 1")
+            self.max_tokens = 1
+        if self.ollama_timeout < 1:
+            logger.warning(f"ollama_timeout must be >= 1, got {self.ollama_timeout}, using 1")
+            self.ollama_timeout = 1
+
 
 class ConfigManager:
     """Manage application configuration with automatic save/load."""
