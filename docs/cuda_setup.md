@@ -13,7 +13,7 @@ Ren'Py 汉化工具会自动检测并启用 CUDA 环境，以加速翻译过程�
 工具会在启动时自动检测并配置 CUDA：
 
 ```bash
-# 双击 ONECLICK.bat 会自动：
+# 双击 START.bat 会自动：
 1. 检测 NVIDIA GPU
 2. 启用 CUDA 环境 (如果已安装 ecuda)
 3. 配置 Ollama GPU 加速
@@ -188,7 +188,7 @@ ecuda
 
 ## 总结
 
-- ✅ **自动化**: ONECLICK.bat 会自动尝试启用 CUDA
+- ✅ **自动化**: START.bat 会自动尝试启用 CUDA
 - ✅ **可选**: 没有 CUDA 工具仍可正常使用
 - ✅ **性能**: CUDA 提供额外 10-15% 加速
 - ✅ **兼容**: 支持 CUDA 11.x - 13.x

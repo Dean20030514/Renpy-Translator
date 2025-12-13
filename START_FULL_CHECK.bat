@@ -147,7 +147,7 @@ if %errorlevel% neq 0 (
     echo ❌ 工具启动失败
     echo.
     echo 故障排除：
-    echo 1. 尝试运行 ONECLICK_SAFE.bat（禁用 GPU 加速）
+    echo 1. 尝试运行 START_SAFE.bat（禁用 GPU 加速）
     echo 2. 查看 docs/troubleshooting.md 了解常见问题
     echo 3. 检查是否有杀毒软件拦截
     echo.

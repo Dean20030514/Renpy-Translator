@@ -111,7 +111,7 @@
 ### 方法1：图形界面（推荐）
 
 **步骤：**
-1. 双击 `ONECLICK.bat`
+1. 双击 `START.bat`
 2. 点击 `⚙ 高级设置`
 3. 勾选 `启用优化模式`
 4. 开始翻译
@@ -413,7 +413,7 @@ except:
 ### 立即开始使用
 ```bash
 # 图形界面
-双击 ONECLICK.bat → 高级设置 → 启用优化模式
+双击 START.bat → 高级设置 → 启用优化模式
 
 # 命令行
 python tools/translate.py <input> -o <output> --use-optimized

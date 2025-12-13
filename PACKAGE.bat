@@ -25,9 +25,10 @@ xcopy /E /I /Y "data" "%OUTPUT_DIR%\data" >nul
 xcopy /E /I /Y "docs" "%OUTPUT_DIR%\docs" >nul
 
 copy /Y "START.bat" "%OUTPUT_DIR%\" >nul
-copy /Y "CHECK_ENV.bat" "%OUTPUT_DIR%\" >nul
+copy /Y "START_SAFE.bat" "%OUTPUT_DIR%\" >nul
+copy /Y "START_FULL_CHECK.bat" "%OUTPUT_DIR%\" >nul
+copy /Y "INSTALL_ALL.bat" "%OUTPUT_DIR%\" >nul
 copy /Y "README.md" "%OUTPUT_DIR%\" >nul
-copy /Y "INSTALL.md" "%OUTPUT_DIR%\" >nul
 copy /Y "requirements.txt" "%OUTPUT_DIR%\" >nul
 copy /Y "pyproject.toml" "%OUTPUT_DIR%\" >nul
 
@@ -42,9 +43,9 @@ echo    Ren'Py 汉化工具 - 便携版
 echo ====================================================
 echo.
 echo 📦 安装指南：
-echo    1. 阅读 INSTALL.md 完成环境配置
-echo    2. 运行 CHECK_ENV.bat 检查环境
-echo    3. 运行 START.bat 开始使用
+echo    1. 运行 INSTALL_ALL.bat 自动安装环境
+echo    2. 运行 START_FULL_CHECK.bat 检查环境并启动
+echo    3. 或直接运行 START.bat 快速启动
 echo.
 echo 📋 系统要求：
 echo    - Python 3.10+
@@ -72,8 +73,8 @@ echo 📦 如需压缩，请手动将 "%OUTPUT_DIR%" 文件夹压缩为 ZIP
 echo    （Windows：右键 → 发送到 → 压缩文件夹）
 echo.
 echo 📤 分享到其他电脑时，请提醒对方：
-echo    1. 先阅读 INSTALL.md 安装环境
-echo    2. 运行 CHECK_ENV.bat 检查
-echo    3. 再运行 START.bat 使用
+echo    1. 运行 INSTALL_ALL.bat 安装环境
+echo    2. 运行 START_FULL_CHECK.bat 检查并启动
+echo    3. 遇到问题查看 docs/troubleshooting.md
 echo.
 pause

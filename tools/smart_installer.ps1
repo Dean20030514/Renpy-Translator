@@ -198,6 +198,6 @@ Write-Host "  ✅ Python 依赖库" -ForegroundColor Green
 Write-Host "  ✅ Ollama" -ForegroundColor Green
 Write-Host "  ✅ qwen2.5:7b 翻译模型" -ForegroundColor Green
 Write-Host ""
-Write-Host "现在可以运行 ONECLICK.bat 或 START.bat 开始使用工具！" -ForegroundColor Yellow
+Write-Host "现在可以运行 START.bat 开始使用工具！" -ForegroundColor Yellow
 Write-Host ""
 Read-Host "按回车键退出"

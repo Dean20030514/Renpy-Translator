@@ -46,7 +46,7 @@ if exist test.tmp (
 - ✅ 架构检测（32/64位）
 
 **Ren'Py 汉化工具现状：**
-- ⚠️  `ONECLICK.bat` 直接调用 PowerShell 脚本
+- ⚠️  `START.bat` 直接调用 PowerShell 脚本
 - ⚠️  没有前置环境检查
 - ⚠️  错误消息仅中文
 - ⚠️  缺少故障安全启动方式
@@ -130,7 +130,7 @@ NW.js (Chromium + Node.js)
 
 ## 🚀 已实施的改进
 
-### ✅ 改进 1: 增强启动脚本 (`ONECLICK_ENHANCED.bat`)
+### ✅ 改进 1: 增强启动脚本 (`START_FULL_CHECK.bat`)
 
 **新功能：**
 ```batch
@@ -151,12 +151,12 @@ NW.js (Chromium + Node.js)
 
 **使用方式：**
 ```cmd
-ONECLICK_ENHANCED.bat  # 启动增强版
+START_FULL_CHECK.bat  # 启动增强版
 ```
 
 ---
 
-### ✅ 改进 2: 故障安全模式 (`ONECLICK_SAFE.bat`)
+### ✅ 改进 2: 故障安全模式 (`START_SAFE.bat`)
 
 **功能：**
 ```batch
@@ -171,7 +171,7 @@ set HIP_VISIBLE_DEVICES=-1
 
 **使用方式：**
 ```cmd
-ONECLICK_SAFE.bat  # CPU 模式启动
+START_SAFE.bat  # CPU 模式启动
 ```
 
 **权衡：**
@@ -563,8 +563,8 @@ config.set('workers', workers)
 ## 🎯 实施优先级
 
 ### 第一批（立即实施）：
-1. ✅ **使用 `ONECLICK_ENHANCED.bat` 替换原有 `ONECLICK.bat`**
-2. ✅ **添加 `ONECLICK_SAFE.bat` 故障安全启动器**
+1. ✅ **使用 `START_FULL_CHECK.bat` 替换原有 `START.bat`**
+2. ✅ **添加 `START_SAFE.bat` 故障安全启动器**
 3. ✅ **在主要工具中集成中英双语 UI**
 4. ✅ **启用配置持久化**
 
@@ -602,12 +602,12 @@ config.set('workers', workers)
 ```cmd
 # Windows 命令行
 cd "E:\浏览器下载\Renpy汉化"
-ONECLICK_ENHANCED.bat
+START_FULL_CHECK.bat
 ```
 
 ### 2. GPU 问题时使用安全模式
 ```cmd
-ONECLICK_SAFE.bat
+START_SAFE.bat
 ```
 
 ### 3. 在 Python 代码中使用新 UI

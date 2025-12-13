@@ -70,15 +70,16 @@
 
 ### 4. 清理BAT文件 ✅
 
-**保留的文件**（3个）：
-- ✅ `ONECLICK.bat` - 标准启动（主入口）
-- ✅ `ONECLICK_ENHANCED.bat` - 增强版启动（更多检查）
-- ✅ `ONECLICK_SAFE.bat` - 安全模式（CPU模式，禁用GPU）
+**保留的文件**（4个）：
+- ✅ `START.bat` - 标准启动（主入口）
+- ✅ `START_FULL_CHECK.bat` - 增强版启动（更多检查）
+- ✅ `START_SAFE.bat` - 安全模式（CPU模式，禁用GPU）
+- ✅ `INSTALL_ALL.bat` - 一键安装环境
 
-**分析**：三个文件功能不同，都有存在价值：
-- `ONECLICK.bat`：简单快速启动
-- `ONECLICK_ENHANCED.bat`：完整检查（权限、架构、环境）
-- `ONECLICK_SAFE.bat`：故障应急模式
+**分析**：四个文件功能不同，都有存在价值：
+- `START.bat`：简单快速启动
+- `START_FULL_CHECK.bat`：完整检查（权限、架构、环境）
+- `START_SAFE.bat`：故障应急模式
 
 ---
 
@@ -128,8 +129,8 @@
 **修改内容**：
 
 1. **更新快速开始**
-   - 改为引用 `ONECLICK.bat`（主入口）
-   - 移除对 `ONECLICK_ENHANCED.bat` 的引用
+   - 改为引用 `START.bat`（主入口）
+   - 提供 `START_FULL_CHECK.bat` 作为增强选项
 
 2. **重新组织文档索引**
    - 分为"用户文档"和"技术文档"两类
@@ -194,9 +195,9 @@
 ```
 Renpy汉化/
 ├── INSTALL_ALL.bat          # 一键安装
-├── ONECLICK.bat             # 标准启动（主入口）
-├── ONECLICK_ENHANCED.bat    # 增强启动
-├── ONECLICK_SAFE.bat        # 安全模式
+├── START.bat                # 标准启动（主入口）
+├── START_FULL_CHECK.bat     # 增强启动
+├── START_SAFE.bat           # 安全模式
 ├── PACKAGE.bat              # 打包工具
 ├── README.md                # ✨ 已更新
 ├── requirements.txt
@@ -349,7 +350,7 @@ Renpy汉化/
 ### 长期（未来）
 
 1. **考虑简化启动脚本**
-   - 可能合并 `ONECLICK.bat` 和 `ONECLICK_ENHANCED.bat`
+   - 可能合并 `START.bat` 和 `START_FULL_CHECK.bat`
    - 或在主入口提供自动选择增强模式
 
 2. **持续优化文档**

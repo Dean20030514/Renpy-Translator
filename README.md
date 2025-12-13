@@ -6,7 +6,7 @@
 
 ## ✨ 新特性 (v2.0)
 
-- 🚀 **交互式菜单**：所有功能通过 ONECLICK.bat 访问
+- 🚀 **交互式菜单**：所有功能通过 START.bat 访问
 - ⚡ **云端 API 翻译**：DeepSeek / Grok / OpenAI / Claude（2-5分钟完成）
 - 🆓 **免费机器翻译**：Google / Bing / DeepL（完全免费）
 - 🛠️ **质量修复工具**：自动检测和修复英文残留
@@ -20,13 +20,13 @@
 
 ```bash
 第1步：双击 INSTALL_ALL.bat → 自动安装所有环境（约5GB）
-第2步：双击 ONECLICK.bat → 选择翻译方案
+第2步：双击 START.bat → 选择翻译方案
 ```
 
 ### 📦 已有环境
 
 ```bash
-双击 ONECLICK.bat → 开始使用
+双击 START.bat → 开始使用
 ```
 
 ### 🎯 三种翻译方案
@@ -170,7 +170,7 @@ python tools/translate.py outputs/llm_batches -o outputs/llm_results --model qwe
 ## ❓ 常见问题
 
 **Q: 完全不懂技术，能用吗？**  
-A: 能！双击 `INSTALL_ALL.bat` 全自动安装，然后双击 `ONECLICK.bat` 开始使用。
+A: 能！双击 `INSTALL_ALL.bat` 全自动安装，然后双击 `START.bat` 开始使用。
 
 **Q: 没有 NVIDIA 显卡可以用吗？**  
 A: 可以！会使用 CPU 模式，速度慢一些但完全可用。
@@ -186,10 +186,10 @@ A: 使用 Qwen2.5 系列模型，翻译质量优秀，支持上下文理解。
 
 ```bash
 # 新电脑
-双击 INSTALL_ALL.bat → 双击 ONECLICK.bat
+双击 INSTALL_ALL.bat → 双击 START.bat
 
 # 已有环境
-双击 ONECLICK.bat
+双击 START.bat
 ```
 
 **就这么简单！** 🚀

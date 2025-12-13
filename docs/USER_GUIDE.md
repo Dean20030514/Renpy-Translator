@@ -21,13 +21,13 @@
 
 ```bash
 第1步：双击 INSTALL_ALL.bat → 自动安装环境（约5GB）
-第2步：双击 ONECLICK.bat → 开始使用
+第2步：双击 START.bat → 开始使用
 ```
 
 ### 已有环境
 
 ```bash
-直接双击 ONECLICK.bat 启动
+直接双击 START.bat 启动
 ```
 
 ### GPU问题应急
@@ -35,7 +35,7 @@
 如果出现显卡错误：
 
 ```bash
-双击 ONECLICK_SAFE.bat → CPU模式启动
+双击 START_SAFE.bat → CPU模式启动
 ```
 
 ---
@@ -64,7 +64,7 @@
 #### 方法1：图形界面（推荐）
 
 **步骤：**
-1. 双击 `ONECLICK.bat`
+1. 双击 `START.bat`
 2. 点击界面上的 `⚙ 高级设置` 按钮
 3. 在弹出窗口中找到 `🚀 优化翻译模式` 分组
 4. ✅ 勾选 `启用优化模式` 复选框
@@ -493,7 +493,7 @@ CUDA out of memory error
 
 **解决方案：**
 ```bash
-方案1：使用ONECLICK_SAFE.bat（CPU模式）
+方案1：使用START_SAFE.bat（CPU模式）
 方案2：减少workers数量
 方案3：使用更小的模型（如7b而非14b）
 ```
@@ -593,7 +593,7 @@ pip install -r requirements.txt
 
 ```bash
 # 方法1：GUI（推荐）
-双击 ONECLICK.bat → 高级设置 → 启用优化模式
+双击 START.bat → 高级设置 → 启用优化模式
 
 # 方法2：命令行
 python tools/translate.py <input> -o <output> --use-optimized

@@ -13,7 +13,7 @@
       → 自动下载并安装所有环境（约5GB）
       → 等待 10-30 分钟
 
-第2步：双击 ONECLICK.bat
+第2步：双击 START.bat
       → 自动检查环境
       → 自动启动工具
       → 开始翻译
@@ -22,7 +22,7 @@
 ### 📦 已有环境的电脑
 
 ```bash
-直接双击 ONECLICK.bat → 开始使用
+直接双击 START.bat → 开始使用
 ```
 
 ---
@@ -70,7 +70,7 @@
 
 ### 安装失败？
 
-运行 ONECLICK.bat 会提示缺少的组件，然后：
+运行 START.bat 会提示缺少的组件，然后：
 
 **手动安装**：
 1. Python: https://www.python.org/downloads/
@@ -81,7 +81,7 @@
 
 ---
 
-## 🎮 ONECLICK.bat 功能
+## 🎮 START.bat 功能
 
 一键启动器，集成：
 
@@ -117,7 +117,7 @@
 ```bash
 1. 解压文件
 2. 双击 INSTALL_ALL.bat（自动安装环境）
-3. 双击 ONECLICK.bat（开始使用）
+3. 双击 START.bat（开始使用）
 ```
 
 ### 方法二：手动复制
@@ -128,7 +128,7 @@ Renpy汉化/
 ├── tools/           ✅ 必需
 ├── data/            ✅ 必需
 ├── docs/            ✅ 推荐
-├── ONECLICK.bat     ✅ 必需
+├── START.bat     ✅ 必需
 ├── INSTALL_ALL.bat  ✅ 必需
 ├── PACKAGE.bat      ✅ 推荐
 ├── README.md        ✅ 推荐
@@ -162,7 +162,7 @@ Renpy汉化/
 ### 翻译游戏
 
 ```bash
-1. 双击 ONECLICK.bat
+1. 双击 START.bat
 2. 选择游戏目录（包含 game/ 文件夹的根目录）
 3. 选择模型（推荐: qwen2.5:7b 或 huihui_ai/qwen2.5-abliterate:7b）
 4. 配置选项：
@@ -219,7 +219,7 @@ Renpy汉化/
 ### Q6: 翻译结果有代码标识符
 
 **A**: 这是过滤规则的问题，已在新版本修复：
-- 重新运行 ONECLICK.bat 使用最新版本
+- 重新运行 START.bat 使用最新版本
 - 或手动清理: `Remove-Item outputs\[游戏名]\llm_results\* -Force`
 
 ### Q7: 能同时翻译多个游戏吗？
@@ -270,17 +270,17 @@ Renpy汉化/
 
 ### 新手流程
 ```
-INSTALL_ALL.bat → ONECLICK.bat → 选择游戏 → 开始翻译
+INSTALL_ALL.bat → START.bat → 选择游戏 → 开始翻译
 ```
 
 ### 老手流程
 ```
-ONECLICK.bat → 开始翻译
+START.bat → 开始翻译
 ```
 
 ### 分享流程
 ```
-PACKAGE.bat → 压缩 → 分享 → INSTALL_ALL.bat → ONECLICK.bat
+PACKAGE.bat → 压缩 → 分享 → INSTALL_ALL.bat → START.bat
 ```
 
 **就这么简单！** 🚀
