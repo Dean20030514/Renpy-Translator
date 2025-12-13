@@ -673,30 +673,63 @@ function Invoke-ExtractText {
     Show-Header
     Write-Host "【提取文本】" -ForegroundColor Green
     Write-Host ""
-    
-    $gamePath = Select-Folder -Description "选择游戏根目录"
-    if (-not $gamePath) {
-        $gamePath = Read-Host "请输入游戏根目录路径"
+
+    Write-Host "请选择提取模式：" -ForegroundColor Yellow
+    Write-Host "  1. 选择游戏文件夹 (提取所有 .rpy 文件)"
+    Write-Host "  2. 选择单个 .rpy 文件"
+    Write-Host ""
+
+    $mode = Read-Host "请输入选项 (1-2)"
+
+    $targetPath = $null
+    $globPattern = "**/*.rpy"
+
+    switch ($mode) {
+        "1" {
+            # 选择文件夹模式
+            $targetPath = Select-Folder -Description "选择游戏根目录"
+            if (-not $targetPath) {
+                $targetPath = Read-Host "请输入游戏根目录路径"
+            }
+        }
+        "2" {
+            # 选择单个文件模式
+            $targetPath = Select-File -Title "选择 .rpy 文件" -Filter "Ren'Py 脚本文件 (*.rpy)|*.rpy|所有文件 (*.*)|*.*"
+            if (-not $targetPath) {
+                $targetPath = Read-Host "请输入 .rpy 文件路径"
+            }
+            # 单个文件不需要 glob 模式，使用文件所在目录和文件名
+            if (Test-Path $targetPath -PathType Leaf) {
+                $fileName = Split-Path $targetPath -Leaf
+                $targetPath = Split-Path $targetPath -Parent
+                $globPattern = $fileName
+            }
+        }
+        default {
+            Write-ErrorMsg "无效选择"
+            Read-Host "按回车继续"
+            return
+        }
     }
-    
-    if (-not (Test-Path $gamePath)) {
-        Write-ErrorMsg "目录不存在"
+
+    if (-not (Test-Path $targetPath)) {
+        Write-ErrorMsg "路径不存在: $targetPath"
         Read-Host "按回车继续"
         return
     }
-    
+
     $outputDir = Join-Path $WorkspaceRoot "outputs\extract_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-    
+
     $success = Invoke-SafePythonCommand `
         -Script (Join-Path $WorkspaceRoot "tools\extract.py") `
-        -Arguments @($gamePath, "--glob", "**/*.rpy", "-o", $outputDir) `
+        -Arguments @($targetPath, "--glob", $globPattern, "-o", $outputDir) `
         -Description "正在提取文本..."
-    
+
     Write-Host ""
     if ($success) {
         Write-Success "提取完成: $outputDir"
     }
-    
+
     Read-Host "按回车继续"
 }
 

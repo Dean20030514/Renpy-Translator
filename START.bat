@@ -99,16 +99,35 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ====================================================
-echo    ✅ 环境检查完成，正在启动工具...
+echo    ✅ 环境检查完成
 echo ====================================================
 echo.
 
-timeout /t 2 >nul
-
 :: ========================================
-:: 启动主程序
+:: 选择启动模式
 :: ========================================
 
-powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "& {$OutputEncoding=[Console]::OutputEncoding=[Console]::InputEncoding=[System.Text.Encoding]::UTF8; . '%~dp0tools\menu.ps1'}"
+echo 请选择启动模式：
+echo.
+echo   [1] 🖥️  图形界面 (GUI) - 推荐新手使用
+echo       完整的窗口界面，自动检测模型，一键翻译
+echo.
+echo   [2] 📟  终端菜单 - 推荐高级用户
+echo       更多分步操作选项，支持单独选择文件
+echo.
+
+choice /C 12 /N /M "请输入选项 (1 或 2): "
+
+if %errorlevel% equ 1 (
+    echo.
+    echo 正在启动 GUI 界面...
+    echo.
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "& {$OutputEncoding=[Console]::OutputEncoding=[Console]::InputEncoding=[System.Text.Encoding]::UTF8; . '%~dp0tools\launcher.ps1'}"
+) else (
+    echo.
+    echo 正在启动终端菜单...
+    echo.
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "& {$OutputEncoding=[Console]::OutputEncoding=[Console]::InputEncoding=[System.Text.Encoding]::UTF8; . '%~dp0tools\menu.ps1'}"
+)
 
 pause
