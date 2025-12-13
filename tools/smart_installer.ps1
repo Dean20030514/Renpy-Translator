@@ -1,8 +1,7 @@
-# Ren'Py 汉化工具 - 智能安装器
+﻿# Ren'Py 汉化工具 - 智能安装器
 # 自动下载并安装所有依赖
 
 $ErrorActionPreference = "Stop"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host ""
 Write-Host "====================================================" -ForegroundColor Cyan
@@ -37,10 +36,10 @@ Write-Host ""
 $pythonInstalled = $false
 try {
     $pythonVersion = python --version 2>&1
-    Write-Host "✅ Python 已安装: $pythonVersion" -ForegroundColor Green
+    Write-Host "[OK] Python 已安装: $pythonVersion" -ForegroundColor Green
     $pythonInstalled = $true
 } catch {
-    Write-Host "⚠️  Python 未安装" -ForegroundColor Yellow
+    Write-Host "[!] Python 未安装" -ForegroundColor Yellow
 }
 
 if (-not $pythonInstalled) {
@@ -50,28 +49,29 @@ if (-not $pythonInstalled) {
     
     try {
         Invoke-WebRequest -Uri $pythonUrl -OutFile $pythonInstaller -UseBasicParsing
-        Write-Host "✅ 下载完成" -ForegroundColor Green
+        Write-Host "[OK] 下载完成" -ForegroundColor Green
         
         Write-Host "正在安装 Python（静默安装）..." -ForegroundColor Yellow
         Start-Process -FilePath $pythonInstaller -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0" -Wait
         
-        # 刷新环境变量
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+        $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+        $env:Path = $machinePath + ";" + $userPath
         
         Start-Sleep -Seconds 3
         
         try {
             $pythonVersion = python --version 2>&1
-            Write-Host "✅ Python 安装成功: $pythonVersion" -ForegroundColor Green
+            Write-Host "[OK] Python 安装成功: $pythonVersion" -ForegroundColor Green
         } catch {
-            Write-Host "❌ Python 安装失败，请手动安装" -ForegroundColor Red
-            Write-Host "   下载地址: https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-Host "[X] Python 安装失败，请手动安装" -ForegroundColor Red
+            Write-Host "下载地址: https://www.python.org/downloads/" -ForegroundColor Yellow
             Read-Host "按回车键退出"
             exit 1
         }
     } catch {
-        Write-Host "❌ Python 下载失败: $_" -ForegroundColor Red
-        Write-Host "   请手动下载: https://www.python.org/downloads/" -ForegroundColor Yellow
+        Write-Host "[X] Python 下载失败: $_" -ForegroundColor Red
+        Write-Host "请手动下载: https://www.python.org/downloads/" -ForegroundColor Yellow
         Read-Host "按回车键退出"
         exit 1
     }
@@ -86,18 +86,25 @@ Write-Host "[2/4] 安装 Python 依赖..." -ForegroundColor Cyan
 Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host ""
 
+$depsInstalled = $false
 try {
-    python -c "import rich; import rapidfuzz" 2>&1 | Out-Null
-    Write-Host "✅ Python 依赖已安装" -ForegroundColor Green
+    $null = python -c "import rich; import rapidfuzz" 2>&1
+    Write-Host "[OK] Python 依赖已安装" -ForegroundColor Green
+    $depsInstalled = $true
 } catch {
+    Write-Host "[!] 需要安装依赖库" -ForegroundColor Yellow
+}
+
+if (-not $depsInstalled) {
     Write-Host "正在安装依赖库（使用清华镜像）..." -ForegroundColor Yellow
+    $requirementsPath = Join-Path $PSScriptRoot "..\requirements.txt"
     try {
-        pip install -r "$PSScriptRoot\requirements.txt" -i https://pypi.tuna.tsinghua.edu.cn/simple
-        Write-Host "✅ 依赖安装完成" -ForegroundColor Green
+        pip install -r $requirementsPath -i https://pypi.tuna.tsinghua.edu.cn/simple
+        Write-Host "[OK] 依赖安装完成" -ForegroundColor Green
     } catch {
-        Write-Host "⚠️  清华镜像失败，尝试官方源..." -ForegroundColor Yellow
-        pip install -r "$PSScriptRoot\requirements.txt"
-        Write-Host "✅ 依赖安装完成" -ForegroundColor Green
+        Write-Host "[!] 清华镜像失败，尝试官方源..." -ForegroundColor Yellow
+        pip install -r $requirementsPath
+        Write-Host "[OK] 依赖安装完成" -ForegroundColor Green
     }
 }
 
@@ -113,10 +120,10 @@ Write-Host ""
 $ollamaInstalled = $false
 try {
     $ollamaVersion = ollama --version 2>&1
-    Write-Host "✅ Ollama 已安装: $ollamaVersion" -ForegroundColor Green
+    Write-Host "[OK] Ollama 已安装: $ollamaVersion" -ForegroundColor Green
     $ollamaInstalled = $true
 } catch {
-    Write-Host "⚠️  Ollama 未安装" -ForegroundColor Yellow
+    Write-Host "[!] Ollama 未安装" -ForegroundColor Yellow
 }
 
 if (-not $ollamaInstalled) {
@@ -126,7 +133,7 @@ if (-not $ollamaInstalled) {
     
     try {
         Invoke-WebRequest -Uri $ollamaUrl -OutFile $ollamaInstaller -UseBasicParsing
-        Write-Host "✅ 下载完成" -ForegroundColor Green
+        Write-Host "[OK] 下载完成" -ForegroundColor Green
         
         Write-Host "正在安装 Ollama..." -ForegroundColor Yellow
         Start-Process -FilePath $ollamaInstaller -ArgumentList "/S" -Wait
@@ -134,18 +141,22 @@ if (-not $ollamaInstalled) {
         Write-Host "等待 Ollama 服务启动..." -ForegroundColor Yellow
         Start-Sleep -Seconds 10
         
+        $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+        $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+        $env:Path = $machinePath + ";" + $userPath
+        
         try {
             $ollamaVersion = ollama --version 2>&1
-            Write-Host "✅ Ollama 安装成功: $ollamaVersion" -ForegroundColor Green
+            Write-Host "[OK] Ollama 安装成功: $ollamaVersion" -ForegroundColor Green
         } catch {
-            Write-Host "❌ Ollama 安装失败，请手动安装" -ForegroundColor Red
-            Write-Host "   下载地址: https://ollama.ai/" -ForegroundColor Yellow
+            Write-Host "[X] Ollama 安装失败，请手动安装" -ForegroundColor Red
+            Write-Host "下载地址: https://ollama.ai/" -ForegroundColor Yellow
             Read-Host "按回车键退出"
             exit 1
         }
     } catch {
-        Write-Host "❌ Ollama 下载失败: $_" -ForegroundColor Red
-        Write-Host "   请手动下载: https://ollama.ai/" -ForegroundColor Yellow
+        Write-Host "[X] Ollama 下载失败: $_" -ForegroundColor Red
+        Write-Host "请手动下载: https://ollama.ai/" -ForegroundColor Yellow
         Read-Host "按回车键退出"
         exit 1
     }
@@ -162,18 +173,18 @@ Write-Host ""
 
 $modelList = ollama list 2>&1 | Out-String
 if ($modelList -match "qwen2\.5:7b") {
-    Write-Host "✅ qwen2.5:7b 模型已安装" -ForegroundColor Green
+    Write-Host "[OK] qwen2.5:7b 模型已安装" -ForegroundColor Green
 } else {
     Write-Host "正在下载 qwen2.5:7b 模型 (4.7GB)..." -ForegroundColor Yellow
-    Write-Host "⚠️  这可能需要 10-30 分钟，请耐心等待" -ForegroundColor Yellow
+    Write-Host "这可能需要 10-30 分钟，请耐心等待" -ForegroundColor Yellow
     Write-Host ""
     
     try {
         ollama pull qwen2.5:7b
-        Write-Host "✅ 模型下载成功" -ForegroundColor Green
+        Write-Host "[OK] 模型下载成功" -ForegroundColor Green
     } catch {
-        Write-Host "❌ 模型下载失败" -ForegroundColor Red
-        Write-Host "   请稍后手动运行: ollama pull qwen2.5:7b" -ForegroundColor Yellow
+        Write-Host "[X] 模型下载失败" -ForegroundColor Red
+        Write-Host "请稍后手动运行: ollama pull qwen2.5:7b" -ForegroundColor Yellow
     }
 }
 
@@ -189,14 +200,14 @@ Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 # ========================================
 Write-Host ""
 Write-Host "====================================================" -ForegroundColor Green
-Write-Host "   🎉 安装完成！" -ForegroundColor Green
+Write-Host "   安装完成！" -ForegroundColor Green
 Write-Host "====================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "已安装：" -ForegroundColor Cyan
-Write-Host "  ✅ Python" -ForegroundColor Green
-Write-Host "  ✅ Python 依赖库" -ForegroundColor Green
-Write-Host "  ✅ Ollama" -ForegroundColor Green
-Write-Host "  ✅ qwen2.5:7b 翻译模型" -ForegroundColor Green
+Write-Host "  [OK] Python" -ForegroundColor Green
+Write-Host "  [OK] Python 依赖库" -ForegroundColor Green
+Write-Host "  [OK] Ollama" -ForegroundColor Green
+Write-Host "  [OK] qwen2.5:7b 翻译模型" -ForegroundColor Green
 Write-Host ""
 Write-Host "现在可以运行 START.bat 开始使用工具！" -ForegroundColor Yellow
 Write-Host ""
