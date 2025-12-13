@@ -7,15 +7,26 @@ This module provides functions to:
 - Validate placeholder preservation in translations
 """
 
-import re
-import hashlib
-from typing import Set, Dict, Iterator, Optional
+from __future__ import annotations
 
+import hashlib
+import logging
+import re
+from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
+
+# 轻量 KV 缓存（可选）
+cached: Optional[Callable] = None
 try:
-    # 轻量 KV 缓存（可选）
-    from .cache import cached  # type: ignore
-except Exception:  # pragma: no cover - 可选依赖
-    cached: Optional[callable] = None  # type: ignore
+    from .cache import cached as _cached  # type: ignore
+    cached = _cached
+except ImportError:
+    # 可选依赖，缓存模块不可用时静默降级
+    pass
+except Exception as e:  # pragma: no cover
+    # 其他异常需要记录以便排查
+    logger.warning(f"Failed to import cache module: {e}")
 
 # —— Ren'Py 文本标签与指令 ——
 # 单次指令（不成对）

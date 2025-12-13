@@ -10,8 +10,21 @@ Validator —— 对比抽取 JSONL 与 译文 JSONL，并可输出 QA 细则
 - 可选输出 QA 报告（文本标签成对、占位符计数、末尾标点一致、换行数一致、长度比）
 """
 
-import json, argparse, re, csv, unicodedata
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import re
+import unicodedata
 from pathlib import Path
+
+# 从公共模块导入翻译字段键
+try:
+    from renpy_tools.utils.common import TRANS_KEYS as _TRANS_KEYS  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    _TRANS_KEYS = None
+TRANS_KEYS = _TRANS_KEYS or ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
 
 # 可选：复用通用占位符/变量/签名工具
 try:
@@ -35,7 +48,6 @@ PH_RE = _PH_RE or re.compile(
     r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"                             # {0} / {0:...} / {0!r}
     r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"                # {name!r:>8}
 )
-TRANS_KEYS = ("zh","cn","zh_cn","translation","text_zh","target","tgt")
 
 TAG_OPEN_RE = re.compile(r"\{(i|b|u|color(?:=[^}]+)?|a(?:=[^}]+)?|size(?:=[^}]+)?|font(?:=[^}]+)?|alpha(?:=[^}]+)?)\}")
 TAG_CLOSE_RE = re.compile(r"\{/(i|b|u|color|a|size|font|alpha)\}")

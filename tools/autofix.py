@@ -21,8 +21,8 @@ from pathlib import Path
 try:
     from renpy_tools.utils.common import get_zh, TRANS_KEYS  # type: ignore
 except (ImportError, ModuleNotFoundError):
-    TRANS_KEYS = ("zh","cn","zh_cn","translation","text_zh","target","tgt")
-    
+    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
+
     def get_zh(o: dict):
         for k in TRANS_KEYS:
             v = o.get(k)

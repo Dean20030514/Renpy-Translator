@@ -24,8 +24,8 @@ except (ImportError, ModuleNotFoundError):
     _HAS_UTILS = False
     # 回退定义
     import re
-    
-    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt")
+
+    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
     _PH_RE = re.compile(
         r"\[[A-Za-z_][A-Za-z0-9_]*\]|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]|"
         r"\{\d+(?:![rsa])?(?::[^{}]+)?\}|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"

@@ -94,12 +94,35 @@ def get_id(obj: dict) -> Optional[str]:
     Returns:
         ID 字符串，如果没有则返回 None
     """
-    if obj.get("id"):
-        return str(obj["id"])
-    if obj.get("id_hash"):
-        return str(obj["id_hash"])
+    # 检查 id 字段（注意：0 或空字符串也是有效值需要特殊处理）
+    if "id" in obj and obj["id"] is not None:
+        id_val = obj["id"]
+        # 如果是字符串，确保不是空的
+        if isinstance(id_val, str):
+            if id_val.strip():
+                return id_val
+        else:
+            # 数字或其他类型，转换为字符串
+            return str(id_val)
+
+    # 检查 id_hash 字段
+    if "id_hash" in obj and obj["id_hash"] is not None:
+        hash_val = obj["id_hash"]
+        if isinstance(hash_val, str):
+            if hash_val.strip():
+                return hash_val
+        else:
+            return str(hash_val)
+
+    # 尝试从 file:line:idx 组合生成 ID
     if all(k in obj for k in ("file", "line", "idx")):
-        return f"{obj['file']}:{obj['line']}:{obj['idx']}"
+        file_val = obj["file"]
+        line_val = obj["line"]
+        idx_val = obj["idx"]
+        # 验证各字段有效性
+        if file_val is not None and line_val is not None and idx_val is not None:
+            return f"{file_val}:{line_val}:{idx_val}"
+
     return None
 
 
