@@ -264,7 +264,7 @@ def process_file(
             if line.strip():
                 try:
                     items.append(json.loads(line))
-                except:
+                except (ValueError, json.JSONDecodeError):
                     pass
     
     if not items:

@@ -1,26 +1,37 @@
 [project]
 name = "renpy-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Ren'Py translation toolkit for extraction, prefill, patching, building, validation and proofreading"
-authors = [{ name = "Your Name" }]
+authors = [{ name = "Dean" }]
 requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+
 dependencies = [
-	"click>=8.1",
-	"python-dateutil>=2.8",
+    "rich>=13.7.0",      # 彩色日志和进度条
+    "rapidfuzz>=3.9.6",  # 模糊匹配（字典回填）
 ]
 
 [project.optional-dependencies]
-# 可选性能/功能增强组件
-speed = [
-	"rapidfuzz>=3.5",
-	"regex>=2023.10.3",
+# HTTP 请求（翻译器需要）
+http = [
+    "requests>=2.31.0",
 ]
-ui = [
-	"rich>=13.0",
-]
+# Token 计数（精确批次分割）
 tokens = [
-	"tiktoken>=0.5.1",
+    "tiktoken>=0.5.1",
 ]
+# 完整安装
+all = [
+    "requests>=2.31.0",
+    "tiktoken>=0.5.1",
+]
+# 开发依赖
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -30,3 +41,9 @@ renpy-tools = "renpy_tools.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

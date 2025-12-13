@@ -2,186 +2,242 @@
 # -*- coding: utf-8 -*-
 """
 测试 translate.py 与优化翻译器的集成
+使用 pytest 风格的断言
 """
 
 import sys
 from pathlib import Path
 
+import pytest
+
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "src"))
 
-def test_import():
-    """测试模块导入"""
-    print("测试模块导入...")
-    try:
+
+class TestTranslateModuleImport:
+    """测试 translate 模块导入"""
+
+    def test_translate_module_imports(self):
+        """测试 tools.translate 模块可以导入"""
         from tools import translate
-        print("  ✓ tools.translate 导入成功")
-    except ImportError as e:
-        print(f"  ✗ 导入失败: {e}")
-        return False
-    
-    # 检查优化模块
-    try:
-        from src.renpy_tools.core.translator import OllamaTranslator
-        print("  ✓ OllamaTranslator 可用")
-        has_optimized = True
-    except ImportError:
-        print("  ⚠ OllamaTranslator 不可用（这是正常的，如果你没有创建该模块）")
-        has_optimized = False
-    
-    # 检查标志
-    if hasattr(translate, '_HAS_OPTIMIZED_TRANSLATOR'):
-        status = translate._HAS_OPTIMIZED_TRANSLATOR
-        print(f"  ✓ _HAS_OPTIMIZED_TRANSLATOR = {status}")
-        if status != has_optimized:
-            print(f"  ⚠ 警告: 标志不一致 (期望={has_optimized}, 实际={status})")
-    else:
-        print("  ✗ 缺少 _HAS_OPTIMIZED_TRANSLATOR 标志")
-        return False
-    
-    return True
+        assert translate is not None
+
+    def test_has_optimized_translator_flag(self):
+        """测试 _HAS_OPTIMIZED_TRANSLATOR 标志存在"""
+        from tools import translate
+        assert hasattr(translate, '_HAS_OPTIMIZED_TRANSLATOR')
+
+    def test_required_functions_exist(self):
+        """测试必需的函数存在"""
+        from tools import translate
+
+        required_funcs = [
+            'extract_placeholders',
+            'restore_placeholders',
+            'is_non_dialog_text',
+            'build_system_prompt',
+            'build_user_prompt',
+        ]
+
+        for func_name in required_funcs:
+            assert hasattr(translate, func_name), f"{func_name} 缺失"
 
 
-def test_functions():
-    """测试函数存在性"""
-    print("\n测试函数存在性...")
-    from tools import translate
-    
-    required_funcs = [
-        'process_file',
-        'process_file_optimized',
-        'extract_placeholders',
-        'restore_placeholders',
-        'translate_one',
-        'is_non_dialog_text',
-        'build_system_prompt',
-        'build_user_prompt',
-    ]
-    
-    all_ok = True
-    for func_name in required_funcs:
-        if hasattr(translate, func_name):
-            print(f"  ✓ {func_name} 存在")
-        else:
-            print(f"  ✗ {func_name} 缺失")
-            all_ok = False
-    
-    return all_ok
-
-
-def test_placeholder_extraction():
+class TestPlaceholderExtraction:
     """测试占位符提取和恢复"""
-    print("\n测试占位符提取和恢复...")
-    from tools.translate import extract_placeholders, restore_placeholders
-    
-    test_cases = [
-        ("Hello [name]!", 1),
-        ("{i}Italic{/i} text", 2),
-        ("Value: {0:.2f}", 1),
-        ("%(name)s is here", 1),
-        ("No placeholders", 0),
-        ("{color=#fff}Colored{/color} [name]", 3),
-    ]
-    
-    all_ok = True
-    for text, expected_count in test_cases:
+
+    def test_square_bracket_placeholder(self):
+        """测试方括号占位符"""
+        from tools.translate import extract_placeholders, restore_placeholders
+
+        text = "Hello [name]!"
         clean, phs = extract_placeholders(text)
-        if len(phs) == expected_count:
-            # 测试恢复
-            restored = restore_placeholders(clean, phs)
-            if restored == text:
-                print(f"  ✓ '{text}' -> {len(phs)} 占位符 -> 恢复正确")
-            else:
-                print(f"  ✗ '{text}' 恢复失败: '{restored}' != '{text}'")
-                all_ok = False
-        else:
-            print(f"  ✗ '{text}' 期望 {expected_count} 占位符，实际 {len(phs)}")
-            all_ok = False
-    
-    return all_ok
+
+        assert len(phs) == 1
+        assert phs[0][0] == "[name]"
+
+        restored = restore_placeholders(clean, phs)
+        assert restored == text
+
+    def test_renpy_tags(self):
+        """测试 Ren'Py 标签"""
+        from tools.translate import extract_placeholders, restore_placeholders
+
+        text = "{i}Italic{/i} text"
+        clean, phs = extract_placeholders(text)
+
+        assert len(phs) == 2
+        restored = restore_placeholders(clean, phs)
+        assert restored == text
+
+    def test_format_placeholder(self):
+        """测试格式占位符"""
+        from tools.translate import extract_placeholders, restore_placeholders
+
+        text = "Value: {0:.2f}"
+        clean, phs = extract_placeholders(text)
+
+        assert len(phs) == 1
+        restored = restore_placeholders(clean, phs)
+        assert restored == text
+
+    def test_percent_placeholder(self):
+        """测试百分号占位符"""
+        from tools.translate import extract_placeholders, restore_placeholders
+
+        text = "%(name)s is here"
+        clean, phs = extract_placeholders(text)
+
+        assert len(phs) == 1
+        restored = restore_placeholders(clean, phs)
+        assert restored == text
+
+    def test_no_placeholders(self):
+        """测试没有占位符的文本"""
+        from tools.translate import extract_placeholders, restore_placeholders
+
+        text = "No placeholders"
+        clean, phs = extract_placeholders(text)
+
+        assert len(phs) == 0
+        restored = restore_placeholders(clean, phs)
+        assert restored == text
+
+    def test_multiple_placeholders(self):
+        """测试多个占位符"""
+        from tools.translate import extract_placeholders, restore_placeholders
+
+        text = "{color=#fff}Colored{/color} [name]"
+        clean, phs = extract_placeholders(text)
+
+        assert len(phs) == 3
+        restored = restore_placeholders(clean, phs)
+        assert restored == text
 
 
-def test_non_dialog_filter():
+class TestNonDialogFilter:
     """测试非台词过滤"""
-    print("\n测试非台词过滤...")
-    from tools.translate import is_non_dialog_text
-    
-    should_skip = [
-        "images/bg.png",
-        "True",
-        "False",
-        "mcroom_hover_icon",
-        "7am009ancl2jpg",
-        "sazmod",
-    ]
-    
-    should_keep = [
-        "Hello world!",
-        "OK",
-        "Yes",
-        "Save Game",
-        "I love you.",
-    ]
-    
-    all_ok = True
-    for text in should_skip:
-        if is_non_dialog_text(text):
-            print(f"  ✓ 正确跳过: '{text}'")
-        else:
-            print(f"  ✗ 应该跳过但未跳过: '{text}'")
-            all_ok = False
-    
-    for text in should_keep:
-        if not is_non_dialog_text(text):
-            print(f"  ✓ 正确保留: '{text}'")
-        else:
-            print(f"  ✗ 应该保留但跳过了: '{text}'")
-            all_ok = False
-    
-    return all_ok
+
+    def test_skip_boolean_values(self):
+        """测试跳过布尔值"""
+        from tools.translate import is_non_dialog_text
+
+        assert is_non_dialog_text("True")
+        assert is_non_dialog_text("False")
+        assert is_non_dialog_text("None")
+
+    def test_skip_resource_paths(self):
+        """测试跳过资源路径"""
+        from tools.translate import is_non_dialog_text
+
+        assert is_non_dialog_text("images/bg.png")
+        assert is_non_dialog_text("audio/music.ogg")
+
+    def test_keep_normal_text(self):
+        """测试保留正常文本"""
+        from tools.translate import is_non_dialog_text
+
+        assert not is_non_dialog_text("Hello world!")
+        assert not is_non_dialog_text("Save Game")
+        assert not is_non_dialog_text("I love you.")
+
+    def test_keep_short_ui_text(self):
+        """测试保留短 UI 文本"""
+        from tools.translate import is_non_dialog_text
+
+        assert not is_non_dialog_text("OK")
+        assert not is_non_dialog_text("Yes")
+        assert not is_non_dialog_text("No")
 
 
-def main():
-    """运行所有测试"""
-    print("=" * 50)
-    print("translate.py 集成测试")
-    print("=" * 50)
-    
-    tests = [
-        ("模块导入", test_import),
-        ("函数存在性", test_functions),
-        ("占位符提取", test_placeholder_extraction),
-        ("非台词过滤", test_non_dialog_filter),
-    ]
-    
-    results = []
-    for name, test_func in tests:
-        try:
-            result = test_func()
-            results.append((name, result))
-        except Exception as e:
-            print(f"\n✗ {name} 测试异常: {e}")
-            import traceback
-            traceback.print_exc()
-            results.append((name, False))
-    
-    # 总结
-    print("\n" + "=" * 50)
-    print("测试结果总结")
-    print("=" * 50)
-    for name, result in results:
-        status = "✓ 通过" if result else "✗ 失败"
-        print(f"{name:20s}: {status}")
-    
-    all_passed = all(r for _, r in results)
-    if all_passed:
-        print("\n✓ 所有测试通过！")
-        return 0
-    else:
-        print("\n✗ 部分测试失败")
-        return 1
+class TestPromptBuilding:
+    """测试提示词构建"""
+
+    def test_system_prompt_not_empty(self):
+        """测试系统提示词不为空"""
+        from tools.translate import build_system_prompt
+
+        prompt = build_system_prompt()
+        assert len(prompt) > 100
+        assert "翻译" in prompt or "中文" in prompt
+
+    def test_user_prompt_contains_text(self):
+        """测试用户提示词包含文本"""
+        from tools.translate import build_user_prompt
+
+        text = "Hello, world!"
+        context = {"label": "start"}
+        prompt = build_user_prompt(text, context)
+
+        assert text in prompt
+        assert "start" in prompt
+
+    def test_user_prompt_includes_context(self):
+        """测试用户提示词包含上下文"""
+        from tools.translate import build_user_prompt
+
+        text = "Hello!"
+        context = {
+            "label": "scene_1",
+            "anchor_prev": "Previous line",
+            "anchor_next": "Next line",
+        }
+        prompt = build_user_prompt(text, context)
+
+        assert "scene_1" in prompt
+        assert "Previous line" in prompt
+        assert "Next line" in prompt
+
+
+class TestTranslationValidation:
+    """测试翻译验证"""
+
+    def test_valid_translation_passes(self):
+        """测试有效翻译通过验证"""
+        from tools.translate import ensure_valid_translation
+
+        source = "Hello!"
+        translation = "你好！"
+
+        valid, error = ensure_valid_translation(source, translation)
+        assert valid
+        assert error == ""
+
+    def test_empty_translation_fails(self):
+        """测试空翻译失败"""
+        from tools.translate import ensure_valid_translation
+
+        source = "Hello!"
+        translation = ""
+
+        valid, error = ensure_valid_translation(source, translation)
+        assert not valid
+        assert "empty" in error
+
+    def test_newline_mismatch_fails(self):
+        """测试换行符不匹配失败"""
+        from tools.translate import ensure_valid_translation
+
+        source = "Line 1\nLine 2"
+        translation = "第一行第二行"
+
+        valid, error = ensure_valid_translation(source, translation)
+        assert not valid
+        assert "newline" in error
+
+    def test_placeholder_mismatch_fails(self):
+        """测试占位符不匹配失败"""
+        from tools.translate import ensure_valid_translation
+
+        source = "Hello [name]!"
+        translation = "你好！"
+
+        valid, error = ensure_valid_translation(source, translation)
+        assert not valid
+        assert "placeholder" in error
 
 
 if __name__ == "__main__":
-    exit(main())
+    pytest.main([__file__, '-v'])

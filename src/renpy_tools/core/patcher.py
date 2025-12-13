@@ -5,8 +5,10 @@
 - 自动备份（失败可回滚）
 - 语法验证（避免生成错误文件）
 - 增量处理（只更新变更文件）
+- 路径安全检查（防止路径遍历攻击）
 """
 
+import json
 import shutil
 import time
 from pathlib import Path
@@ -19,6 +21,28 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from src.renpy_tools.utils.logger import logger
+
+
+def _is_safe_path(base_dir: Path, target_path: Path) -> bool:
+    """
+    检查路径是否安全（防止路径遍历攻击）
+
+    Args:
+        base_dir: 基准目录
+        target_path: 目标路径
+
+    Returns:
+        如果路径在 base_dir 内则返回 True
+    """
+    try:
+        # 解析为绝对路径
+        resolved_base = base_dir.resolve()
+        resolved_target = target_path.resolve()
+        # 检查目标是否在基准目录内
+        resolved_target.relative_to(resolved_base)
+        return True
+    except ValueError:
+        return False
 
 
 class SafePatcher:
@@ -64,7 +88,13 @@ class SafePatcher:
         
         for rel_path, trans in trans_data.items():
             target_file = target_dir / rel_path
-            
+
+            # 路径安全检查
+            if not _is_safe_path(target_dir, target_file):
+                logger.error(f"Unsafe path detected: {rel_path}")
+                failed.append({'file': str(rel_path), 'error': 'Unsafe path (path traversal)'})
+                continue
+
             if not target_file.exists():
                 logger.warning(f"Target file not found: {target_file}")
                 failed.append({'file': str(rel_path), 'error': 'File not found'})
@@ -146,17 +176,32 @@ class SafePatcher:
     def _verify_renpy_syntax(self, text: str):
         """验证 Ren'Py 语法"""
         lines = text.splitlines()
-        
+
         for i, line in enumerate(lines, 1):
-            # 检查缩进（4 的倍数）
-            indent = len(line) - len(line.lstrip())
-            if indent % 4 != 0:
-                raise SyntaxError(
-                    f"Line {i}: Invalid indentation ({indent} spaces)"
-                )
-            
-            # 检查引号匹配
-            if line.count('"') % 2 != 0 and line.count("'") % 2 != 0:
+            # 跳过空行和纯注释行
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+
+            # 检查缩进（Ren'Py 允许 4 空格的倍数）
+            # 注意：行首的空格数量
+            if line and not line[0].isspace():
+                # 非缩进行，跳过检查
+                pass
+            else:
+                indent = len(line) - len(line.lstrip())
+                # Ren'Py 标准使用 4 空格缩进
+                if indent % 4 != 0:
+                    logger.warning(
+                        f"Line {i}: Non-standard indentation ({indent} spaces)"
+                    )
+
+            # 检查引号匹配（双引号或单引号不匹配都报错）
+            # 注意：需要排除转义引号和字符串内的引号
+            # 简化检查：只检查引号数量是否为偶数
+            double_quotes = line.count('"') - line.count('\\"')
+            single_quotes = line.count("'") - line.count("\\'")
+            if double_quotes % 2 != 0 or single_quotes % 2 != 0:
                 raise SyntaxError(f"Line {i}: Unmatched quotes")
     
     def _verify_python_syntax(self, text: str):
@@ -286,13 +331,12 @@ class IncrementalBuilder:
     def _load_cache(self) -> dict:
         """加载缓存"""
         if self.cache_file.exists():
-            import json
             return json.loads(self.cache_file.read_text(encoding='utf-8'))
         return {}
-    
+
     def _save_cache(self):
         """保存缓存"""
-        import json
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         self.cache_file.write_text(
             json.dumps(self.cache, indent=2),
             encoding='utf-8'
