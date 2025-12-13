@@ -12,7 +12,14 @@ Patcher —— 将翻译 JSONL 回填为 .zh.rpy 镜像文件
 - 详细的 TSV 报告
 """
 
-import re, json, argparse, concurrent.futures, os
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import os
+import re
+import tempfile
 from pathlib import Path
 from collections import namedtuple
 from typing import List, Optional, Tuple
@@ -36,17 +43,90 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - 可选依赖
     _fuzz = None
 DQ_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
 SQ_RE = re.compile(r"'((?:\\.|[^'\\])*)'")
-TRANS_KEYS = ("zh","cn","zh_cn","translation","text_zh","target","tgt")
+
+# 从公共模块导入翻译字段键，保持一致性
+try:
+    from renpy_tools.utils.common import TRANS_KEYS as _TRANS_KEYS  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    _TRANS_KEYS = None
+TRANS_KEYS = _TRANS_KEYS or ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
+
 TRIPLE_QUOTES = {"'''", '"""'}
 
-# 可选：统一文本写入（自动创建父目录）
+# 可选：统一文本写入（自动创建父目录，原子写入）
 try:
     from renpy_tools.utils.io import write_text_file as _write_text_file  # type: ignore
 except (ImportError, ModuleNotFoundError):
-    def _write_text_file(path: str | Path, text: str, encoding: str = 'utf-8'):
+    def _write_text_file(path: str | Path, text: str, encoding: str = 'utf-8', atomic: bool = True):
+        """写入文本文件，支持原子写入"""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding=encoding)
+        if atomic:
+            # 原子写入：先写临时文件再重命名
+            fd, tmp_path = tempfile.mkstemp(
+                dir=p.parent,
+                prefix=f".{p.name}.",
+                suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, 'w', encoding=encoding) as f:
+                    f.write(text)
+                os.replace(tmp_path, p)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        else:
+            p.write_text(text, encoding=encoding)
+
+
+def _is_safe_path(base_dir: Path, target_path: Path) -> bool:
+    """检查路径是否安全（防止路径遍历攻击）"""
+    try:
+        resolved_base = base_dir.resolve()
+        resolved_target = target_path.resolve()
+        resolved_target.relative_to(resolved_base)
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_write_output(
+    out_root: Path,
+    rel_path: str,
+    content: str,
+    suffix: str = ".zh.rpy"
+) -> bool:
+    """安全地写入输出文件
+
+    Args:
+        out_root: 输出根目录
+        rel_path: 相对路径
+        content: 文件内容
+        suffix: 文件后缀
+
+    Returns:
+        是否成功写入
+    """
+    out_path = (out_root / rel_path).with_suffix(suffix)
+
+    # 安全检查
+    if not _is_safe_path(out_root, out_path):
+        print(f"[WARN] 不安全的路径，跳过: {rel_path}")
+        return False
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 流式写出，避免一次性内存占用
+    with open(out_path, "w", encoding="utf-8") as wf:
+        bs = 1 << 20  # 1MB 块
+        for i in range(0, len(content), bs):
+            wf.write(content[i:i + bs])
+
+    return True
+
 
 Token = namedtuple("Token", ["start", "end", "inner_start", "inner_end", "quote", "is_triple", "start_line", "end_line"])
 
@@ -415,17 +495,33 @@ def load_translations(path: Path):
             trans[_id] = {"zh": zh, "en": en, "obj": obj}
     return trans
 
-def replace_nth_on_line(line: str, idx: int, zh: str):
+def replace_nth_on_line(line: str, idx: int, zh: str) -> tuple[str, bool]:
+    """替换行中第 idx 个字符串字面量
+
+    Args:
+        line: 源代码行
+        idx: 字符串字面量索引（0-based）
+        zh: 替换的中文文本
+
+    Returns:
+        (新行内容, 是否成功替换)
+    """
+    # 验证索引有效性
+    if idx < 0:
+        return line, False
+
     # 先双引号,再单引号 —— 与抽取顺序一致
     m = list(DQ_RE.finditer(line))
     if idx < len(m):
-        a,b = m[idx].start(1), m[idx].end(1)
+        a, b = m[idx].start(1), m[idx].end(1)
         return line[:a] + escape_for_quote(zh, '"') + line[b:], True
+
     idx2 = idx - len(m)
     m2 = list(SQ_RE.finditer(line))
-    if idx2 < len(m2):
-        a,b = m2[idx2].start(1), m2[idx2].end(1)
+    if 0 <= idx2 < len(m2):
+        a, b = m2[idx2].start(1), m2[idx2].end(1)
         return line[:a] + escape_for_quote(zh, "'") + line[b:], True
+
     return line, False
 
 def patch_file_text(text: str, rel: str, trans: dict):
@@ -711,15 +807,10 @@ def main():
                         patched_text, modified = patch_file_advanced(orig_text, rel, trans, local_rows)
                         if modified:
                             if not args.dry_run:
-                                out_path = (out_root / rel).with_suffix(".zh.rpy")
-                                # 流式写出，避免一次性内存占用
-                                out_path.parent.mkdir(parents=True, exist_ok=True)
-                                with open(out_path, "w", encoding="utf-8") as wf:
-                                    # 以块写，1MB
-                                    bs = 1 << 20
-                                    for i in range(0, len(patched_text), bs):
-                                        wf.write(patched_text[i:i+bs])
-                            modified_count += 1
+                                if _safe_write_output(out_root, rel, patched_text):
+                                    modified_count += 1
+                            else:
+                                modified_count += 1
                     return local_rows, modified_count
 
                 with concurrent.futures.ProcessPoolExecutor(max_workers=workers_val) as ex:
@@ -738,14 +829,10 @@ def main():
             report_rows.extend(local_reports)
             if modified:
                 if not args.dry_run:
-                    out_path = (out_root / rel).with_suffix(".zh.rpy")
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    # 流式写出，避免一次性内存占用
-                    with open(out_path, "w", encoding="utf-8") as wf:
-                        bs = 1 << 20
-                        for i in range(0, len(patched_text), bs):
-                            wf.write(patched_text[i:i+bs])
-                count_files += 1
+                    if _safe_write_output(out_root, rel, patched_text):
+                        count_files += 1
+                else:
+                    count_files += 1
 
         # 写出报告
         tsv_path = Path(args.translated_jsonl).with_suffix(".patch_report.tsv")
@@ -762,15 +849,12 @@ def main():
             patched_text, applied, warn = patch_file_text(text, rel, trans)
             if applied or warn:
                 if not args.dry_run:
-                    out_path = (out_root / rel).with_suffix(".zh.rpy")
                     if args.backup:
                         p.with_suffix(".bak.rpy").write_text(text, encoding="utf-8")
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(out_path, "w", encoding="utf-8") as wf:
-                        bs = 1 << 20
-                        for i in range(0, len(patched_text), bs):
-                            wf.write(patched_text[i:i+bs])
-                count_files += 1
+                    if _safe_write_output(out_root, rel, patched_text):
+                        count_files += 1
+                else:
+                    count_files += 1
             total_applied += applied
             total_warn += warn
 

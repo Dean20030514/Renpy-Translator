@@ -5,16 +5,51 @@
 避免代码重复，提高维护性
 """
 from __future__ import annotations
+
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
-# 译文字段名称（按优先级）
-TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt")
+# ========================================
+# 常量定义（统一来源）
+# ========================================
 
+# 译文字段名称（按优先级）
+TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
+
+# 英文原文字段名称（按优先级）
+EN_KEYS = ("en", "text", "english", "source", "src", "original", "english_text")
+
+# 常见的资源文件扩展名
+ASSET_EXTS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",  # 图片
+    ".mp3", ".ogg", ".wav", ".flac", ".m4a",  # 音频
+    ".mp4", ".webm", ".avi", ".mkv",  # 视频
+    ".ttf", ".otf", ".woff", ".woff2",  # 字体
+    ".json", ".yaml", ".yml", ".xml",  # 数据
+)
+
+# 应跳过翻译的关键词
+SKIP_KEYWORDS = frozenset({
+    "true", "false", "none", "null",
+    "yes", "no", "ok", "cancel",
+})
+
+
+# ========================================
+# JSONL 读写函数
+# ========================================
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    """加载 JSONL 文件，返回字典列表"""
+    """加载 JSONL 文件，返回字典列表
+
+    Args:
+        path: 文件路径
+
+    Returns:
+        解析后的字典列表
+    """
     lines = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -28,7 +63,12 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def save_jsonl(path: str | Path, data: list[dict[str, Any]]) -> None:
-    """保存字典列表为 JSONL 文件"""
+    """保存字典列表为 JSONL 文件
+
+    Args:
+        path: 文件路径
+        data: 要保存的数据
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("w", encoding="utf-8") as f:
@@ -36,21 +76,39 @@ def save_jsonl(path: str | Path, data: list[dict[str, Any]]) -> None:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
+# ========================================
+# 字段提取函数
+# ========================================
+
 def get_id(obj: dict) -> Optional[str]:
-    """提取条目的唯一ID，支持多种格式"""
+    """提取条目的唯一ID，支持多种格式
+
+    支持的格式：
+    - 直接 id 字段
+    - id_hash 字段
+    - file:line:idx 组合
+
+    Args:
+        obj: 数据对象
+
+    Returns:
+        ID 字符串，如果没有则返回 None
+    """
     if obj.get("id"):
-        return obj["id"]
+        return str(obj["id"])
     if obj.get("id_hash"):
-        return obj["id_hash"]
+        return str(obj["id_hash"])
     if all(k in obj for k in ("file", "line", "idx")):
         return f"{obj['file']}:{obj['line']}:{obj['idx']}"
     return None
 
 
 def get_zh(obj: dict) -> tuple[Optional[str], Optional[str]]:
-    """
-    提取译文字段
-    
+    """提取译文字段
+
+    Args:
+        obj: 数据对象
+
     Returns:
         (field_name, value) - 字段名和译文内容，如果没有则返回 (None, None)
     """
@@ -62,18 +120,93 @@ def get_zh(obj: dict) -> tuple[Optional[str], Optional[str]]:
 
 
 def has_zh(obj: dict) -> bool:
-    """检查对象是否包含非空译文"""
+    """检查对象是否包含非空译文
+
+    Args:
+        obj: 数据对象
+
+    Returns:
+        是否包含译文
+    """
     _, value = get_zh(obj)
     return value is not None
 
 
 def get_en(obj: dict) -> Optional[str]:
-    """提取英文原文"""
-    en = obj.get("en") or obj.get("text") or obj.get("english") or obj.get("source")
-    return str(en) if en is not None else None
+    """提取英文原文
+
+    Args:
+        obj: 数据对象
+
+    Returns:
+        英文原文，如果没有则返回 None
+    """
+    for key in EN_KEYS:
+        value = obj.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+# ========================================
+# 文本处理函数
+# ========================================
+
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def normalize_text(text: str) -> str:
-    """标准化文本用于比较（去除多余空白）"""
-    import re
-    return re.sub(r"\s+", " ", text.strip())
+    """标准化文本用于比较（去除多余空白）
+
+    Args:
+        text: 输入文本
+
+    Returns:
+        标准化后的文本
+    """
+    return _WHITESPACE_RE.sub(" ", text.strip())
+
+
+def is_asset_path(text: str) -> bool:
+    """检查文本是否为资源路径
+
+    Args:
+        text: 输入文本
+
+    Returns:
+        是否为资源路径
+    """
+    text_lower = text.lower().strip()
+    # 检查扩展名
+    for ext in ASSET_EXTS:
+        if text_lower.endswith(ext):
+            return True
+    # 检查路径分隔符
+    if "/" in text or "\\" in text:
+        return True
+    return False
+
+
+def should_skip_translation(text: str) -> bool:
+    """检查文本是否应跳过翻译
+
+    Args:
+        text: 输入文本
+
+    Returns:
+        是否应跳过
+    """
+    if not text or not text.strip():
+        return True
+
+    text_lower = text.lower().strip()
+
+    # 跳过关键词
+    if text_lower in SKIP_KEYWORDS:
+        return True
+
+    # 跳过资源路径
+    if is_asset_path(text):
+        return True
+
+    return False

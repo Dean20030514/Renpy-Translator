@@ -85,18 +85,21 @@ def looks_like_text(s: str, min_len: int) -> bool:
     return True
 
 def compute_hash_id(file_rel: str, line: int, idx: int, en: str, prev_line: str, next_line: str) -> str:
-    h = hashlib.sha1()
+    """计算条目的唯一哈希 ID（使用 SHA256）"""
+    h = hashlib.sha256()
     for part in (file_rel, str(line), str(idx), en, prev_line or "", next_line or ""):
         h.update(part.encode("utf-8"))
-    return "sha1:" + h.hexdigest()[:12]
+    return "sha256:" + h.hexdigest()[:16]
+
 
 def compute_semantic(en_text: str) -> str:
+    """计算语义签名（用于去重）"""
     if _comp_sig:
         return _comp_sig(en_text)
     # 简易后备：去除花括号标签（粗略）与空白归一化
     t = re.sub(r"\{/?[A-Za-z_][^}]*\}", "", en_text or "")
     t = re.sub(r"\s+", " ", t).strip().lower()
-    return "sig0:" + hashlib.sha1(t.encode("utf-8")).hexdigest()[:12]
+    return "sig0:" + hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
 
 def extract_from_file(path: Path, root: Path, include_single=True, include_triple=True, skip_comments=True, min_len=1):
     rel = path.relative_to(root).as_posix()

@@ -30,14 +30,19 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import random
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from urllib import request as urlreq
 from urllib import error as urlerr
+
+# 全局文件写入锁，防止并发写入竞态条件
+_file_write_lock = threading.Lock()
 
 try:
     from rich.console import Console
@@ -176,8 +181,10 @@ def get_gpu_total_mem_mb() -> Optional[int]:
             check=False
         )
         if result.returncode == 0:
-            return int(result.stdout.strip().splitlines()[0].strip())
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError):
+            lines = result.stdout.strip().splitlines()
+            if lines:
+                return int(lines[0].strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError, IndexError):
         pass
     return None
 
@@ -492,11 +499,17 @@ def translate_one_item(
                     return item_id, fixed, None
             
             last_error = error
-            time.sleep(0.5 * (attempt + 1))
-            
+            # 指数退避 + 抖动，避免雷击效应
+            base_delay = 0.5 * (2 ** attempt)
+            jitter = random.uniform(0, 0.5 * base_delay)
+            time.sleep(base_delay + jitter)
+
         except (urlerr.URLError, urlerr.HTTPError, TimeoutError) as e:
             last_error = f"network_error:{type(e).__name__}"
-            time.sleep(min(2.0 * (attempt + 1), 8.0))
+            # 网络错误使用更长的退避时间
+            base_delay = min(2.0 * (2 ** attempt), 16.0)
+            jitter = random.uniform(0, 0.5 * base_delay)
+            time.sleep(base_delay + jitter)
     
     return item_id, None, last_error or "unknown_error"
 
@@ -558,18 +571,19 @@ class TranslationProcessor:
         out_lines: list[dict],
         rej_lines: list[tuple[str, str]]
     ):
-        """刷新结果到文件"""
-        if out_lines:
-            with output_file.open("a", encoding="utf-8") as f:
-                for obj in out_lines:
-                    f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-            out_lines.clear()
-        
-        if rej_lines:
-            with rejects_file.open("a", encoding="utf-8") as f:
-                for rid, err in rej_lines:
-                    f.write(f"{rid}\t{err}\n")
-            rej_lines.clear()
+        """刷新结果到文件（线程安全）"""
+        with _file_write_lock:
+            if out_lines:
+                with output_file.open("a", encoding="utf-8") as f:
+                    for obj in out_lines:
+                        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                out_lines.clear()
+
+            if rej_lines:
+                with rejects_file.open("a", encoding="utf-8") as f:
+                    for rid, err in rej_lines:
+                        f.write(f"{rid}\t{err}\n")
+                rej_lines.clear()
     
     def process_standard(
         self,

@@ -7,20 +7,19 @@
 - HTML 可视化报告
 """
 
-import csv
+from __future__ import annotations
+
 import json
-import sys
+import logging
+import re
 from pathlib import Path
 from typing import Optional
-from collections import defaultdict, Counter
+from collections import Counter
 
-# 添加项目根目录到 sys.path
-project_root = Path(__file__).parent.parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+from ..utils.placeholder import ph_multiset
 
-from src.renpy_tools.utils.logger import logger
-from src.renpy_tools.utils.placeholder import ph_multiset
+# 获取模块级 logger
+logger = logging.getLogger(__name__)
 
 
 class MultiLevelValidator:
@@ -46,6 +45,10 @@ class MultiLevelValidator:
         self.config = config or self.DEFAULT_CHECKS
         self.issues = {'critical': [], 'warning': [], 'info': []}
     
+    def reset(self):
+        """重置问题列表"""
+        self.issues = {'critical': [], 'warning': [], 'info': []}
+
     def validate_with_autofix(
         self,
         source: list[dict],
@@ -53,16 +56,18 @@ class MultiLevelValidator:
     ) -> tuple[list[dict], dict]:
         """
         验证并自动修复
-        
+
         Args:
             source: 原文列表 [{'id': ..., 'en': ...}, ...]
             target: 译文列表 [{'id': ..., 'zh': ...}, ...]
-        
+
         Returns:
             (fixed_target, issues_report)
         """
+        # 重置问题列表，避免累积
+        self.reset()
         fixed = []
-        
+
         # 创建 source 字典以便快速查找
         source_dict = {item['id']: item for item in source}
         
@@ -220,24 +225,31 @@ class MultiLevelValidator:
         
         return None
     
+    # 编译一次正则表达式，避免重复编译
+    _COMMON_ENGLISH_PATTERN = re.compile(
+        r'\b(the|and|you|are|have|what|where|when|who|how)\b',
+        re.IGNORECASE
+    )
+
     def _check_untranslated(self, tgt: dict) -> Optional[dict]:
         """检查未翻译（保留英文单词）"""
-        text = tgt.get('zh', '').lower()
-        common_english = [
-            ' the ', ' and ', ' you ', ' are ', ' have ',
-            ' what ', ' where ', ' when ', ' who ', ' how '
-        ]
-        
-        untranslated = [word.strip() for word in common_english if word in f" {text} "]
-        
-        if untranslated:
+        text = tgt.get('zh', '')
+        if not text:
+            return None
+
+        # 使用正则表达式匹配单词边界
+        matches = self._COMMON_ENGLISH_PATTERN.findall(text)
+
+        if matches:
+            # 去重并保持顺序
+            unique_words = list(dict.fromkeys(word.lower() for word in matches))
             return {
                 'level': 'warning',
                 'id': tgt['id'],
                 'type': 'untranslated',
-                'message': f"Contains untranslated words: {untranslated}"
+                'message': f"Contains untranslated words: {unique_words}"
             }
-        
+
         return None
     
     def _check_duplicate_punct(self, tgt: dict) -> Optional[dict]:
@@ -283,28 +295,34 @@ class MultiLevelValidator:
         """自动修复换行符"""
         src_lines = src.get('en', '').count('\n')
         tgt_lines = tgt.get('zh', '').count('\n')
-        
+
         zh_text = tgt.get('zh', '')
-        
+
         if src_lines > tgt_lines:
             # 需要添加换行符
             diff = src_lines - tgt_lines
             # 简单策略：在句号后添加换行
             parts = zh_text.split('。')
-            if len(parts) > diff:
-                interval = len(parts) // (diff + 1)
-                for i in range(diff):
-                    idx = interval * (i + 1) + i
-                    if idx < len(parts):
-                        parts[idx] = parts[idx] + '\n'
+            num_parts = len(parts)
+
+            if num_parts > 1 and diff > 0:
+                # 计算间隔，确保均匀分布
+                interval = max(1, (num_parts - 1) // (diff + 1))
+                added = 0
+                for i in range(interval, num_parts - 1, interval):
+                    if added >= diff:
+                        break
+                    # 在部分末尾添加换行（重组时会在句号后）
+                    parts[i] = parts[i] + '\n'
+                    added += 1
                 zh_text = '。'.join(parts)
-        
+
         elif src_lines < tgt_lines:
             # 需要删除换行符
             diff = tgt_lines - src_lines
             for _ in range(diff):
                 zh_text = zh_text.replace('\n', '', 1)
-        
+
         tgt['zh'] = zh_text
         return tgt, f"Fixed newline count: {src_lines} vs {tgt_lines}"
     
