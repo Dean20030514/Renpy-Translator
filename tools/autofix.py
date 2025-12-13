@@ -118,7 +118,7 @@ def main():
     report_rows = []
     applied = 0
 
-    with src.open('r', encoding='utf-8', errors='ignore') as fin, out.open('w', encoding='utf-8') as fout:
+    with src.open('r', encoding='utf-8', errors='replace') as fin, out.open('w', encoding='utf-8') as fout:
         for line in fin:
             if not line.strip():
                 continue

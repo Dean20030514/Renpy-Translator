@@ -70,13 +70,13 @@ class ParsedFile:
 def read_text(path: str) -> List[str]:
     for enc in ENCODINGS:
         try:
-            with open(path, "r", encoding=enc, errors="ignore") as f:
+            with open(path, "r", encoding=enc, errors="replace") as f:
                 return f.read().splitlines()
         except (UnicodeDecodeError, OSError):
             # 尝试下一种编码
             continue
     # 最后一次显式使用 utf-8 忽略错误，保证有编码且不触发 lint 警告
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         return f.read().splitlines()
 
 

@@ -76,13 +76,26 @@ def looks_like_asset(s: str) -> bool:
     return False
 
 def looks_like_text(s: str, min_len: int) -> bool:
-    if len(s.strip()) < min_len:
+    """检查字符串是否像是需要翻译的文本
+
+    Args:
+        s: 输入字符串
+        min_len: 最小长度要求
+
+    Returns:
+        是否为有效文本
+    """
+    stripped = s.strip()
+    if len(stripped) < min_len:
         return False
-    # 有字母或中日韩统一表意文字
-    if re.search(r'[A-Za-z\u4e00-\u9fff]', s):
+
+    # 有字母或中日韩统一表意文字 - 明确需要翻译
+    if re.search(r'[A-Za-z\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', stripped):
         return True
-    # 允许极短 UI 令牌
-    return True
+
+    # 纯数字、纯标点或纯符号 - 不需要翻译
+    # 只有当包含实际文字内容时才返回 True
+    return False
 
 def compute_hash_id(file_rel: str, line: int, idx: int, en: str, prev_line: str, next_line: str) -> str:
     """计算条目的唯一哈希 ID（使用 SHA256）"""
@@ -104,7 +117,7 @@ def compute_semantic(en_text: str) -> str:
 def extract_from_file(path: Path, root: Path, include_single=True, include_triple=True, skip_comments=True, min_len=1):
     rel = path.relative_to(root).as_posix()
     items = []
-    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     n = len(lines)
 
     def prev_nonempty(i):

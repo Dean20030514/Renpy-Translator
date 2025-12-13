@@ -329,23 +329,17 @@ class MultiLevelValidator:
     def _autofix_duplicate_punct(self, tgt: dict) -> tuple[dict, str]:
         """自动修复重复标点"""
         zh_text = tgt.get('zh', '')
-        original = zh_text
-        
-        # 替换重复标点
-        replacements = {
-            '。。': '。',
-            '，，': '，',
-            '！！': '！',
-            '？？': '？',
-            '  ': ' '  # 多个空格
-        }
-        
-        for dup, single in replacements.items():
-            while dup in zh_text:
-                zh_text = zh_text.replace(dup, single)
-        
+
+        # 使用正则表达式一次性替换连续的重复标点
+        # 比 while 循环更高效，O(n) vs O(n²)
+        zh_text = re.sub(r'。{2,}', '。', zh_text)
+        zh_text = re.sub(r'，{2,}', '，', zh_text)
+        zh_text = re.sub(r'！{2,}', '！', zh_text)
+        zh_text = re.sub(r'？{2,}', '？', zh_text)
+        zh_text = re.sub(r' {2,}', ' ', zh_text)  # 多个空格
+
         tgt['zh'] = zh_text
-        return tgt, f"Removed duplicate punctuation"
+        return tgt, "Removed duplicate punctuation"
     
     def generate_report(self, format: str = 'html', output_path: Optional[str] = None) -> str:
         """

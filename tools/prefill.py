@@ -161,7 +161,7 @@ def main():
             # 流式读取并落库
             if p.suffix.lower() == '.jsonl':
                 batch = []
-                with p.open('r', encoding='utf-8', errors='ignore') as f:
+                with p.open('r', encoding='utf-8', errors='replace') as f:
                     for line in f:
                         if not line.strip():
                             continue
@@ -183,7 +183,7 @@ def main():
                     sqlite_put_many(conn, batch, layer)
             elif p.suffix.lower() == '.csv':
                 batch = []
-                with p.open('r', encoding='utf-8', newline='', errors='ignore') as f:
+                with p.open('r', encoding='utf-8', newline='', errors='replace') as f:
                     r = csv.DictReader(f)
                     for row in r:
                         en = row.get('variant_en') or row.get('canonical_en') or row.get('en') or row.get('english')
@@ -220,7 +220,7 @@ def main():
             alias_p = Path(args.alias)
             alias_pairs: list[tuple[str,str]] = []  # (alias_en, canonical_en)
             def _load_alias_jsonl(p: Path):
-                with p.open('r', encoding='utf-8', errors='ignore') as f:
+                with p.open('r', encoding='utf-8', errors='replace') as f:
                     for line in f:
                         if not line.strip():
                             continue
@@ -233,7 +233,7 @@ def main():
                         if a and c:
                             alias_pairs.append((a, c))
             def _load_alias_csv(p: Path):
-                with p.open('r', encoding='utf-8', newline='', errors='ignore') as f:
+                with p.open('r', encoding='utf-8', newline='', errors='replace') as f:
                     r = csv.DictReader(f)
                     for row in r:
                         a = (row.get('alias_en') or row.get('alias') or '').strip()
@@ -352,7 +352,7 @@ def main():
         _console.print(f"[bold cyan]Prefilling[/] from [magenta]{src}[/] using dict [magenta]{Path(args.dict_path)}[/]")
 
     # 预读行数以更好展示进度（若文件极大亦可按流式计数）
-    lines = src.read_text(encoding='utf-8', errors='ignore').splitlines()
+    lines = src.read_text(encoding='utf-8', errors='replace').splitlines()
     with out.open('w', encoding='utf-8') as fout:
         iterator = lines
         if _console:

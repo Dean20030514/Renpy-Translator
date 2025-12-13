@@ -23,13 +23,19 @@ Ren'Py 汉化工具集 - 命令行入口
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
 
 # 获取工具目录
 TOOLS_DIR = Path(__file__).parent.parent.parent / "tools"
+
+# 参数长度限制（防止命令行溢出）
+MAX_ARG_LENGTH = 32768
+MAX_TOTAL_ARGS_LENGTH = 131072
 
 
 def get_available_tools() -> dict[str, Path]:
@@ -46,11 +52,63 @@ def get_available_tools() -> dict[str, Path]:
     return tools
 
 
+def _validate_args(args: list[str]) -> bool:
+    """验证命令行参数的安全性
+
+    Args:
+        args: 命令行参数列表
+
+    Returns:
+        参数是否有效
+    """
+    total_length = 0
+    for arg in args:
+        # 检查单个参数长度
+        if len(arg) > MAX_ARG_LENGTH:
+            logger.error(f"参数过长（>{MAX_ARG_LENGTH} 字符）")
+            return False
+        total_length += len(arg)
+
+    # 检查总长度
+    if total_length > MAX_TOTAL_ARGS_LENGTH:
+        logger.error(f"参数总长度过大（>{MAX_TOTAL_ARGS_LENGTH} 字符）")
+        return False
+
+    return True
+
+
 def run_tool(tool_path: Path, args: list[str]) -> int:
-    """运行指定的工具"""
+    """运行指定的工具
+
+    Args:
+        tool_path: 工具脚本路径
+        args: 命令行参数列表
+
+    Returns:
+        工具的退出码
+    """
+    # 验证工具路径在预期目录内
+    try:
+        tool_path.resolve().relative_to(TOOLS_DIR.resolve())
+    except ValueError:
+        logger.error(f"工具路径不在允许的目录内: {tool_path}")
+        return 1
+
+    # 验证参数
+    if not _validate_args(args):
+        return 1
+
     cmd = [sys.executable, str(tool_path)] + args
-    result = subprocess.run(cmd, check=False)
-    return result.returncode
+
+    try:
+        result = subprocess.run(cmd, check=False)
+        return result.returncode
+    except OSError as e:
+        logger.error(f"运行工具失败: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"运行工具时发生意外错误: {e}")
+        return 1
 
 
 def main():

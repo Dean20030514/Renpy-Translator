@@ -228,7 +228,7 @@ def main():
     if getattr(args, "tm", None):
         tp = Path(args.tm)
         if tp.suffix.lower() == '.jsonl':
-            with tp.open('r', encoding='utf-8', errors='ignore') as f:
+            with tp.open('r', encoding='utf-8', errors='replace') as f:
                 for line in f:
                     if not line.strip():
                         continue
@@ -241,7 +241,7 @@ def main():
                     if en:
                         tm_cands[en] = [c.get('zh') for c in cands if isinstance(c, dict) and c.get('zh')]
         elif tp.suffix.lower() == '.csv':
-            with tp.open('r', encoding='utf-8', newline='', errors='ignore') as f:
+            with tp.open('r', encoding='utf-8', newline='', errors='replace') as f:
                 r = csv.DictReader(f)
                 for row in r:
                     en = (row.get('en') or '').lower()
