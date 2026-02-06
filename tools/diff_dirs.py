@@ -11,14 +11,42 @@ Diff CN-EN — 目录级对比生成结构与缺失报告（可替代 顶层/校
   - 输出 summary.json / summary.csv 与每对文件的报告 Markdown、缺失片段 snippets。
 """
 from __future__ import annotations
-import os, re, csv, argparse, json, sys, pathlib
-from typing import List, Dict, Tuple
+
+import os
+import re
+import csv
+import argparse
+import json
+import sys
+import pathlib
+from typing import List, Dict, Tuple, Any
 import concurrent.futures
+
+# 添加 src 到路径
+_project_root = pathlib.Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 统一日志
+try:
+    from renpy_tools.utils.logger import get_logger
+    _logger = get_logger("diff_dirs")
+except ImportError:
+    _logger = None
+
+def _log(level: str, msg: str) -> None:
+    """统一日志输出"""
+    if _logger:
+        getattr(_logger, level, _logger.info)(msg)
+    elif level in ("warning", "error"):
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}")
 
 try:
     from renpy_tools.diff.parser import parse_rpy, align_by_speaker  # type: ignore
 except (ImportError, ModuleNotFoundError):
-    print("[ERROR] renpy_tools.diff.parser not available. Please run inside repo or install the package.", file=sys.stderr)
+    _log("error", "renpy_tools.diff.parser not available. Please run inside repo or install the package.")
     sys.exit(2)
 
 IMAGEBUTTON_JUMP_RE = re.compile(r"action\s+Jump\(\s*'([^']+)'\s*\)")

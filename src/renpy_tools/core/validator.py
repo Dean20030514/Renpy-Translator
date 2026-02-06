@@ -5,6 +5,7 @@
 - 分级检查（Critical / Warning / Info）
 - 自动修复（占位符、换行符、重复标点）
 - HTML 可视化报告
+- 新增：标签配对检查、术语一致性、英文残留检测
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from typing import Optional
 from collections import Counter
 
 from ..utils.placeholder import ph_multiset
+from ..utils.common import PH_RE
 
 # 获取模块级 logger
 logger = logging.getLogger(__name__)
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 class MultiLevelValidator:
     """多级别质量检查器"""
     
-    # 检查规则配置
+    # 检查规则配置（扩展版）
     DEFAULT_CHECKS = {
         'placeholder': {'level': 'critical', 'autofix': True},
         'newline': {'level': 'critical', 'autofix': True},
@@ -33,7 +35,27 @@ class MultiLevelValidator:
         'untranslated': {'level': 'warning', 'autofix': False},
         'duplicate_punct': {'level': 'info', 'autofix': True},
         'empty': {'level': 'critical', 'autofix': False},
+        # 新增检查规则
+        'tag_mismatch': {'level': 'critical', 'autofix': True},
+        'english_leakage': {'level': 'warning', 'autofix': False},
+        'number_mismatch': {'level': 'warning', 'autofix': False},
+        'term_consistency': {'level': 'info', 'autofix': False},
     }
+    
+    # Ren'Py 标签正则
+    _TAG_OPEN_RE = re.compile(r'\{(i|b|u|color|a|size|font|alpha)(?:=[^}]*)?\}')
+    _TAG_CLOSE_RE = re.compile(r'\{/(i|b|u|color|a|size|font|alpha)\}')
+    
+    # 英文单词检测（排除常见缩写）
+    _ENGLISH_WORD_RE = re.compile(r'\b[a-zA-Z]{3,}\b')
+    _ALLOWED_ENGLISH = frozenset({
+        'ok', 'pc', 'cpu', 'gpu', 'ui', 'api', 'app', 'id', 'ip', 'url',
+        'dna', 'rna', 'vip', 'npc', 'rpg', 'fps', 'hp', 'mp', 'sp', 'exp',
+        'xxx', 'www', 'http', 'https', 'wifi', 'gps', 'usb', 'pdf', 'jpg', 'png',
+    })
+    
+    # 数字检测
+    _NUMBER_RE = re.compile(r'\d+(?:\.\d+)?')
     
     def __init__(self, config: Optional[dict] = None):
         """
@@ -44,6 +66,15 @@ class MultiLevelValidator:
         """
         self.config = config or self.DEFAULT_CHECKS
         self.issues = {'critical': [], 'warning': [], 'info': []}
+        self._term_dict: dict[str, str] = {}  # 术语字典
+    
+    def set_term_dict(self, term_dict: dict[str, str]) -> None:
+        """设置术语字典用于一致性检查
+        
+        Args:
+            term_dict: {英文术语: 中文翻译}
+        """
+        self._term_dict = {k.lower(): v for k, v in term_dict.items()}
     
     def reset(self):
         """重置问题列表"""
@@ -127,6 +158,33 @@ class MultiLevelValidator:
                     if self._can_autofix('duplicate_punct'):
                         tgt, fix = self._autofix_duplicate_punct(tgt)
                         fixes_applied.append(fix)
+            
+            # 7. 标签配对检查 (新增)
+            if self._should_check('tag_mismatch'):
+                issue = self._check_tag_mismatch(src, tgt)
+                if issue:
+                    self._add_issue(issue)
+                    if self._can_autofix('tag_mismatch'):
+                        tgt, fix = self._autofix_tag_mismatch(src, tgt)
+                        fixes_applied.append(fix)
+            
+            # 8. 英文泄露检查 (新增)
+            if self._should_check('english_leakage'):
+                issue = self._check_english_leakage(tgt)
+                if issue:
+                    self._add_issue(issue)
+            
+            # 9. 数字一致性检查 (新增)
+            if self._should_check('number_mismatch'):
+                issue = self._check_number_mismatch(src, tgt)
+                if issue:
+                    self._add_issue(issue)
+            
+            # 10. 术语一致性检查 (新增)
+            if self._should_check('term_consistency'):
+                issue = self._check_term_consistency(tgt)
+                if issue:
+                    self._add_issue(issue)
             
             # 记录修复
             if fixes_applied:
@@ -340,6 +398,159 @@ class MultiLevelValidator:
 
         tgt['zh'] = zh_text
         return tgt, "Removed duplicate punctuation"
+    
+    # ========== 新增检查方法 ==========
+    
+    def _check_tag_mismatch(self, src: dict, tgt: dict) -> Optional[dict]:
+        """检查 Ren'Py 标签配对是否正确"""
+        zh_text = tgt.get('zh', '')
+        if not zh_text:
+            return None
+        
+        # 提取开标签和闭标签
+        open_tags = self._TAG_OPEN_RE.findall(zh_text)
+        close_tags = self._TAG_CLOSE_RE.findall(zh_text)
+        
+        # 统计配对
+        open_counter = Counter(open_tags)
+        close_counter = Counter(close_tags)
+        
+        mismatches = []
+        all_tags = set(open_counter.keys()) | set(close_counter.keys())
+        
+        for tag in all_tags:
+            open_count = open_counter.get(tag, 0)
+            close_count = close_counter.get(tag, 0)
+            if open_count != close_count:
+                mismatches.append(f"{tag}({open_count} open, {close_count} close)")
+        
+        if mismatches:
+            return {
+                'level': 'critical',
+                'id': tgt['id'],
+                'type': 'tag_mismatch',
+                'message': f"Tag mismatch: {', '.join(mismatches)}"
+            }
+        
+        return None
+    
+    def _check_english_leakage(self, tgt: dict) -> Optional[dict]:
+        """检查英文泄露（大量未翻译的英文单词）"""
+        zh_text = tgt.get('zh', '')
+        if not zh_text:
+            return None
+        
+        # 移除占位符后再检查
+        clean_text = PH_RE.sub('', zh_text)
+        
+        # 提取所有英文单词
+        words = self._ENGLISH_WORD_RE.findall(clean_text)
+        
+        # 过滤允许的单词
+        suspicious = [w for w in words if w.lower() not in self._ALLOWED_ENGLISH]
+        
+        # 如果超过3个可疑英文单词，报警告
+        if len(suspicious) > 3:
+            return {
+                'level': 'warning',
+                'id': tgt['id'],
+                'type': 'english_leakage',
+                'message': f"Possible untranslated content: {suspicious[:5]}..."
+            }
+        
+        return None
+    
+    def _check_number_mismatch(self, src: dict, tgt: dict) -> Optional[dict]:
+        """检查数字是否保持一致"""
+        en_text = src.get('en', '')
+        zh_text = tgt.get('zh', '')
+        
+        if not en_text or not zh_text:
+            return None
+        
+        # 提取数字
+        en_numbers = set(self._NUMBER_RE.findall(en_text))
+        zh_numbers = set(self._NUMBER_RE.findall(zh_text))
+        
+        # 检查是否一致
+        missing = en_numbers - zh_numbers
+        extra = zh_numbers - en_numbers
+        
+        if missing or extra:
+            msg_parts = []
+            if missing:
+                msg_parts.append(f"missing: {missing}")
+            if extra:
+                msg_parts.append(f"extra: {extra}")
+            return {
+                'level': 'warning',
+                'id': tgt['id'],
+                'type': 'number_mismatch',
+                'message': f"Number mismatch - {', '.join(msg_parts)}"
+            }
+        
+        return None
+    
+    def _check_term_consistency(self, tgt: dict) -> Optional[dict]:
+        """检查术语一致性"""
+        if not self._term_dict:
+            return None
+        
+        zh_text = tgt.get('zh', '')
+        if not zh_text:
+            return None
+        
+        inconsistent = []
+        for en_term, expected_zh in self._term_dict.items():
+            # 如果译文中应该有某个术语的翻译但用了不同的翻译
+            # 这里简单检查：如果原文有术语，译文应该包含对应翻译
+            en_text = tgt.get('en', '')
+            if en_term.lower() in en_text.lower():
+                if expected_zh not in zh_text:
+                    inconsistent.append(f"'{en_term}' should be '{expected_zh}'")
+        
+        if inconsistent:
+            return {
+                'level': 'info',
+                'id': tgt['id'],
+                'type': 'term_inconsistent',
+                'message': f"Term inconsistency: {', '.join(inconsistent[:3])}"
+            }
+        
+        return None
+    
+    def _autofix_tag_mismatch(self, src: dict, tgt: dict) -> tuple[dict, str]:
+        """自动修复标签不匹配"""
+        en_text = src.get('en', '')
+        zh_text = tgt.get('zh', '')
+        
+        # 从原文提取标签结构
+        en_open = self._TAG_OPEN_RE.findall(en_text)
+        en_close = self._TAG_CLOSE_RE.findall(en_text)
+        
+        # 从译文提取标签
+        zh_open = self._TAG_OPEN_RE.findall(zh_text)
+        zh_close = self._TAG_CLOSE_RE.findall(zh_text)
+        
+        fixed = False
+        
+        # 检查缺失的闭标签
+        zh_open_counter = Counter(zh_open)
+        zh_close_counter = Counter(zh_close)
+        
+        for tag, count in zh_open_counter.items():
+            close_count = zh_close_counter.get(tag, 0)
+            if count > close_count:
+                # 缺少闭标签，在末尾添加
+                for _ in range(count - close_count):
+                    zh_text += f"{{/{tag}}}"
+                    fixed = True
+        
+        tgt['zh'] = zh_text
+        msg = "Added missing close tags" if fixed else "No fix needed"
+        return tgt, msg
+    
+    # ========== 结束新增方法 ==========
     
     def generate_report(self, format: str = 'html', output_path: Optional[str] = None) -> str:
         """

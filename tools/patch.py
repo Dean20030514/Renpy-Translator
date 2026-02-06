@@ -19,44 +19,46 @@ import concurrent.futures
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from collections import namedtuple
 from typing import List, Optional, Tuple
 
-# 占位符匹配：不将样式标签({i},{/i},{color=...})计入
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 统一导入（从 common.py 获取，避免重复定义）
 try:
-    from renpy_tools.utils.placeholder import PH_RE as _PH_RE, compute_semantic_signature as _comp_sig, normalize_for_signature as _norm_sig  # type: ignore
-except (ImportError, ModuleNotFoundError):
-    _PH_RE = None
+    from renpy_tools.utils.common import PH_RE, TRANS_KEYS
+    from renpy_tools.utils.placeholder import compute_semantic_signature as _comp_sig, normalize_for_signature as _norm_sig
+except ImportError:
+    # Fallback
+    PH_RE = re.compile(
+        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+    )
+    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
     _comp_sig = None
     _norm_sig = None
-PH_RE = _PH_RE or re.compile(
-    r"\[[A-Za-z_][A-Za-z0-9_]*\]"                       # [name]
-    r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"  # %s, %02d, %(name)s, %.2f, %x, %o
-    r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"                  # {0} {0:.2f} {0!r:>8}
-    r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}" # {name!r:>8}
-)
+
 try:
-    from rapidfuzz import fuzz as _fuzz  # type: ignore
-except (ImportError, ModuleNotFoundError):  # pragma: no cover - 可选依赖
+    from rapidfuzz import fuzz as _fuzz
+except ImportError:
     _fuzz = None
+
 DQ_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
 SQ_RE = re.compile(r"'((?:\\.|[^'\\])*)'")
-
-# 从公共模块导入翻译字段键，保持一致性
-try:
-    from renpy_tools.utils.common import TRANS_KEYS as _TRANS_KEYS  # type: ignore
-except (ImportError, ModuleNotFoundError):
-    _TRANS_KEYS = None
-TRANS_KEYS = _TRANS_KEYS or ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
-
 TRIPLE_QUOTES = {"'''", '"""'}
 
 # 可选：统一文本写入（自动创建父目录，原子写入）
 try:
-    from renpy_tools.utils.io import write_text_file as _write_text_file  # type: ignore
-except (ImportError, ModuleNotFoundError):
+    from renpy_tools.utils.io import write_text_file as _write_text_file
+except ImportError:
     def _write_text_file(path: str | Path, text: str, encoding: str = 'utf-8', atomic: bool = True):
         """写入文本文件，支持原子写入"""
         p = Path(path)
@@ -762,6 +764,9 @@ def main():
         # 高级模式
         print("[高级模式] 使用五级智能匹配策略")
 
+        # 大文件警告阈值（50MB）
+        LARGE_FILE_THRESHOLD = 50 * 1024 * 1024
+
         # 仅处理有翻译项的文件
         targets = []
         for p in files:
@@ -773,6 +778,12 @@ def main():
         def do_one(p: Path):
             rel = p.relative_to(root).as_posix()
             local_reports = []
+            
+            # 大文件警告
+            file_size = p.stat().st_size
+            if file_size > LARGE_FILE_THRESHOLD:
+                print(f"[WARN] 大文件（{file_size // (1024*1024)}MB）: {rel}，可能需要较长时间")
+            
             orig_text = p.read_text(encoding="utf-8", errors="ignore")
             patched_text, modified = patch_file_advanced(orig_text, rel, trans, local_reports)
             return rel, orig_text, patched_text, modified, local_reports

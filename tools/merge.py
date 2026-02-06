@@ -11,57 +11,60 @@ merge.py — 合并 LLM 翻译结果回到 JSONL，并检测缺失/冲突
 - 合并策略：仅在原对象无译文时才写入 zh（避免覆盖人工/字典/TM 已有）
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import csv
+import sys
 from pathlib import Path
+from typing import Dict, Set, Optional, List, Any
 
-# 尝试导入通用工具函数
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 尝试导入统一日志
 try:
-    from renpy_tools.utils import get_id, get_zh, ph_multiset, TRANS_KEYS  # type: ignore
-    _HAS_UTILS = True
-except (ImportError, ModuleNotFoundError):
-    _HAS_UTILS = False
-    # 回退定义
-    import re
+    from renpy_tools.utils.logger import get_logger, FileOperationError
+    logger = get_logger("merge")
+except ImportError:
+    logger = None
+    class FileOperationError(Exception):
+        pass
 
-    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
-    _PH_RE = re.compile(
-        r"\[[A-Za-z_][A-Za-z0-9_]*\]|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]|"
-        r"\{\d+(?:![rsa])?(?::[^{}]+)?\}|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
-    )
-    
-    def get_id(o: dict):
-        if o.get("id"):
-            return o["id"]
-        if o.get("id_hash"):
-            return o["id_hash"]
-        if all(k in o for k in ("file", "line", "idx")):
-            return f"{o['file']}:{o['line']}:{o['idx']}"
-        return None
-    
-    def get_zh(o: dict):
-        for k in TRANS_KEYS:
-            v = o.get(k)
-            if v is not None and str(v).strip() != "":
-                return k, str(v)
-        return None, None
-    
-    def ph_multiset(s: str) -> dict[str, int]:
-        """Fallback: Count placeholder occurrences"""
-        cnt: dict[str, int] = {}
-        for m in _PH_RE.findall(s or ""):
-            cnt[m] = cnt.get(m, 0) + 1
-        return cnt
+# 统一导入（从 common.py 获取，避免重复定义）
+try:
+    from renpy_tools.utils.common import get_id, get_zh, ph_multiset, TRANS_KEYS
+except ImportError:
+    # 极端情况下的后备（几乎不会触发）
+    from renpy_tools.utils import get_id, get_zh, ph_multiset, TRANS_KEYS
 
 
-def extract_zh(o: dict):
-    """提取译文内容（只返回值，不返回字段名）"""
+def _log(msg: str, level: str = "info") -> None:
+    """统一日志输出"""
+    if logger:
+        getattr(logger, level)(msg)
+    else:
+        prefix = {"warning": "[WARN]", "error": "[ERROR]"}.get(level, "[INFO]")
+        print(f"{prefix} {msg}")
+
+
+def extract_zh(o: Dict[str, Any]) -> Optional[str]:
+    """提取译文内容（只返回值，不返回字段名）
+    
+    Args:
+        o: 包含译文的字典对象
+        
+    Returns:
+        译文字符串，如果没有则返回 None
+    """
     _, value = get_zh(o)
     return value
 
 
-def load_llm_dir(p: Path) -> dict:
+def load_llm_dir(p: Path) -> Dict[str, Set[str]]:
     """
     Load translations from LLM output directory.
     
@@ -70,13 +73,22 @@ def load_llm_dir(p: Path) -> dict:
         
     Returns:
         Dictionary mapping id to set of translations
+        
+    Raises:
+        FileOperationError: If path doesn't exist
     """
-    merged = {}
-    files = []
+    if not p.exists():
+        raise FileOperationError(f"LLM output path not found: {p}", file_path=p)
+    
+    merged: Dict[str, Set[str]] = {}
+    files: List[Path] = []
+    
     if p.is_dir():
         files = sorted([x for x in p.glob("*.jsonl")])
+        _log(f"Found {len(files)} JSONL files in directory")
     else:
         files = [p]
+        
     for f in files:
         with f.open("r", encoding="utf-8") as fh:
             for line in fh:

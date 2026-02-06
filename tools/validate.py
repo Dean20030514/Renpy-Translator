@@ -16,45 +16,71 @@ import argparse
 import csv
 import json
 import re
+import sys
 import unicodedata
 from pathlib import Path
+from typing import Any
 
-# 从公共模块导入翻译字段键
-try:
-    from renpy_tools.utils.common import TRANS_KEYS as _TRANS_KEYS  # type: ignore
-except (ImportError, ModuleNotFoundError):
-    _TRANS_KEYS = None
-TRANS_KEYS = _TRANS_KEYS or ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
 
-# 可选：复用通用占位符/变量/签名工具
+# 统一日志
 try:
+    from renpy_tools.utils.logger import get_logger, ValidationError
+    _logger = get_logger("validate")
+except ImportError:
+    _logger = None
+    ValidationError = ValueError
+
+def _log(level: str, msg: str) -> None:
+    """统一日志输出"""
+    if _logger:
+        getattr(_logger, level, _logger.info)(msg)
+    elif level in ("warning", "error"):
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}")
+
+# 统一导入（从 common.py 获取，避免重复定义）
+try:
+    from renpy_tools.utils.common import (
+        TRANS_KEYS, PH_RE, RENPY_PAIRED_TAGS,
+        ph_set as _ph_set, ph_multiset, strip_renpy_tags as _strip_renpy_tags,
+        load_jsonl, get_id
+    )
     from renpy_tools.utils.placeholder import (
-        PH_RE as _PH_RE,
-        ph_set as _ph_set,
         extract_var_name_counts as _extract_var_name_counts,
-        strip_renpy_tags as _strip_renpy_tags,
         compute_semantic_signature as _compute_semantic_signature,
-    )  # type: ignore
-except (ImportError, ModuleNotFoundError):
-    _PH_RE = None
+    )
+except ImportError:
+    # Fallback（仅用于独立运行时）
+    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
+    RENPY_PAIRED_TAGS = frozenset({"i", "b", "u", "color", "a", "size", "font", "alpha"})
+    PH_RE = re.compile(
+        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+    )
     _ph_set = None
-    _extract_var_name_counts = None
     _strip_renpy_tags = None
+    _extract_var_name_counts = None
     _compute_semantic_signature = None
-
-PH_RE = _PH_RE or re.compile(
-    r"\[[A-Za-z_][A-Za-z0-9_]*\]"                       # [name]
-    r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"  # %s, %02d, %(name)s, %.2f, %x, %o, ...
-    r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"                             # {0} / {0:...} / {0!r}
-    r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"                # {name!r:>8}
-)
+    load_jsonl = None
+    get_id = None
 
 TAG_OPEN_RE = re.compile(r"\{(i|b|u|color(?:=[^}]+)?|a(?:=[^}]+)?|size(?:=[^}]+)?|font(?:=[^}]+)?|alpha(?:=[^}]+)?)\}")
 TAG_CLOSE_RE = re.compile(r"\{/(i|b|u|color|a|size|font|alpha)\}")
 END_PUNCT_EN = re.compile(r"[\.!?\u2026]\s*$")  # . ! ? …
 END_PUNCT_ZH = re.compile(r"[。！？……]\s*$")
 
-def load_jsonl(p):
+
+def _load_jsonl(p):
+    """加载 JSONL 文件（兼容函数）"""
+    if load_jsonl:
+        return load_jsonl(p)
     out = []
     with open(p, "r", encoding="utf-8") as f:
         for line in f:
@@ -63,7 +89,11 @@ def load_jsonl(p):
             out.append(json.loads(line))
     return out
 
+
 def any_id(o):
+    """获取条目 ID（兼容函数）"""
+    if get_id:
+        return get_id(o)
     if o.get("id"): return o["id"]
     if o.get("id_hash"): return o["id_hash"]
     if all(k in o for k in ("file","line","idx")):

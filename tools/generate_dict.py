@@ -29,8 +29,31 @@ import argparse
 import csv
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Any
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 统一日志
+try:
+    from renpy_tools.utils.logger import get_logger
+    _logger = get_logger("generate_dict")
+except ImportError:
+    _logger = None
+
+def _log(level: str, msg: str) -> None:
+    """统一日志输出"""
+    if _logger:
+        getattr(_logger, level, _logger.info)(msg)
+    elif level in ("warning", "error"):
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}")
 
 
 # ========================================

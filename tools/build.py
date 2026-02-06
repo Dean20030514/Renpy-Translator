@@ -17,10 +17,29 @@ Build CN Package — 生成中文构建目录，避免双载冲突
 注意：本脚本不修改原项目目录，仅生成新的构建目录。
 """
 
-import argparse, shutil, sys
-from pathlib import Path
+from __future__ import annotations
 
-DEFAULT_EXCLUDES = {"saves", "cache", "tmp", ".git", "__pycache__"}
+import argparse
+import shutil
+import sys
+from pathlib import Path
+from typing import Set, Optional
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+DEFAULT_EXCLUDES: Set[str] = {"saves", "cache", "tmp", ".git", "__pycache__"}
+
+# 尝试导入统一日志
+try:
+    from renpy_tools.utils.logger import get_logger, FileOperationError
+    logger = get_logger("build")
+except ImportError:
+    logger = None
+    class FileOperationError(Exception):
+        pass
 
 # 可选：彩色日志
 try:
@@ -29,8 +48,21 @@ try:
 except ImportError:  # 可选
     _console = None
 
+
+def _log(msg: str, level: str = "info") -> None:
+    """统一日志输出"""
+    if logger:
+        getattr(logger, level)(msg)
+    elif _console:
+        style = {"info": "dim", "warning": "yellow", "error": "red"}.get(level, "")
+        _console.print(f"[{style}]{msg}[/]")
+    else:
+        print(msg)
+
+
 # 统一 IO 写入函数（延迟导入，避免静态分析导入错误；不可用时使用回退实现）
 def _write_text_file_compat(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """兼容的文件写入函数"""
     try:
         from renpy_tools.utils.io import write_text_file as _wtf  # type: ignore
         _wtf(path, text, encoding=encoding)
@@ -39,13 +71,20 @@ def _write_text_file_compat(path: Path, text: str, encoding: str = "utf-8") -> N
         path.write_text(text, encoding=encoding)
 
 
-def copy_project(src: Path, dst: Path, exclude_dirs: set):
+def copy_project(src: Path, dst: Path, exclude_dirs: Set[str]) -> None:
+    """复制项目目录结构
+    
+    Args:
+        src: 源目录
+        dst: 目标目录
+        exclude_dirs: 要排除的目录名集合
+    """
     if dst.exists():
         shutil.rmtree(dst)
     dst.mkdir(parents=True, exist_ok=True)
     iter_paths = list(src.rglob("*"))
-    if _console:
-        _console.print(f"[dim]Copying project tree ({len(iter_paths)} entries) ...[/]")
+    _log(f"Copying project tree ({len(iter_paths)} entries) ...")
+    
     for p in iter_paths:
         rel = p.relative_to(src)
         if any(part in exclude_dirs for part in rel.parts):
@@ -58,7 +97,7 @@ def copy_project(src: Path, dst: Path, exclude_dirs: set):
             shutil.copy2(p, outp)
 
 
-def apply_mirror_overwrite(dst_root: Path, zh_mirror_root: Path):
+def apply_mirror_overwrite(dst_root: Path, zh_mirror_root: Path) -> None:
     """将 zh_mirror_root 中生成的 .zh.rpy 内容覆盖到 dst_root 的同名 .rpy 中，并移除任何 .zh.rpy 文件。"""
     # 1) 用 .zh.rpy 内容替换对应的 .rpy
     replaced = 0

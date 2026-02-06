@@ -25,9 +25,32 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 from urllib import request as urlreq
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 统一日志
+try:
+    from renpy_tools.utils.logger import get_logger, ValidationError
+    _logger = get_logger("fix_leakage")
+except ImportError:
+    _logger = None
+    ValidationError = ValueError
+
+def _log(level: str, msg: str) -> None:
+    """统一日志输出"""
+    if _logger:
+        getattr(_logger, level, _logger.info)(msg)
+    elif level in ("warning", "error"):
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}")
 
 # 常见的Ren'Py变量和专有名词模式
 ALLOWED_ENGLISH = {

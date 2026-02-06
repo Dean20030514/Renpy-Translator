@@ -131,6 +131,157 @@ def kv_set(key: str, value: str, db_path: Optional[str | Path] = None) -> bool:
         return False
 
 
+def kv_set_batch(
+    items: list[tuple[str, str]],
+    db_path: Optional[str | Path] = None,
+    chunk_size: int = 500
+) -> tuple[int, int]:
+    """
+    批量设置缓存值（高效）
+
+    Args:
+        items: (key, value) 元组列表
+        db_path: 可选的数据库路径
+        chunk_size: 每批提交的数量（防止事务过大）
+
+    Returns:
+        (成功数, 失败数)
+    """
+    if not items:
+        return 0, 0
+    
+    success_count = 0
+    fail_count = 0
+    
+    try:
+        conn = _get_conn(db_path)
+        
+        # 分块处理，避免事务过大
+        for i in range(0, len(items), chunk_size):
+            chunk = items[i:i + chunk_size]
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)",
+                    chunk
+                )
+                conn.commit()
+                success_count += len(chunk)
+            except sqlite3.Error as e:
+                logger.warning(f"Batch write failed for chunk {i//chunk_size}: {e}")
+                # 回退到单条写入
+                for key, value in chunk:
+                    if kv_set(key, value, db_path):
+                        success_count += 1
+                    else:
+                        fail_count += 1
+        
+        return success_count, fail_count
+        
+    except sqlite3.Error as e:
+        logger.error(f"Batch cache write failed: {e}")
+        return success_count, len(items) - success_count
+
+
+def kv_get_batch(
+    keys: list[str],
+    db_path: Optional[str | Path] = None
+) -> dict[str, Optional[str]]:
+    """
+    批量获取缓存值
+
+    Args:
+        keys: 缓存键列表
+        db_path: 可选的数据库路径
+
+    Returns:
+        {key: value} 字典，未找到的键值为 None
+    """
+    if not keys:
+        return {}
+    
+    result = {k: None for k in keys}
+    
+    try:
+        conn = _get_conn(db_path)
+        # 使用 IN 查询批量获取
+        placeholders = ','.join('?' * len(keys))
+        query = f"SELECT k, v FROM kv WHERE k IN ({placeholders})"
+        cur = conn.execute(query, keys)
+        
+        for row in cur.fetchall():
+            result[row[0]] = row[1]
+        
+        return result
+        
+    except sqlite3.Error as e:
+        logger.warning(f"Batch cache read failed: {e}")
+        return result
+    except (OSError, IOError) as e:
+        logger.warning(f"Cache I/O error: {e}")
+        return result
+
+
+def kv_delete(key: str, db_path: Optional[str | Path] = None) -> bool:
+    """
+    删除缓存值
+
+    Args:
+        key: 缓存键
+        db_path: 可选的数据库路径
+
+    Returns:
+        是否成功删除
+    """
+    try:
+        conn = _get_conn(db_path)
+        conn.execute("DELETE FROM kv WHERE k=?", (key,))
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        logger.warning(f"Cache delete failed for key '{key[:50]}...': {e}")
+        return False
+
+
+def kv_clear(db_path: Optional[str | Path] = None) -> bool:
+    """
+    清空所有缓存
+
+    Args:
+        db_path: 可选的数据库路径
+
+    Returns:
+        是否成功清空
+    """
+    try:
+        conn = _get_conn(db_path)
+        conn.execute("DELETE FROM kv")
+        conn.commit()
+        logger.info("Cache cleared")
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"Cache clear failed: {e}")
+        return False
+
+
+def kv_count(db_path: Optional[str | Path] = None) -> int:
+    """
+    获取缓存条目数
+
+    Args:
+        db_path: 可选的数据库路径
+
+    Returns:
+        缓存条目数
+    """
+    try:
+        conn = _get_conn(db_path)
+        cur = conn.execute("SELECT COUNT(*) FROM kv")
+        return cur.fetchone()[0]
+    except sqlite3.Error as e:
+        logger.warning(f"Cache count failed: {e}")
+        return 0
+
+
 def text_hash(s: str) -> str:
     """计算文本的 SHA256 哈希（用于缓存键）"""
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()

@@ -11,46 +11,85 @@ Enhanced extractor for Ren'Py .rpy
 - 输出：per-file JSONL、combined JSONL、TM 种子 CSV、manifest CSV
 """
 
-import re, csv, json, argparse, hashlib, concurrent.futures, os
+from __future__ import annotations
+
+import re
+import csv
+import json
+import argparse
+import hashlib
+import concurrent.futures
+import os
+import sys
 from pathlib import Path
 from collections import Counter
+from typing import Any, Iterator
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 统一日志
+try:
+    from renpy_tools.utils.logger import get_logger, FileOperationError
+    _logger = get_logger("extract")
+except ImportError:
+    _logger = None
+    FileOperationError = IOError
+
+def _log(level: str, msg: str) -> None:
+    """统一日志输出"""
+    if _logger:
+        getattr(_logger, level, _logger.info)(msg)
+    elif level in ("warning", "error"):
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}")
+
 # 可选：彩色日志与进度
 try:
-    from rich.console import Console  # type: ignore
-    from rich.progress import Progress, BarColumn, TimeElapsedColumn  # type: ignore
+    from rich.console import Console
+    from rich.progress import Progress, BarColumn, TimeElapsedColumn
     _console = Console()
-except ImportError:  # pragma: no cover - 可选依赖
+except ImportError:
     _console = None
+
 try:
-    from renpy_tools.utils.io import write_jsonl_lines as _write_jsonl_lines, ensure_parent_dir as _ensure_parent_dir  # type: ignore
-except (ImportError, ModuleNotFoundError):
+    from renpy_tools.utils.io import write_jsonl_lines as _write_jsonl_lines, ensure_parent_dir as _ensure_parent_dir
+except ImportError:
     _write_jsonl_lines = None
     _ensure_parent_dir = None
 
-ASSET_EXTS = (".png",".jpg",".jpeg",".webp",".ogg",".mp3",".wav",".webm",".mp4",".rpy",".rpa",".zip",".ttf",".otf")
-# 占位符匹配/语义签名：尽量复用通用工具
+# 统一导入（从 common.py 获取，避免重复定义）
 try:
-    from renpy_tools.utils.placeholder import ph_set as _ph_set, compute_semantic_signature as _comp_sig  # type: ignore
-except (ImportError, ModuleNotFoundError):
+    from renpy_tools.utils.common import PH_RE, ASSET_EXTS, ph_set as _ph_set
+    from renpy_tools.utils.placeholder import compute_semantic_signature as _comp_sig
+except ImportError:
+    # Fallback
+    ASSET_EXTS = (".png",".jpg",".jpeg",".webp",".ogg",".mp3",".wav",".webm",".mp4",".rpy",".rpa",".zip",".ttf",".otf")
+    PH_RE = re.compile(
+        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+    )
     _ph_set = None
     _comp_sig = None
 
-# 作为后备的占位符正则（与 utils 等价覆盖）
-PH_RE = re.compile(
-    r"\[[A-Za-z_][A-Za-z0-9_]*\]"                       # [name]
-    r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"  # %s, %02d, %(name)s, %.2f, %x, %o, ...
-    r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"                  # {0} {0:.2f} {0!r:>8}
-    r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}" # {name!r:>8}
-)
 LABEL_RE = re.compile(r'^\s*label\s+([A-Za-z0-9_\.]+)\s*:\s*$')
 PY_START_RE = re.compile(r'^\s*(init\s+python|python(\s+early)?)\s*:.*$')
 
+# Ren'Py 特殊语法支持
+TRANSLATE_BLOCK_RE = re.compile(r'^\s*translate\s+(\w+)\s+(\w+)\s*:\s*$')  # translate language label:
+NVL_CLEAR_RE = re.compile(r'^\s*nvl\s+(clear|show|hide)\s*$')
+MENU_RE = re.compile(r'^\s*menu\s*(?:\w+)?\s*:\s*$')  # menu: or menu label:
+MENU_OPTION_RE = re.compile(r'^\s*"([^"]+)"(\s+if\s+.+)?:\s*$')  # "Option text": or "Option text" if cond:
+DEFINE_RE = re.compile(r'^\s*define\s+\w+\s*=\s*Character\s*\(\s*["\']([^"\']+)["\']\s*[,)]')  # Character name
+
 # 单行引号（修复：排除缩写如 don't, aren't）
-# 双引号：保持原样
 DQ_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
-# 单引号：前面不能是字母数字（避免 aren't 等缩写）
 SQ_RE = re.compile(r"(?<![A-Za-z0-9])'((?:\\.|[^'\\])*)'(?![A-Za-z])")
-# 三引号
 TRI_OPEN_RE = re.compile(r'("""|\'\'\')')
 
 def leading_spaces(s: str) -> int:
@@ -135,6 +174,9 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
     in_python = False
     py_base = 0
     current_label = ""
+    in_translate_block = False  # 是否在 translate 块中
+    in_menu = False  # 是否在 menu 块中
+    menu_base_indent = 0
     i = 0
 
     while i < n:
@@ -144,6 +186,75 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
         m_lab = LABEL_RE.match(line)
         if m_lab:
             current_label = m_lab.group(1)
+        
+        # 检测 translate 块（跳过已翻译的内容）
+        m_trans = TRANSLATE_BLOCK_RE.match(line)
+        if m_trans:
+            in_translate_block = True
+            i += 1
+            continue
+        
+        # 退出 translate 块（遇到非缩进行）
+        if in_translate_block:
+            if line.strip() and not line.startswith((' ', '\t')):
+                in_translate_block = False
+            else:
+                i += 1
+                continue
+        
+        # 检测 menu 块
+        m_menu = MENU_RE.match(line)
+        if m_menu:
+            in_menu = True
+            menu_base_indent = leading_spaces(line)
+            i += 1
+            continue
+        
+        # 在 menu 块中检测选项
+        if in_menu:
+            current_indent = leading_spaces(line)
+            if line.strip() and current_indent <= menu_base_indent:
+                in_menu = False  # 退出 menu
+            else:
+                # 检测 menu 选项文本
+                m_opt = MENU_OPTION_RE.match(line)
+                if m_opt:
+                    en_text = m_opt.group(1)
+                    if looks_like_text(en_text, min_len) and not looks_like_asset(en_text):
+                        ph = sorted((_ph_set(en_text) if _ph_set else set(PH_RE.findall(en_text))))
+                        ap = prev_nonempty(i)
+                        an = next_nonempty(i)
+                        items.append({
+                            "id": f"{rel}:{i+1}:0",
+                            "id_hash": compute_hash_id(rel, i+1, 0, en_text, ap, an),
+                            "id_semantic": compute_semantic(en_text),
+                            "file": rel, "line": i+1, "col": 0, "idx": 0,
+                            "label": current_label, "en": en_text,
+                            "placeholders": ph, "anchor_prev": ap, "anchor_next": an,
+                            "quote": '"', "is_triple": False, "is_menu_option": True
+                        })
+                        i += 1
+                        continue
+        
+        # 检测 define Character（提取角色显示名称）
+        m_def = DEFINE_RE.match(line)
+        if m_def:
+            en_text = m_def.group(1)
+            if looks_like_text(en_text, min_len) and not looks_like_asset(en_text):
+                ph = sorted((_ph_set(en_text) if _ph_set else set(PH_RE.findall(en_text))))
+                ap = prev_nonempty(i)
+                an = next_nonempty(i)
+                items.append({
+                    "id": f"{rel}:{i+1}:0",
+                    "id_hash": compute_hash_id(rel, i+1, 0, en_text, ap, an),
+                    "id_semantic": compute_semantic(en_text),
+                    "file": rel, "line": i+1, "col": 0, "idx": 0,
+                    "label": current_label, "en": en_text,
+                    "placeholders": ph, "anchor_prev": ap, "anchor_next": an,
+                    "quote": '"', "is_triple": False, "is_character_name": True
+                })
+                i += 1
+                continue
 
         # 进入/退出 python 块
         if not in_python and PY_START_RE.match(line):
@@ -286,6 +397,41 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
 # 全局变量，用于在多进程中共享配置
 _global_config = {}
 
+
+def _calculate_dynamic_chunk_size(files: list, workers: int) -> int:
+    """动态计算 chunk_size 以优化多进程通信开销
+    
+    Args:
+        files: 文件列表
+        workers: 工作进程数
+        
+    Returns:
+        优化的 chunk_size
+    """
+    n_files = len(files)
+    
+    if n_files == 0:
+        return 1
+    
+    # 基本策略：
+    # - 小文件数（<100）：较小 chunk 以保持并行度
+    # - 中等文件数（100-1000）：中等 chunk
+    # - 大文件数（>1000）：较大 chunk 减少通信开销
+    
+    if n_files < 100:
+        # 确保每个 worker 至少处理 2-5 个文件
+        chunk = max(1, n_files // (workers * 4))
+    elif n_files < 1000:
+        # 每个 worker 处理 10-20 个文件
+        chunk = max(5, n_files // (workers * 10))
+    else:
+        # 大量文件时，每个 worker 处理 50-100 个
+        chunk = max(20, n_files // (workers * 20))
+    
+    # 限制在合理范围
+    return min(max(1, chunk), 200)
+
+
 def _process_one_file(file_path_tuple):
     """处理单个文件 - 全局函数以支持多进程"""
     p, root, include_single, include_triple, skip_comments, min_len, per_file_dir = file_path_tuple
@@ -416,8 +562,16 @@ def main():
         # 并行不易精准显示进度，简要提示
         if _console:
             _console.print(f"[dim]Using {workers_val} workers[/]")
-        # 若未指定 chunk, 直接逐文件；若指定，则每块聚合并写入分片 combined，主进程最后合并
-        if args.chunk_size and args.chunk_size > 0:
+        
+        # 动态计算 chunk_size（如果用户未指定）
+        effective_chunk_size = args.chunk_size
+        if not effective_chunk_size or effective_chunk_size <= 0:
+            effective_chunk_size = _calculate_dynamic_chunk_size(files, workers_val)
+            if _console:
+                _console.print(f"[dim]Auto chunk_size: {effective_chunk_size}[/]")
+        
+        # 若 chunk_size > 1，使用分块处理；否则逐文件处理
+        if effective_chunk_size and effective_chunk_size > 1:
             parts_dir = out_dir / "combined_parts"
             parts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -428,7 +582,7 @@ def main():
             
             # 将文件路径转为字符串（Path对象无法序列化）
             file_strs = [str(f) for f in files]
-            chunks_list = list(_chunks(file_strs, args.chunk_size))
+            chunks_list = list(_chunks(file_strs, effective_chunk_size))
             
             # 为每个chunk准备参数元组
             chunk_args = [

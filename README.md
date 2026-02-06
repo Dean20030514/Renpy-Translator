@@ -11,6 +11,9 @@
 - 🆓 **免费机器翻译**：Google / Bing / DeepL（完全免费）
 - 🛠️ **质量修复工具**：自动检测和修复英文残留
 - 📊 **翻译统计**：实时查看翻译进度
+- 🔄 **翻译记忆**：支持 TM 复用，精确/模糊匹配
+- ⚙️ **多级质量检查**：标签配对、数字一致、术语校验
+- 📈 **自适应速率控制**：智能 API 调用限速
 
 ---
 
@@ -66,11 +69,9 @@
 ### 技术文档
 | 文档 | 说明 |
 |------|------|
-| [**完整优化报告**](docs/OPTIMIZATION_COMPLETE.md) | ⭐⭐ 代码优化和功能增强 |
-| [**增强改进方案**](docs/ENHANCEMENT_PLAN.md) | 基于 MTool 的改进计划 |
-| [**代码优化方案**](docs/CODE_OPTIMIZATION.md) | 代码架构改进文档 |
 | [**GPU 优化指南**](docs/gpu_optimization.md) | 性能调优和GPU配置 |
 | [**字体替换说明**](docs/font_replacement.md) | 中文字体配置 |
+| [**CUDA 配置指南**](docs/cuda_setup.md) | CUDA 环境配置 |
 
 ---
 

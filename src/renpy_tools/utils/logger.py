@@ -6,21 +6,107 @@ Provides:
 - File and console output
 - Rich formatting support
 - Performance timing utilities
+- Progress tracking integration
+- Custom exception hierarchy
 """
+
+from __future__ import annotations
 
 import logging
 import sys
 import time
+import functools
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Callable, TypeVar
 from contextlib import contextmanager
 
 try:
     from rich.logging import RichHandler
     from rich.console import Console
+    from rich.progress import Progress, BarColumn, TimeElapsedColumn, TextColumn
     _HAS_RICH = True
+    _console = Console()
 except ImportError:
     _HAS_RICH = False
+    _console = None
+
+# 类型变量用于装饰器
+F = TypeVar('F', bound=Callable[..., Any])
+
+
+# ========================================
+# 自定义异常层次结构
+# ========================================
+
+class RenpyToolsError(Exception):
+    """Ren'Py 翻译工具基础异常"""
+    
+    def __init__(self, message: str, details: Optional[dict] = None):
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
+    
+    def __str__(self) -> str:
+        if self.details:
+            return f"{self.message} | Details: {self.details}"
+        return self.message
+
+
+class FileOperationError(RenpyToolsError):
+    """文件操作错误（读取、写入、编码等）"""
+    
+    def __init__(self, message: str, file_path: Optional[Path] = None, **kwargs):
+        details = {"file_path": str(file_path) if file_path else None, **kwargs}
+        super().__init__(message, details)
+        self.file_path = file_path
+
+
+class ValidationError(RenpyToolsError):
+    """验证错误（占位符、格式等）"""
+    
+    def __init__(self, message: str, item_id: Optional[str] = None, **kwargs):
+        details = {"item_id": item_id, **kwargs}
+        super().__init__(message, details)
+        self.item_id = item_id
+
+
+class TranslationError(RenpyToolsError):
+    """翻译错误（API 调用、质量问题等）"""
+    
+    def __init__(self, message: str, source_text: Optional[str] = None, **kwargs):
+        details = {"source_text": source_text[:100] if source_text else None, **kwargs}
+        super().__init__(message, details)
+        self.source_text = source_text
+
+
+class ConfigurationError(RenpyToolsError):
+    """配置错误（缺少必要参数、无效值等）"""
+    
+    def __init__(self, message: str, config_key: Optional[str] = None, **kwargs):
+        details = {"config_key": config_key, **kwargs}
+        super().__init__(message, details)
+        self.config_key = config_key
+
+
+class APIError(RenpyToolsError):
+    """API 调用错误（超时、限流、认证等）"""
+    
+    def __init__(
+        self, 
+        message: str, 
+        provider: Optional[str] = None,
+        status_code: Optional[int] = None,
+        **kwargs
+    ):
+        details = {"provider": provider, "status_code": status_code, **kwargs}
+        super().__init__(message, details)
+        self.provider = provider
+        self.status_code = status_code
+
+
+# ========================================
+# 日志类
+# ========================================
 
 
 class TranslationLogger:
@@ -117,6 +203,79 @@ class TranslationLogger:
         finally:
             elapsed = time.time() - start
             self.logger.log(level, f"Completed: {operation} (took {elapsed:.2f}s)")
+    
+    @contextmanager
+    def progress(
+        self,
+        total: int,
+        description: str = "Processing",
+        disable: bool = False
+    ):
+        """
+        Context manager for progress tracking with Rich.
+        
+        Usage:
+            with logger.progress(100, "Translating") as update:
+                for i in range(100):
+                    update(1)  # increment by 1
+        """
+        if _HAS_RICH and not disable:
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeElapsedColumn(),
+                console=_console,
+            ) as progress:
+                task = progress.add_task(description, total=total)
+                
+                def update(advance: int = 1):
+                    progress.update(task, advance=advance)
+                
+                yield update
+        else:
+            # Fallback: simple counter
+            count = [0]
+            
+            def update(advance: int = 1):
+                count[0] += advance
+                if count[0] % max(1, total // 10) == 0:
+                    self.info(f"{description}: {count[0]}/{total}")
+            
+            yield update
+
+
+def log_exceptions(
+    logger_instance: Optional[TranslationLogger] = None,
+    reraise: bool = True,
+    default_return: Any = None
+) -> Callable[[F], F]:
+    """
+    装饰器：自动记录函数异常
+    
+    Usage:
+        @log_exceptions()
+        def risky_function():
+            ...
+    """
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            log = logger_instance or get_logger()
+            try:
+                return func(*args, **kwargs)
+            except RenpyToolsError as e:
+                log.error(f"{func.__name__} failed: {e}")
+                if reraise:
+                    raise
+                return default_return
+            except Exception as e:
+                log.exception(f"{func.__name__} unexpected error: {e}")
+                if reraise:
+                    raise
+                return default_return
+        return wrapper  # type: ignore
+    return decorator
 
 
 # Global logger instance

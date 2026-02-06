@@ -13,9 +13,30 @@ autofix.py — 批量自动修复常见中英混排/标点/全角问题，并尽
   python tools/autofix.py <source_jsonl> -o <out_jsonl> --tsv <changes.tsv>
 可选：--enable <列表> 限定修复类型
 """
+
 from __future__ import annotations
-import argparse, json, csv, re
+
+import argparse
+import json
+import csv
+import re
+import sys
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 尝试导入统一日志
+try:
+    from renpy_tools.utils.logger import get_logger, ValidationError
+    logger = get_logger("autofix")
+except ImportError:
+    logger = None
+    class ValidationError(Exception):
+        pass
 
 # 尝试导入通用工具函数
 try:
@@ -23,17 +44,35 @@ try:
 except (ImportError, ModuleNotFoundError):
     TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
 
-    def get_zh(o: dict):
+    def get_zh(o: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         for k in TRANS_KEYS:
             v = o.get(k)
             if v is not None and str(v).strip() != "":
                 return k, str(v)
         return None, None
 
+
+def _log(msg: str, level: str = "info") -> None:
+    """统一日志输出"""
+    if logger:
+        getattr(logger, level)(msg)
+    else:
+        print(f"[{level.upper()}] {msg}")
+
+
 FW_START, FW_END = ord('\uFF01'), ord('\uFF5E')
 
+
 def to_halfwidth(s: str) -> str:
-    out = []
+    """将全角字符转换为半角
+    
+    Args:
+        s: 输入字符串
+        
+    Returns:
+        转换后的字符串
+    """
+    out: List[str] = []
     for ch in s:
         code = ord(ch)
         if 0xFF01 <= code <= 0xFF5E:
@@ -44,13 +83,31 @@ def to_halfwidth(s: str) -> str:
             out.append(ch)
     return ''.join(out)
 
+
 def fix_mixed_spacing(s: str) -> str:
+    """修复中英混排的空格问题
+    
+    Args:
+        s: 输入字符串
+        
+    Returns:
+        修复后的字符串
+    """
     # 中文与英文/数字/单位之间补空格（两向）
     s = re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9%℃℉°])", r"\1 \2", s)
     s = re.sub(r"([A-Za-z0-9%℃℉°])([\u4e00-\u9fff])", r"\1 \2", s)
     return s
 
-def zh_end_punct_from_en(en: str) -> str | None:
+
+def zh_end_punct_from_en(en: str) -> Optional[str]:
+    """根据英文结尾标点返回对应的中文标点
+    
+    Args:
+        en: 英文文本
+        
+    Returns:
+        对应的中文标点，如果没有则返回 None
+    """
     en = en.strip()
     if not en:
         return None
@@ -60,6 +117,7 @@ def zh_end_punct_from_en(en: str) -> str | None:
     if en.endswith('?'): return '？'
     if en.endswith('.') : return '。'
     return None
+
 
 def fix_end_punct(en: str, zh: str) -> str:
     need = zh_end_punct_from_en(en)

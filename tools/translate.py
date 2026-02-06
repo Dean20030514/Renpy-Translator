@@ -22,6 +22,7 @@ translate.py — 使用本地 Ollama 模型批量翻译 JSONL（支持目录/分
   - 智能重试机制
   - GPU 信息监控
   - 增量保存（防止丢失进度）
+  - 翻译缓存支持（增量翻译）
 """
 
 from __future__ import annotations
@@ -33,13 +34,36 @@ import os
 import random
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 from urllib import request as urlreq
 from urllib import error as urlerr
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
+# 统一日志
+try:
+    from renpy_tools.utils.logger import get_logger, TranslationError
+    _logger = get_logger("translate")
+except ImportError:
+    _logger = None
+    TranslationError = ValueError
+
+def _log(level: str, msg: str) -> None:
+    """统一日志输出"""
+    if _logger:
+        getattr(_logger, level, _logger.info)(msg)
+    elif level in ("warning", "error"):
+        print(f"[{level.upper()}] {msg}", file=sys.stderr)
+    else:
+        print(f"[{level.upper()}] {msg}")
 
 # 全局文件写入锁，防止并发写入竞态条件
 _file_write_lock = threading.Lock()
@@ -54,29 +78,34 @@ try:
 except ImportError:
     _console = None
 
+# 统一导入（从 common.py 获取，避免重复定义）
 try:
-    from renpy_tools.utils import ph_multiset, PH_RE  # type: ignore
-    _HAS_UTILS = True
+    from renpy_tools.utils.common import (
+        PH_RE, ph_multiset, 
+        TranslationCache, AdaptiveRateLimiter, calculate_quality_score
+    )
 except ImportError:
-    _HAS_UTILS = False
-    # Fallback placeholder detection
+    # Fallback
     PH_RE = re.compile(
-        r"\[[A-Za-z_][A-Za-z0-9_]*\]"  # [name], [pov]
-        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"  # %s, %(name)s
-        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"  # {0}, {0:.2f}
-        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"  # {name}
+        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
     )
     
     def ph_multiset(s: str) -> dict[str, int]:
-        """Fallback: Count placeholder occurrences"""
         cnt: dict[str, int] = {}
         for m in PH_RE.findall(s or ""):
             cnt[m] = cnt.get(m, 0) + 1
         return cnt
+    
+    TranslationCache = None
+    AdaptiveRateLimiter = None
+    calculate_quality_score = None
 
 # 尝试导入优化翻译器
 try:
-    from src.renpy_tools.core.translator import OllamaTranslator
+    from renpy_tools.core.translator import OllamaTranslator
     _HAS_OPTIMIZED_TRANSLATOR = True
 except ImportError:
     _HAS_OPTIMIZED_TRANSLATOR = False

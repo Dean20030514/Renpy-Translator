@@ -20,7 +20,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.renpy_tools.utils.logger import logger
+from ..utils.logger import logger
 
 
 def _is_safe_path(base_dir: Path, target_path: Path) -> bool:

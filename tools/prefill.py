@@ -14,8 +14,21 @@
 - 字典支持 JSONL 或 CSV; 若传入目录, 会读取其中所有 *.jsonl/*.csv。
 """
 
-import json, csv, argparse, sqlite3
+from __future__ import annotations
+
+import json
+import csv
+import argparse
+import sqlite3
+import sys
 from pathlib import Path
+from typing import Dict, Optional, Any, Callable
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
 # 可选：彩色日志与进度
 try:
     from rich.console import Console  # type: ignore
@@ -23,6 +36,15 @@ try:
     _console = Console()
 except ImportError:  # 可选依赖
     _console = None
+
+# 尝试导入统一日志和异常
+try:
+    from renpy_tools.utils.logger import get_logger, FileOperationError
+    logger = get_logger("prefill")
+except ImportError:
+    logger = None
+    class FileOperationError(Exception):
+        pass
 
 # 可选：使用重构的公用字典加载模块（若存在）
 try:
@@ -34,20 +56,44 @@ try:
 except (ImportError, ModuleNotFoundError):
     _ensure_parent_dir = None
 
+
+def _log(msg: str, level: str = "info") -> None:
+    """统一日志输出"""
+    if logger:
+        getattr(logger, level)(msg)
+    elif _console:
+        style = {"info": "dim", "warning": "yellow", "error": "red"}.get(level, "")
+        _console.print(f"[{style}]{msg}[/]")
+    else:
+        print(msg)
+
+
 # 读取字典
 
-def load_dictionary(dict_path: str, case_insensitive: bool = True):
+def load_dictionary(dict_path: str, case_insensitive: bool = True) -> Dict[str, str]:
+    """加载字典文件（JSONL 或 CSV）
+    
+    Args:
+        dict_path: 字典文件或目录路径
+        case_insensitive: 是否忽略大小写
+        
+    Returns:
+        英文 -> 中文的映射字典
+        
+    Raises:
+        FileOperationError: 文件不存在或格式不支持
+    """
     def norm(s: str) -> str:
         return s.lower() if case_insensitive else s
 
-    mapping = {}
+    mapping: Dict[str, str] = {}
 
-    def add_entry(en: str, zh: str):
+    def add_entry(en: str, zh: str) -> None:
         if not en or not zh:
             return
         mapping.setdefault(norm(en.strip()), zh)
 
-    def load_jsonl(p: Path):
+    def load_jsonl(p: Path) -> None:
         with p.open('r', encoding='utf-8') as f:
             for line in f:
                 if not line.strip():
@@ -64,7 +110,7 @@ def load_dictionary(dict_path: str, case_insensitive: bool = True):
                 if obj.get('canonical_en') and obj.get('zh'):
                     add_entry(obj['canonical_en'], obj['zh'])
 
-    def load_csv(p: Path):
+    def load_csv(p: Path) -> None:
         with p.open('r', encoding='utf-8', newline='') as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -77,6 +123,9 @@ def load_dictionary(dict_path: str, case_insensitive: bool = True):
                     add_entry(ce, zh)
 
     path = Path(dict_path)
+    if not path.exists():
+        raise FileOperationError(f"Dictionary path not found: {dict_path}", file_path=path)
+        
     if path.is_dir():
         for p in path.iterdir():
             if p.suffix.lower() == '.jsonl':

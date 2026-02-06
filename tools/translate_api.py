@@ -40,12 +40,18 @@ import concurrent.futures as cf
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from urllib import request as urlreq
 from urllib import error as urlerr
+
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
 
 try:
     from rich.console import Console
@@ -54,9 +60,47 @@ try:
 except ImportError:
     _console = None
 
+# 尝试导入统一日志和异常
+try:
+    from renpy_tools.utils.logger import get_logger, APIError, TranslationError
+    logger = get_logger("translate_api")
+except ImportError:
+    logger = None
+    class APIError(Exception):
+        def __init__(self, message: str, provider: Optional[str] = None, status_code: Optional[int] = None, **kwargs):
+            super().__init__(message)
+            self.provider = provider
+            self.status_code = status_code
+    class TranslationError(Exception):
+        pass
+
+# 统一导入
+try:
+    from renpy_tools.utils.common import (
+        PH_RE, ph_multiset, AdaptiveRateLimiter, 
+        TranslationCache, calculate_quality_score
+    )
+except ImportError:
+    PH_RE = re.compile(r"\[[A-Za-z_][A-Za-z0-9_]*\]|\{[^}]+\}|%[sdifeEfgGxXo]")
+    ph_multiset = None
+    AdaptiveRateLimiter = None
+    TranslationCache = None
+    calculate_quality_score = None
+
+
+def _log(msg: str, level: str = "info") -> None:
+    """统一日志输出"""
+    if logger:
+        getattr(logger, level)(msg)
+    elif _console:
+        style = {"info": "dim", "warning": "yellow", "error": "red"}.get(level, "")
+        _console.print(f"[{style}]{msg}[/]")
+    else:
+        print(f"[{level.upper()}] {msg}")
+
 
 # API 配置
-API_CONFIGS = {
+API_CONFIGS: Dict[str, Dict[str, Any]] = {
     'deepseek': {
         'name': 'DeepSeek',
         'endpoint': 'https://api.deepseek.com/v1/chat/completions',
@@ -92,6 +136,38 @@ API_CONFIGS = {
         'endpoint': 'https://api.anthropic.com/v1/messages',
         'model': 'claude-3-5-sonnet-20241022',
         'cost_per_1m_tokens': 21.0,  # $3/百万Token ≈ ￥21
+    },
+    # 新增：Azure Translator
+    'azure': {
+        'name': 'Azure Translator',
+        'endpoint': 'https://{region}.api.cognitive.microsofttranslator.com/translate',
+        'model': 'translator-text',
+        'cost_per_1m_tokens': 10.0,  # ~$10/百万字符
+        'is_translator_api': True,  # 非 LLM，使用专用翻译 API
+    },
+    # 新增：百度翻译
+    'baidu': {
+        'name': '百度翻译',
+        'endpoint': 'https://fanyi-api.baidu.com/api/trans/vip/translate',
+        'model': 'baidu-general',
+        'cost_per_1m_tokens': 49.0,  # ￥49/百万字符
+        'is_translator_api': True,
+    },
+    # 新增：有道翻译
+    'youdao': {
+        'name': '有道翻译',
+        'endpoint': 'https://openapi.youdao.com/api',
+        'model': 'youdao-general',
+        'cost_per_1m_tokens': 48.0,  # ￥48/百万字符
+        'is_translator_api': True,
+    },
+    # 新增：阿里翻译
+    'aliyun': {
+        'name': '阿里翻译',
+        'endpoint': 'https://mt.cn-hangzhou.aliyuncs.com/api/translate/web/general',
+        'model': 'aliyun-general',
+        'cost_per_1m_tokens': 50.0,  # ￥50/百万字符
+        'is_translator_api': True,
     },
 }
 
@@ -131,6 +207,159 @@ def build_system_prompt() -> str:
         
         "【输出】只输出纯中文译文，不要任何解释"
     )
+
+
+# ========== 专用翻译 API 实现 ==========
+
+def _call_baidu_api(text: str, config: APIConfig) -> Optional[str]:
+    """百度翻译 API
+    
+    需要 api_key 格式: "appid:secretkey"
+    """
+    import hashlib
+    import random
+    
+    try:
+        parts = config.api_key.split(':')
+        if len(parts) != 2:
+            print("[WARN] 百度API需要格式: appid:secretkey")
+            return None
+        appid, secretkey = parts
+        
+        salt = str(random.randint(10000, 99999))
+        sign_str = appid + text + salt + secretkey
+        sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest()
+        
+        params = {
+            'q': text,
+            'from': 'en',
+            'to': 'zh',
+            'appid': appid,
+            'salt': salt,
+            'sign': sign
+        }
+        
+        from urllib.parse import urlencode
+        url = f"{config.endpoint}?{urlencode(params)}"
+        
+        with urlreq.urlopen(url, timeout=config.timeout) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            if 'trans_result' in result:
+                return '\n'.join(item['dst'] for item in result['trans_result'])
+    except Exception as e:
+        print(f"[WARN] 百度API错误: {e}")
+    return None
+
+
+def _call_youdao_api(text: str, config: APIConfig) -> Optional[str]:
+    """有道翻译 API
+    
+    需要 api_key 格式: "appKey:appSecret"
+    """
+    import hashlib
+    import uuid
+    
+    try:
+        parts = config.api_key.split(':')
+        if len(parts) != 2:
+            print("[WARN] 有道API需要格式: appKey:appSecret")
+            return None
+        app_key, app_secret = parts
+        
+        salt = str(uuid.uuid4())
+        curtime = str(int(time.time()))
+        
+        # 签名
+        sign_str = app_key + _truncate(text) + salt + curtime + app_secret
+        sign = hashlib.sha256(sign_str.encode('utf-8')).hexdigest()
+        
+        params = {
+            'q': text,
+            'from': 'en',
+            'to': 'zh-CHS',
+            'appKey': app_key,
+            'salt': salt,
+            'sign': sign,
+            'signType': 'v3',
+            'curtime': curtime
+        }
+        
+        from urllib.parse import urlencode
+        data = urlencode(params).encode('utf-8')
+        
+        req = urlreq.Request(config.endpoint, data=data)
+        with urlreq.urlopen(req, timeout=config.timeout) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            if result.get('errorCode') == '0' and 'translation' in result:
+                return '\n'.join(result['translation'])
+    except Exception as e:
+        print(f"[WARN] 有道API错误: {e}")
+    return None
+
+
+def _truncate(text: str) -> str:
+    """有道签名用的截断函数"""
+    if len(text) <= 20:
+        return text
+    return text[:10] + str(len(text)) + text[-10:]
+
+
+def _call_aliyun_api(text: str, config: APIConfig) -> Optional[str]:
+    """阿里翻译 API
+    
+    需要 api_key 格式: "accessKeyId:accessKeySecret"
+    """
+    try:
+        parts = config.api_key.split(':')
+        if len(parts) != 2:
+            print("[WARN] 阿里API需要格式: accessKeyId:accessKeySecret")
+            return None
+        
+        # 阿里云翻译需要更复杂的签名，这里简化处理
+        print("[INFO] 阿里翻译API需要SDK，建议使用pip install alibabacloud-alimt20181012")
+        return None
+    except Exception as e:
+        print(f"[WARN] 阿里API错误: {e}")
+    return None
+
+
+def _call_azure_api(text: str, config: APIConfig) -> Optional[str]:
+    """Azure Translator API
+    
+    需要 api_key 格式: "subscription_key:region"
+    """
+    try:
+        parts = config.api_key.split(':')
+        if len(parts) != 2:
+            print("[WARN] Azure API需要格式: subscription_key:region")
+            return None
+        subscription_key, region = parts
+        
+        endpoint = f"https://api.cognitive.microsofttranslator.com/translate"
+        
+        headers = {
+            'Ocp-Apim-Subscription-Key': subscription_key,
+            'Ocp-Apim-Subscription-Region': region,
+            'Content-type': 'application/json'
+        }
+        
+        from urllib.parse import urlencode
+        params = urlencode({'api-version': '3.0', 'from': 'en', 'to': 'zh-Hans'})
+        url = f"{endpoint}?{params}"
+        
+        body = json.dumps([{'text': text}]).encode('utf-8')
+        req = urlreq.Request(url, data=body, headers=headers)
+        
+        with urlreq.urlopen(req, timeout=config.timeout) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            if result and len(result) > 0:
+                return result[0]['translations'][0]['text']
+    except Exception as e:
+        print(f"[WARN] Azure API错误: {e}")
+    return None
+
+
+# ========== 结束专用翻译 API ==========
 
 
 def call_api(
@@ -186,6 +415,22 @@ def call_api(
             "x-api-key": config.api_key,
             "anthropic-version": "2023-06-01"
         }
+    
+    # 百度翻译 API
+    elif config.provider == 'baidu':
+        return _call_baidu_api(text, config)
+    
+    # 有道翻译 API
+    elif config.provider == 'youdao':
+        return _call_youdao_api(text, config)
+    
+    # 阿里翻译 API
+    elif config.provider == 'aliyun':
+        return _call_aliyun_api(text, config)
+    
+    # Azure Translator API
+    elif config.provider == 'azure':
+        return _call_azure_api(text, config)
     
     else:
         return None
