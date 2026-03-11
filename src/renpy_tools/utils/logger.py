@@ -197,12 +197,12 @@ class TranslationLogger:
                 pass
         """
         start = time.time()
-        self.logger.log(level, f"Starting: {operation}")
+        self.logger.log(level, "Starting: %s", operation)
         try:
             yield
         finally:
             elapsed = time.time() - start
-            self.logger.log(level, f"Completed: {operation} (took {elapsed:.2f}s)")
+            self.logger.log(level, "Completed: %s (took %.2fs)", operation, elapsed)
     
     @contextmanager
     def progress(
@@ -269,7 +269,7 @@ def log_exceptions(
                 if reraise:
                     raise
                 return default_return
-            except Exception as e:
+            except (OSError, ValueError, TypeError, RuntimeError) as e:
                 log.exception(f"{func.__name__} unexpected error: {e}")
                 if reraise:
                     raise
@@ -361,5 +361,5 @@ if __name__ == "__main__":
     file_logger.info("This message goes to both console and file")
     
     if log_file.exists():
-        print(f"\nLog file contents:\n{log_file.read_text()}")
+        print(f"\nLog file contents:\n{log_file.read_text(encoding='utf-8')}")
         log_file.unlink()

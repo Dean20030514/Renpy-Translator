@@ -23,17 +23,19 @@ Ren'Py 汉化工具集 - 命令行入口
 from __future__ import annotations
 
 import argparse
-import logging
 import subprocess
 import sys
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from .utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # 获取工具目录
 TOOLS_DIR = Path(__file__).parent.parent.parent / "tools"
 
 # 参数长度限制（防止命令行溢出）
+# Windows CMD 单参数限制 ~32,768 字符；总长度限制 ~131,072 字符
 MAX_ARG_LENGTH = 32768
 MAX_TOTAL_ARGS_LENGTH = 131072
 
@@ -106,12 +108,12 @@ def run_tool(tool_path: Path, args: list[str]) -> int:
     except OSError as e:
         logger.error(f"运行工具失败: {e}")
         return 1
-    except Exception as e:
+    except (subprocess.SubprocessError, RuntimeError, ValueError) as e:
         logger.error(f"运行工具时发生意外错误: {e}")
         return 1
 
 
-def main():
+def main() -> int:
     """主入口函数"""
     tools = get_available_tools()
     tool_names = sorted(tools.keys())

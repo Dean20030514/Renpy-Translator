@@ -23,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 from collections import Counter
-from typing import Any, Iterator
+
 
 # 添加 src 到路径
 _project_root = Path(__file__).parent.parent
@@ -32,7 +32,7 @@ if str(_project_root / "src") not in sys.path:
 
 # 统一日志
 try:
-    from renpy_tools.utils.logger import get_logger, FileOperationError
+    from renpy_tools.utils.logger import get_logger
     _logger = get_logger("extract")
 except ImportError:
     _logger = None
@@ -61,21 +61,25 @@ except ImportError:
     _write_jsonl_lines = None
     _ensure_parent_dir = None
 
-# 统一导入（从 common.py 获取，避免重复定义）
+# 统一导入（优先从 placeholder.py）
 try:
-    from renpy_tools.utils.common import PH_RE, ASSET_EXTS, ph_set as _ph_set
-    from renpy_tools.utils.placeholder import compute_semantic_signature as _comp_sig
+    from renpy_tools.utils.placeholder import PH_RE, ph_set as _ph_set, compute_semantic_signature as _comp_sig
+    from renpy_tools.utils.common import ASSET_EXTS
 except ImportError:
-    # Fallback
-    ASSET_EXTS = (".png",".jpg",".jpeg",".webp",".ogg",".mp3",".wav",".webm",".mp4",".rpy",".rpa",".zip",".ttf",".otf")
-    PH_RE = re.compile(
-        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
-        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
-        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
-        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
-    )
-    _ph_set = None
-    _comp_sig = None
+    try:
+        from renpy_tools.utils.common import PH_RE, ASSET_EXTS, ph_set as _ph_set
+        from renpy_tools.utils.placeholder import compute_semantic_signature as _comp_sig
+    except ImportError:
+        # Fallback
+        ASSET_EXTS = (".png",".jpg",".jpeg",".webp",".ogg",".mp3",".wav",".webm",".mp4",".rpy",".rpa",".zip",".ttf",".otf")
+        PH_RE = re.compile(
+            r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+            r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+            r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+            r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+        )
+        _ph_set = None
+        _comp_sig = None
 
 LABEL_RE = re.compile(r'^\s*label\s+([A-Za-z0-9_\.]+)\s*:\s*$')
 PY_START_RE = re.compile(r'^\s*(init\s+python|python(\s+early)?)\s*:.*$')
@@ -86,7 +90,14 @@ NVL_CLEAR_RE = re.compile(r'^\s*nvl\s+(clear|show|hide)\s*$')
 MENU_RE = re.compile(r'^\s*menu\s*(?:\w+)?\s*:\s*$')  # menu: or menu label:
 MENU_OPTION_RE = re.compile(r'^\s*"([^"]+)"(\s+if\s+.+)?:\s*$')  # "Option text": or "Option text" if cond:
 DEFINE_RE = re.compile(r'^\s*define\s+\w+\s*=\s*Character\s*\(\s*["\']([^"\']+)["\']\s*[,)]')  # Character name
+# 屏幕块检测
+SCREEN_START_RE = re.compile(r'^\s*screen\s+\w+\s*(?:\(.*?\))?\s*:\s*$')
 
+# 十六进制颜色代码
+HEX_COLOR_RE = re.compile(r'^[0-9a-fA-F]{3,8}$')
+
+# snake_case 样式名/标识符
+RENPY_STYLE_RE = re.compile(r'^[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)+$')
 # 单行引号（修复：排除缩写如 don't, aren't）
 DQ_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
 SQ_RE = re.compile(r"(?<![A-Za-z0-9])'((?:\\.|[^'\\])*)'(?![A-Za-z])")
@@ -113,6 +124,20 @@ def looks_like_asset(s: str) -> bool:
     if " " not in t and any(lower.endswith(ext) for ext in ASSET_EXTS):
         return True
     return False
+
+def looks_like_noise(s: str, in_screen: bool = False) -> bool:
+    """检查字符串是否明显不需要翻译（颜色代码、样式名等）"""
+    t = s.strip()
+    if not t:
+        return True
+    # 十六进制颜色代码：ffffff, 00ff30, cc00ff 等
+    if HEX_COLOR_RE.match(t):
+        return True
+    # 仅在屏幕块内过滤 snake_case 标识符（样式名如 chat_left）
+    if in_screen and RENPY_STYLE_RE.match(t) and len(t) > 2:
+        return True
+    return False
+
 
 def looks_like_text(s: str, min_len: int) -> bool:
     """检查字符串是否像是需要翻译的文本
@@ -177,6 +202,8 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
     in_translate_block = False  # 是否在 translate 块中
     in_menu = False  # 是否在 menu 块中
     menu_base_indent = 0
+    in_screen = False  # 是否在 screen 块中
+    screen_base = 0
     i = 0
 
     while i < n:
@@ -186,7 +213,18 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
         m_lab = LABEL_RE.match(line)
         if m_lab:
             current_label = m_lab.group(1)
-        
+            if in_screen and line.strip() and leading_spaces(line) <= screen_base:
+                in_screen = False
+
+        # 检测 screen 块
+        m_screen = SCREEN_START_RE.match(line)
+        if m_screen:
+            in_screen = True
+            screen_base = leading_spaces(line)
+        elif in_screen:
+            if line.strip() and leading_spaces(line) <= screen_base and not line.strip().startswith('#'):
+                in_screen = False
+
         # 检测 translate 块（跳过已翻译的内容）
         m_trans = TRANSLATE_BLOCK_RE.match(line)
         if m_trans:
@@ -342,7 +380,7 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
         idx_in_line = 0
         for m in DQ_RE.finditer(non_comment):
             en_text = m.group(1)
-            if looks_like_text(en_text, min_len) and not looks_like_asset(en_text):
+            if looks_like_text(en_text, min_len) and not looks_like_asset(en_text) and not looks_like_noise(en_text, in_screen):
                 ph = sorted((_ph_set(en_text) if _ph_set else set(PH_RE.findall(en_text))))
                 ap = prev_nonempty(i)
                 an = next_nonempty(i)
@@ -352,8 +390,11 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
                 if before:
                     msp = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", before)
                     if msp:
-                        spk = msp.group(1)
-                items.append({
+                        candidate = msp.group(1)
+                        # 跳过 _() 翻译函数标记和 Ren'Py 关键字
+                        if candidate not in ('_', 'action', 'style', 'hovered', 'auto'):
+                            spk = candidate
+                item = {
                     "id": f"{rel}:{i+1}:{idx_in_line}",
                     "id_hash": compute_hash_id(rel, i+1, idx_in_line, en_text, ap, an),
                     "id_semantic": compute_semantic(en_text),
@@ -361,10 +402,13 @@ def extract_from_file(path: Path, root: Path, include_single=True, include_tripl
                     "label": current_label, "speaker": spk, "en": en_text,
                     "placeholders": ph, "anchor_prev": ap, "anchor_next": an,
                     "quote": '"', "is_triple": False
-                })
+                }
+                if in_screen:
+                    item["is_screen_text"] = True
+                items.append(item)
             idx_in_line += 1
 
-        if include_single:
+        if include_single and not in_screen:
             for m in SQ_RE.finditer(non_comment):
                 en_text = m.group(1)
                 if looks_like_text(en_text, min_len) and not looks_like_asset(en_text):
@@ -439,13 +483,17 @@ def _process_one_file(file_path_tuple):
     root = Path(root)
     per_file_dir = Path(per_file_dir)
     
-    items = extract_from_file(
-        p, root,
-        include_single=include_single,
-        include_triple=include_triple,
-        skip_comments=skip_comments,
-        min_len=min_len
-    )
+    try:
+        items = extract_from_file(
+            p, root,
+            include_single=include_single,
+            include_triple=include_triple,
+            skip_comments=skip_comments,
+            min_len=min_len
+        )
+    except Exception as e:
+        _log("error", f"提取失败: {p} — {type(e).__name__}: {e}")
+        return p, [], str(e)
     
     # per-file JSONL
     pf = per_file_dir / (p.relative_to(root).as_posix().replace("/", "__") + ".jsonl")
@@ -456,7 +504,7 @@ def _process_one_file(file_path_tuple):
         with pf.open("w", encoding="utf-8") as f:
             for it in items:
                 f.write(json.dumps(it, ensure_ascii=False) + "\n")
-    return p, items
+    return p, items, None
 
 def _process_chunk_files(chunk_tuple):
     """处理文件块 - 全局函数以支持多进程"""
@@ -470,12 +518,22 @@ def _process_chunk_files(chunk_tuple):
     local_rows = []
     local_tm_counter = {}
     local_tm_sample = {}
+    local_failures = []  # (file_rel, error_msg)
     
     with part_path.open("w", encoding="utf-8") as pf_comb:
         for p_str in chunk_files:
             p = Path(p_str)
             file_tuple = (p, root, include_single, include_triple, skip_comments, min_len, per_file_dir)
-            _p, items = _process_one_file(file_tuple)
+            _p, items, err = _process_one_file(file_tuple)
+            
+            if err is not None:
+                local_failures.append((p.relative_to(root).as_posix(), err))
+                local_rows.append({
+                    "file": p.relative_to(root).as_posix(),
+                    "extracted_strings": 0,
+                    "empty": "error"
+                })
+                continue
             
             for it in items:
                 pf_comb.write(json.dumps(it, ensure_ascii=False) + "\n")
@@ -491,7 +549,7 @@ def _process_chunk_files(chunk_tuple):
                 "empty": ("yes" if len(items)==0 else "no")
             })
     
-    return str(part_path), local_rows, local_tm_counter, local_tm_sample
+    return str(part_path), local_rows, local_tm_counter, local_tm_sample, local_failures
 
 def _chunks(lst, n):
     """分块辅助函数"""
@@ -558,6 +616,11 @@ def main():
     results = []
     if _console:
         _console.print(f"[bold cyan]Scanning[/] {len(files)} .rpy files from [magenta]{root}[/] ...")
+    include_single = not args.no_single
+    include_triple = not args.no_triple
+    skip_comments = not args.no_skip_comments
+    all_failures = []
+
     if workers_val and workers_val > 0:
         # 并行不易精准显示进度，简要提示
         if _console:
@@ -569,16 +632,12 @@ def main():
             effective_chunk_size = _calculate_dynamic_chunk_size(files, workers_val)
             if _console:
                 _console.print(f"[dim]Auto chunk_size: {effective_chunk_size}[/]")
-        
+
         # 若 chunk_size > 1，使用分块处理；否则逐文件处理
         if effective_chunk_size and effective_chunk_size > 1:
             parts_dir = out_dir / "combined_parts"
             parts_dir.mkdir(parents=True, exist_ok=True)
 
-            # 准备参数
-            include_single = not args.no_single
-            include_triple = not args.no_triple
-            skip_comments = not args.no_skip_comments
             
             # 将文件路径转为字符串（Path对象无法序列化）
             file_strs = [str(f) for f in files]
@@ -595,9 +654,10 @@ def main():
             tm_sample_map = {}
             part_paths = []
             with concurrent.futures.ProcessPoolExecutor(max_workers=workers_val) as ex:
-                for part_path, mrows, tmc, tms in ex.map(_process_chunk_files, chunk_args):
+                for part_path, mrows, tmc, tms, failures in ex.map(_process_chunk_files, chunk_args):
                     part_paths.append(part_path)
                     manifest_rows.extend(mrows)
+                    all_failures.extend(failures)
                     for k,v in tmc.items():
                         tm_counter_map[k] = tm_counter_map.get(k,0) + v
                     for k,v in tms.items():
@@ -623,19 +683,25 @@ def main():
                 for p in files
             ]
             with concurrent.futures.ProcessPoolExecutor(max_workers=workers_val) as ex:
-                for p, items in ex.map(_process_one_file, file_args):
+                for p, items, err in ex.map(_process_one_file, file_args):
+                    if err is not None:
+                        all_failures.append((Path(p).relative_to(root).as_posix(), err))
                     results.append((Path(p), items))
     else:
         if _console:
             with Progress("{task.description}", BarColumn(), "{task.completed}/{task.total}", TimeElapsedColumn(), console=_console) as prog:
                 task = prog.add_task("Extracting", total=len(files))
                 for p in files:
-                    p_str, items = _process_one_file((str(p), str(root), include_single, include_triple, skip_comments, args.min_len, str(per_file_dir)))
+                    p_str, items, err = _process_one_file((str(p), str(root), include_single, include_triple, skip_comments, args.min_len, str(per_file_dir)))
+                    if err is not None:
+                        all_failures.append((Path(p_str).relative_to(root).as_posix(), err))
                     results.append((Path(p_str), items))
                     prog.advance(task)
         else:
             for p in files:
-                p_str, items = _process_one_file((str(p), str(root), include_single, include_triple, skip_comments, args.min_len, str(per_file_dir)))
+                p_str, items, err = _process_one_file((str(p), str(root), include_single, include_triple, skip_comments, args.min_len, str(per_file_dir)))
+                if err is not None:
+                    all_failures.append((Path(p_str).relative_to(root).as_posix(), err))
                 results.append((Path(p_str), items))
 
     def _combined_iter():
@@ -686,9 +752,18 @@ def main():
         w.writeheader(); w.writerows(manifest_rows)
 
     total = sum(m['extracted_strings'] for m in manifest_rows)
+
+    # 记录失败文件
+    if all_failures:
+        failures_path = out_dir / "extract_failures.jsonl"
+        with failures_path.open("w", encoding="utf-8") as ff:
+            for rel, msg in all_failures:
+                ff.write(json.dumps({"file": rel, "error": msg}, ensure_ascii=False) + "\n")
+
     summary = {
         "files": len(files),
         "strings": total,
+        "failed_files": len(all_failures),
         "per_file_jsonl": str(per_file_dir),
         "combined_jsonl": str(combined),
         "tm_seed_csv": str(out_dir / 'tm_seed_all_en.csv'),
@@ -697,8 +772,12 @@ def main():
     if _console:
         _console.print("\n[bold green]Extraction Summary[/]")
         _console.print(summary)
+        if all_failures:
+            _console.print(f"[bold red]⚠ {len(all_failures)} file(s) failed — see {out_dir / 'extract_failures.jsonl'}[/]")
     else:
         print(f"Scanned {len(files)} files. Extracted {total} strings.")
+        if all_failures:
+            print(f"WARNING: {len(all_failures)} file(s) failed — see {out_dir / 'extract_failures.jsonl'}")
         print(f"Per-file JSONL: {per_file_dir}")
         print(f"Combined JSONL: {combined}")
         print(f"TM seed CSV:    {out_dir / 'tm_seed_all_en.csv'}")

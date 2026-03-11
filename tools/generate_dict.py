@@ -32,7 +32,6 @@ import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any
 
 # 添加 src 到路径
 _project_root = Path(__file__).parent.parent
@@ -257,7 +256,7 @@ class DictionaryGenerator:
                 'group': f"{self.game_name}_{term_type}",
                 'canonical_en': canonical,
                 'variant_en': term,
-                'zh_final': '',  # 留空，待人工填写
+                'zh': '',  # 留空，待人工填写
                 'source': 'auto_generated',
                 'freq': str(count),
                 'type': term_type,
@@ -294,7 +293,7 @@ class DictionaryGenerator:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # CSV 字段
-        fieldnames = ['group', 'canonical_en', 'variant_en', 'zh_final', 'source', 'freq', 'type']
+        fieldnames = ['group', 'canonical_en', 'variant_en', 'zh', 'source', 'freq', 'type']
         
         with output_path.open('w', encoding='utf-8', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -361,7 +360,7 @@ def main():
     --merge data/dictionaries/common_terms.csv
 
 注意:
-  - 生成的字典中 zh_final 字段为空，需要人工填写翻译
+  - 生成的字典中 zh 字段为空，需要人工填写翻译
   - 自动生成的术语按频率排序，频率越高越重要
   - 建议结合游戏内容和上下文手动审核和完善字典
         """
@@ -461,7 +460,7 @@ def main():
     print(f"{'='*60}\n")
     print("下一步:")
     print(f"  1. 编辑 {output_file.name}")
-    print("  2. 填写 zh_final 列的中文翻译")
+    print("  2. 填写 zh 列的中文翻译")
     print("  3. 将字典用于 prefill 步骤")
     print()
     

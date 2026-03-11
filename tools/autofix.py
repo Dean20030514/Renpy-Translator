@@ -31,7 +31,7 @@ if str(_project_root / "src") not in sys.path:
 
 # 尝试导入统一日志
 try:
-    from renpy_tools.utils.logger import get_logger, ValidationError
+    from renpy_tools.utils.logger import get_logger
     logger = get_logger("autofix")
 except ImportError:
     logger = None

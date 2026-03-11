@@ -9,7 +9,7 @@ venv/
 .env
 
 # Secrets / API Keys
-Grok API Key
+# API keys should be stored as environment variables, never committed
 *.key
 .env.local
 

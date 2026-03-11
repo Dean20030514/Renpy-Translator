@@ -78,7 +78,7 @@ ecuda
 
 | 组件 | 版本 | 说明 |
 |------|------|------|
-| CUDA Toolkit | 12.x / 13.x | 最新稳定版 |
+| CUDA Toolkit | 12.x | 最新稳定版 |
 | cuDNN | 8.x / 9.x | 与 CUDA 版本匹配 |
 | GPU 驱动 | 最新 | 从 NVIDIA 官网下载 |
 

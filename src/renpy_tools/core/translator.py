@@ -18,16 +18,13 @@ except ImportError:
     requests = None
     _HAS_REQUESTS = False
 
-import sys
-from pathlib import Path
-
-# 添加项目根目录到 sys.path
-project_root = Path(__file__).parent.parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
-
 from ..utils.logger import logger
-from ..utils.placeholder import ph_multiset
+
+from ..utils.common import calculate_quality_score, QualityScore
+
+
+# Ollama API 默认的最大生成 token 数
+_DEFAULT_NUM_PREDICT = 4096
 
 
 class OllamaTranslator:
@@ -165,7 +162,7 @@ class OllamaTranslator:
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)
 
-            except Exception as e:
+            except (ConnectionError, OSError, ValueError, RuntimeError) as e:
                 logger.error(f"Translation attempt {attempt + 1} failed: {e}")
                 if attempt == self.max_retries - 1:
                     # 最后一次尝试失败
@@ -234,7 +231,7 @@ class OllamaTranslator:
             "stream": False,
             "options": {
                 "temperature": temperature,
-                "num_predict": 4096
+                "num_predict": _DEFAULT_NUM_PREDICT
             }
         }
 
@@ -255,13 +252,7 @@ class OllamaTranslator:
         context: Optional[dict] = None
     ) -> dict:
         """
-        翻译质量验证
-
-        检查项：
-        - 占位符数量匹配
-        - 行数匹配
-        - 长度比例合理
-        - 未翻译检测
+        翻译质量验证（委托给 calculate_quality_score 并补充未翻译检测）
 
         Args:
             source: 原文
@@ -274,51 +265,17 @@ class OllamaTranslator:
                 'issues': 问题列表
             }
         """
-        issues = []
-        score = 1.0
+        # 使用统一的质量评分
+        qs: QualityScore = calculate_quality_score(
+            source, target, check_english=False
+        )
+        # 转换为 0-1 分数
+        score = qs.score / 100.0
+        issues = list(qs.issues)
 
-        # 1. 检查占位符
-        src_ph = ph_multiset(source)
-        tgt_ph = ph_multiset(target)
-
-        if src_ph != tgt_ph:
-            # 计算差异
-            missing = {k: src_ph.get(k, 0) - tgt_ph.get(k, 0)
-                       for k in set(src_ph) | set(tgt_ph)
-                       if src_ph.get(k, 0) > tgt_ph.get(k, 0)}
-            extra = {k: tgt_ph.get(k, 0) - src_ph.get(k, 0)
-                     for k in set(src_ph) | set(tgt_ph)
-                     if tgt_ph.get(k, 0) > src_ph.get(k, 0)}
-            msg = "Placeholder mismatch"
-            if missing:
-                msg += f" (missing: {missing})"
-            if extra:
-                msg += f" (extra: {extra})"
-            issues.append(msg)
-            score -= 0.3
-
-        # 2. 检查行数
-        src_lines = source.count('\n')
-        tgt_lines = target.count('\n')
-
-        if src_lines != tgt_lines:
-            issues.append(f"Line count mismatch ({src_lines} vs {tgt_lines})")
-            score -= 0.2
-
-        # 3. 检查长度比例
-        src_len = len(source)
-        tgt_len = len(target)
-        ratio = tgt_len / max(src_len, 1)
-
-        if ratio < 0.3:
-            issues.append(f"Translation too short (ratio: {ratio:.2f})")
-            score -= 0.2
-        elif ratio > 3.0:
-            issues.append(f"Translation too long (ratio: {ratio:.2f})")
-            score -= 0.1
-
-        # 4. 检查未翻译（仅对对话类型）
-        if context and context.get('type') == 'dialog':
+        # 补充：对话类型的未翻译英文检测（calculate_quality_score 的 english_leakage
+        # 检查整体英文残留，但 translator 还需检测具体常见词）
+        if context and context.get('type') == 'dialog' and target and target.strip():
             common_english = [
                 ' the ', ' and ', ' you ', ' are ', ' have ',
                 ' what ', ' where ', ' when ', ' who ', ' how '
@@ -329,11 +286,6 @@ class OllamaTranslator:
             if untranslated:
                 issues.append(f"Contains untranslated words: {untranslated}")
                 score -= 0.3
-
-        # 5. 检查空翻译
-        if not target.strip():
-            issues.append("Empty translation")
-            score = 0.0
 
         return {
             'score': max(0.0, score),

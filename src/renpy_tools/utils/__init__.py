@@ -5,13 +5,17 @@ from .common import (
     PH_RE, RENPY_SINGLE_TAGS, RENPY_PAIRED_TAGS,
     ph_set, ph_multiset, strip_renpy_tags,
     AdaptiveRateLimiter, QualityScore, calculate_quality_score,
-    TranslationConfig, TranslationCache
+    RuntimeConfig, TranslationConfig, TranslationCache
 )
 from .dict_utils import load_dictionary
-from .io import read_jsonl_lines, write_jsonl_lines
-from .ui import BilingualMessage, confirm_operation, check_prerequisites, show_system_info
+from .io import read_jsonl_lines, write_jsonl_lines, FALLBACK_ENCODINGS
+from .ui import BilingualMessage, confirm_operation, check_prerequisites, show_system_info, RICH_AVAILABLE
 from .config import ConfigManager, get_config
-from .placeholder import compute_semantic_signature, normalize_for_signature
+from .placeholder import (
+    compute_semantic_signature, normalize_for_signature,
+    extract_placeholders, restore_placeholders,
+)
+from .prompts import build_system_prompt, build_api_system_prompt, load_custom_prompt, get_available_genres
 from .logger import (
     TranslationLogger, get_logger, setup_logger, log_exceptions,
     # 异常类
@@ -57,7 +61,8 @@ __all__ = [
     # rate limiting
     "AdaptiveRateLimiter",
     # config & cache
-    "TranslationConfig",
+    "RuntimeConfig",
+    "TranslationConfig",  # backward-compatible alias for RuntimeConfig
     "TranslationCache",
     "ConfigManager",
     "get_config",
@@ -84,14 +89,21 @@ __all__ = [
     # io
     "read_jsonl_lines",
     "write_jsonl_lines",
+    "FALLBACK_ENCODINGS",
     # ui
     "BilingualMessage",
     "confirm_operation",
     "check_prerequisites",
     "show_system_info",
+    "RICH_AVAILABLE",
     # placeholder (advanced)
     "compute_semantic_signature",
     "normalize_for_signature",
+    "extract_placeholders",
+    "restore_placeholders",
+    # prompts
+    "build_system_prompt",
+    "build_api_system_prompt",
     # logger
     "TranslationLogger",
     "get_logger",

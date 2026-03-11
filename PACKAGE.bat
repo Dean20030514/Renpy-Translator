@@ -21,6 +21,7 @@ mkdir "%OUTPUT_DIR%"
 
 echo [2/4] 复制核心文件...
 xcopy /E /I /Y "tools" "%OUTPUT_DIR%\tools" >nul
+xcopy /E /I /Y "src" "%OUTPUT_DIR%\src" >nul
 xcopy /E /I /Y "data" "%OUTPUT_DIR%\data" >nul
 xcopy /E /I /Y "docs" "%OUTPUT_DIR%\docs" >nul
 
@@ -35,6 +36,8 @@ copy /Y "pyproject.toml" "%OUTPUT_DIR%\" >nul
 echo [3/4] 排除输出目录...
 if exist "%OUTPUT_DIR%\outputs" rd /s /q "%OUTPUT_DIR%\outputs"
 if exist "%OUTPUT_DIR%\__pycache__" rd /s /q "%OUTPUT_DIR%\__pycache__"
+if exist "%OUTPUT_DIR%\tools\__pycache__" rd /s /q "%OUTPUT_DIR%\tools\__pycache__"
+for /d /r "%OUTPUT_DIR%\src" %%d in (__pycache__) do (if exist "%%d" rd /s /q "%%d")
 
 echo [4/4] 创建 README...
 (

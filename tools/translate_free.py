@@ -41,6 +41,8 @@ import hashlib
 import json
 import random
 import re
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +51,11 @@ from urllib import parse as urlparse
 from urllib import request as urlreq
 from urllib import error as urlerr
 
+# 添加 src 到路径
+_project_root = Path(__file__).parent.parent
+if str(_project_root / "src") not in sys.path:
+    sys.path.insert(0, str(_project_root / "src"))
+
 try:
     from rich.console import Console
     from rich.progress import Progress, BarColumn, TimeElapsedColumn, TextColumn, TaskProgressColumn
@@ -56,16 +63,35 @@ try:
 except ImportError:
     _console = None
 
+# 导入占位符保护
+try:
+    from renpy_tools.utils.placeholder import extract_placeholders, restore_placeholders
+    _HAS_PH = True
+except ImportError:
+    _HAS_PH = False
+
+# 导入质量评分（翻译后检）
+try:
+    from renpy_tools.utils.common import calculate_quality_score
+    _HAS_QS = True
+except ImportError:
+    _HAS_QS = False
+
+# 并发文件写入锁
+_write_lock = threading.Lock()
+
 
 @dataclass
 class TranslatorConfig:
     """翻译器配置"""
     provider: str
     api_key: Optional[str] = None
+    api_url: Optional[str] = None  # LibreTranslate 自部署地址
     workers: int = 10
     timeout: float = 15.0
     max_retries: int = 3
     delay: float = 0.1  # 请求间隔，避免被限流
+    quality_check: bool = True  # 翻译质量后检
 
 
 class GoogleTranslator:
@@ -111,7 +137,7 @@ class GoogleTranslator:
                             translations.append(item[0])
                     return ''.join(translations)
         
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             return None
         
         return None
@@ -159,10 +185,52 @@ class BingTranslator:
                     if translation and len(translation) > 0:
                         return translation[0].get('text', '').strip()
         
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             return None
         
         return None
+
+
+class LibreTranslator:
+    """LibreTranslate 翻译（开源自部署）"""
+
+    DEFAULT_URL = "https://libretranslate.com/translate"
+
+    @staticmethod
+    def translate(text: str, api_url: str | None = None, api_key: str | None = None, timeout: float = 15.0) -> Optional[str]:
+        """
+        翻译文本
+
+        支持公共实例或自部署实例：
+          公共: https://libretranslate.com（需 API Key）
+          自部署: docker run -p 5000:5000 libretranslate/libretranslate
+        """
+        if not text.strip():
+            return ""
+
+        url = api_url or LibreTranslator.DEFAULT_URL
+
+        data = {
+            'q': text,
+            'source': 'en',
+            'target': 'zh',
+            'format': 'text',
+        }
+        if api_key:
+            data['api_key'] = api_key
+
+        headers = {'Content-Type': 'application/json'}
+
+        try:
+            post_data = json.dumps(data).encode('utf-8')
+            req = urlreq.Request(url, data=post_data, headers=headers)
+
+            with urlreq.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode('utf-8'))
+                return result.get('translatedText', '').strip() or None
+
+        except (OSError, ValueError, KeyError):
+            return None
 
 
 class DeepLTranslator:
@@ -205,7 +273,7 @@ class DeepLTranslator:
                     if translations and len(translations) > 0:
                         return translations[0].get('text', '').strip()
         
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             return None
         
         return None
@@ -228,9 +296,14 @@ def translate_text(
                 if not config.api_key:
                     return None
                 result = DeepLTranslator.translate(text, config.api_key, config.timeout)
-            else:
-                return None
             
+            if config.provider == 'libre':
+                result = LibreTranslator.translate(
+                    text, api_url=config.api_url, api_key=config.api_key, timeout=config.timeout
+                )
+            else:
+                result = None
+
             if result:
                 return result
             
@@ -238,7 +311,7 @@ def translate_text(
             if attempt < config.max_retries - 1:
                 time.sleep(1)
         
-        except Exception:
+        except (OSError, ValueError, KeyError):
             if attempt < config.max_retries - 1:
                 time.sleep(1)
     
@@ -250,7 +323,7 @@ def translate_item(
     config: TranslatorConfig
 ) -> tuple[str, Optional[str], Optional[str]]:
     """
-    翻译单条记录
+    翻译单条记录（带占位符保护）
     
     Returns:
         (id, 译文或None, 错误原因或None)
@@ -264,10 +337,21 @@ def translate_item(
     # 添加延迟避免限流
     time.sleep(config.delay)
     
-    # 翻译
-    translation = translate_text(original, config)
+    # 占位符保护：提取占位符 → 翻译纯文本 → 还原占位符
+    if _HAS_PH:
+        cleaned, placeholders = extract_placeholders(original)
+        translation = translate_text(cleaned, config)
+        if translation and placeholders:
+            translation = restore_placeholders(translation, placeholders)
+    else:
+        translation = translate_text(original, config)
     
     if translation:
+        # 翻译质量后检
+        if config.quality_check and _HAS_QS:
+            score = calculate_quality_score(original, translation)
+            if score.score < 30:
+                return item_id, None, f'low_quality({score.score})'
         return item_id, translation, None
     else:
         return item_id, None, 'translate_error'
@@ -330,15 +414,17 @@ def process_file(
                     item_id, translation, error = fut.result()
                     
                     if translation:
-                        # 保存成功的翻译
-                        with output_file.open('a', encoding='utf-8') as f:
-                            obj = {'id': item_id, 'zh': translation}
-                            f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                        # 保存成功的翻译（线程安全）
+                        with _write_lock:
+                            with output_file.open('a', encoding='utf-8') as f:
+                                obj = {'id': item_id, 'zh': translation}
+                                f.write(json.dumps(obj, ensure_ascii=False) + '\n')
                         success += 1
                     else:
-                        # 记录失败
-                        with rejects_file.open('a', encoding='utf-8') as f:
-                            f.write(f"{item_id}\t{error}\n")
+                        # 记录失败（线程安全）
+                        with _write_lock:
+                            with rejects_file.open('a', encoding='utf-8') as f:
+                                f.write(f"{item_id}\t{error}\n")
                         failed += 1
                     
                     progress.advance(task)
@@ -354,13 +440,15 @@ def process_file(
                 item_id, translation, error = fut.result()
                 
                 if translation:
-                    with output_file.open('a', encoding='utf-8') as f:
-                        obj = {'id': item_id, 'zh': translation}
-                        f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                    with _write_lock:
+                        with output_file.open('a', encoding='utf-8') as f:
+                            obj = {'id': item_id, 'zh': translation}
+                            f.write(json.dumps(obj, ensure_ascii=False) + '\n')
                     success += 1
                 else:
-                    with rejects_file.open('a', encoding='utf-8') as f:
-                        f.write(f"{item_id}\t{error}\n")
+                    with _write_lock:
+                        with rejects_file.open('a', encoding='utf-8') as f:
+                            f.write(f"{item_id}\t{error}\n")
                     failed += 1
                 
                 if i % 10 == 0:
@@ -421,9 +509,9 @@ def main():
     )
     parser.add_argument(
         "--provider",
-        choices=['google', 'bing', 'deepl'],
+        choices=['google', 'bing', 'deepl', 'libre'],
         required=True,
-        help="翻译提供商"
+        help="翻译提供商（google/bing/deepl/libre）"
     )
     parser.add_argument(
         "--api-key",
@@ -447,6 +535,15 @@ def main():
         default=0.1,
         help="请求间隔（秒，避免限流，默认 0.1）"
     )
+    parser.add_argument(
+        "--api-url",
+        help="LibreTranslate 服务地址（默认 https://libretranslate.com/translate）"
+    )
+    parser.add_argument(
+        "--no-quality-check",
+        action="store_true",
+        help="禁用翻译质量后检"
+    )
     
     args = parser.parse_args()
     
@@ -460,9 +557,11 @@ def main():
     config = TranslatorConfig(
         provider=args.provider,
         api_key=args.api_key,
+        api_url=getattr(args, 'api_url', None),
         workers=args.workers,
         timeout=args.timeout,
         delay=args.delay,
+        quality_check=not args.no_quality_check,
     )
     
     # 收集文件
@@ -488,6 +587,7 @@ def main():
         'google': 'Google Translate',
         'bing': 'Bing Translator',
         'deepl': 'DeepL (Free)',
+        'libre': 'LibreTranslate',
     }
     
     if _console:

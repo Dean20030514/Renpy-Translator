@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env pwsh
 # ============================================================================
-# Ren'Py 游戏汉化工具集 v2.1 - 主菜单 (优化版)
+# Ren'Py 游戏汉化工具集 v3.0 - 主菜单 (优化版)
 # ============================================================================
 # 
 # 主要改进:
@@ -35,7 +35,7 @@ function Show-Header {
     Clear-Host
     Write-Host ""
     Write-Host ("=" * 72) -ForegroundColor Cyan
-    Write-Host "          Ren'Py 游戏汉化工具集 v2.1                           " -ForegroundColor Cyan
+    Write-Host "          Ren'Py 游戏汉化工具集 v3.0                           " -ForegroundColor Cyan
     Write-Host "          Ren'Py Game Translation Toolkit                      " -ForegroundColor Cyan
     Write-Host ("=" * 72) -ForegroundColor Cyan
     Write-Host ""
@@ -61,6 +61,14 @@ function Show-MainMenu {
     Write-Host "   10. 🛠️  质量修复工具" -ForegroundColor White
     Write-Host "   11. 📊 翻译统计" -ForegroundColor White
     Write-Host "   12. ⚙️  环境配置" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  辅助工具：" -ForegroundColor Green
+    Write-Host "   13. 📦 RPA 解包" -ForegroundColor White
+    Write-Host "   14. 🪝 生成 Hook 脚本" -ForegroundColor White
+    Write-Host "   15. 🏗️  构建中文游戏包" -ForegroundColor White
+    Write-Host "   16. 🔤 替换字体" -ForegroundColor White
+    Write-Host "   17. 📁 中英对比 (Diff)" -ForegroundColor White
+    Write-Host "   18. 💾 构建翻译记忆 (TM)" -ForegroundColor White
     Write-Host ""
     Write-Host "    0. ❌ 退出" -ForegroundColor Red
     Write-Host ""
@@ -1206,6 +1214,306 @@ function Show-EnvironmentConfig {
     Read-Host "按回车继续"
 }
 
+function Invoke-UnpackRPA {
+    Show-Header
+    Write-Host "【RPA 解包】" -ForegroundColor Green
+    Write-Host ""
+    
+    Write-Host "选择解包模式：" -ForegroundColor Yellow
+    Write-Host "  1. 选择 .rpa 文件" -ForegroundColor White
+    Write-Host "  2. 选择游戏目录（解包所有 .rpa）" -ForegroundColor White
+    Write-Host ""
+    
+    $mode = Read-Host "请选择 (1-2)"
+    
+    $targetPath = $null
+    switch ($mode) {
+        "1" {
+            $targetPath = Select-File -Title "选择 .rpa 文件" -Filter "RPA 存档 (*.rpa)|*.rpa|所有文件 (*.*)|*.*"
+            if (-not $targetPath) {
+                $targetPath = Read-Host "请输入 .rpa 文件路径"
+            }
+        }
+        "2" {
+            $targetPath = Select-Folder -Description "选择游戏目录（game 文件夹所在）"
+            if (-not $targetPath) {
+                $targetPath = Read-Host "请输入游戏目录路径"
+            }
+        }
+        default {
+            Write-ErrorMsg "无效选择"
+            Read-Host "按回车继续"
+            return
+        }
+    }
+    
+    if (-not (Test-Path $targetPath)) {
+        Write-ErrorMsg "路径不存在: $targetPath"
+        Read-Host "按回车继续"
+        return
+    }
+    
+    $outputDir = Join-Path $WorkspaceRoot "outputs\unrpa_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    
+    $rpaArgs = @($targetPath, "-o", $outputDir)
+    
+    Write-Host ""
+    $scriptsOnly = Read-Host "是否仅提取脚本文件 (.rpy/.rpyc)？(Y/N)"
+    if ($scriptsOnly -eq "Y" -or $scriptsOnly -eq "y") {
+        $rpaArgs += "--scripts-only"
+    }
+    
+    $success = Invoke-SafePythonCommand `
+        -Script (Join-Path $WorkspaceRoot "tools\unrpa.py") `
+        -Arguments $rpaArgs `
+        -Description "正在解包 RPA 存档..."
+    
+    Write-Host ""
+    if ($success) {
+        Write-Success "解包完成: $outputDir"
+    }
+    
+    Read-Host "按回车继续"
+}
+
+function Invoke-GenHooks {
+    Show-Header
+    Write-Host "【生成 Hook 脚本】" -ForegroundColor Green
+    Write-Host ""
+    
+    Write-Host "Hook 脚本功能说明：" -ForegroundColor Yellow
+    Write-Host "  • hook_extract.rpy     — 运行时提取翻译字符串（支持 .rpyc）" -ForegroundColor White
+    Write-Host "  • hook_language.rpy     — 动态语言切换器" -ForegroundColor White
+    Write-Host "  • hook_font.rpy         — 按语言配置字体" -ForegroundColor White
+    Write-Host "  • hook_default_lang.rpy — 设置默认语言" -ForegroundColor White
+    Write-Host ""
+    
+    $outputDir = Select-Folder -Description "选择 Hook 输出目录（建议选游戏的 game/ 目录）"
+    if (-not $outputDir) {
+        $outputDir = Read-Host "请输入输出目录路径"
+    }
+    
+    if (-not $outputDir) {
+        Write-ErrorMsg "未指定输出目录"
+        Read-Host "按回车继续"
+        return
+    }
+    
+    Write-Host ""
+    Write-Host "选择生成内容：" -ForegroundColor Yellow
+    Write-Host "  1. 全部 Hook（推荐）" -ForegroundColor White
+    Write-Host "  2. 仅提取 Hook" -ForegroundColor White
+    Write-Host "  3. 仅语言切换 Hook" -ForegroundColor White
+    Write-Host ""
+    $hookChoice = Read-Host "请选择 (1-3)"
+    
+    $hookArgs = @("-o", $outputDir)
+    
+    switch ($hookChoice) {
+        "2" { $hookArgs += @("--only", "extract") }
+        "3" { $hookArgs += @("--only", "language") }
+    }
+    
+    Write-Host ""
+    $lang = Read-Host "目标语言代码 (默认 zh_CN)"
+    if (-not [string]::IsNullOrWhiteSpace($lang)) {
+        $hookArgs += @("--lang", $lang)
+    } else {
+        $hookArgs += @("--lang", "zh_CN")
+    }
+    
+    $font = Read-Host "字体文件名 (默认 SourceHanSansCN-Regular.otf)"
+    if (-not [string]::IsNullOrWhiteSpace($font)) {
+        $hookArgs += @("--font", $font)
+    }
+    
+    $success = Invoke-SafePythonCommand `
+        -Script (Join-Path $WorkspaceRoot "tools\gen_hooks.py") `
+        -Arguments $hookArgs `
+        -Description "正在生成 Hook 脚本..."
+    
+    Write-Host ""
+    if ($success) {
+        Write-Success "Hook 脚本已生成到: $outputDir"
+        Write-Info "请将生成的 .rpy 文件复制到游戏的 game/ 目录"
+    }
+    
+    Read-Host "按回车继续"
+}
+
+function Invoke-BuildCN {
+    Show-Header
+    Write-Host "【构建中文游戏包】" -ForegroundColor Green
+    Write-Host ""
+    
+    $gamePath = Select-Folder -Description "选择游戏根目录"
+    if (-not $gamePath) {
+        $gamePath = Read-Host "请输入游戏根目录路径"
+    }
+    
+    if (-not (Test-Path $gamePath)) {
+        Write-ErrorMsg "目录不存在"
+        Read-Host "按回车继续"
+        return
+    }
+    
+    $zhMirror = Select-Folder -Description "选择已翻译的 .rpy 镜像目录（patch 输出目录）"
+    if (-not $zhMirror) {
+        $zhMirror = Read-Host "请输入翻译镜像目录路径"
+    }
+    
+    if (-not (Test-Path $zhMirror)) {
+        Write-ErrorMsg "镜像目录不存在"
+        Read-Host "按回车继续"
+        return
+    }
+    
+    $outputDir = Join-Path $WorkspaceRoot "outputs\build_cn_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    
+    $buildArgs = @(
+        $gamePath,
+        "-o", $outputDir,
+        "--mode", "auto",
+        "--zh-mirror", $zhMirror,
+        "--lang", "zh_CN"
+    )
+    
+    Write-Host ""
+    $genHooks = Read-Host "是否同时生成运行时 Hook 脚本？(Y/N)"
+    if ($genHooks -eq "Y" -or $genHooks -eq "y") {
+        $buildArgs += "--gen-hooks"
+        
+        $font = Read-Host "字体文件名 (默认 SourceHanSansCN-Regular.otf)"
+        if (-not [string]::IsNullOrWhiteSpace($font)) {
+            $buildArgs += @("--font", $font)
+        }
+    }
+    
+    $success = Invoke-SafePythonCommand `
+        -Script (Join-Path $WorkspaceRoot "tools\build.py") `
+        -Arguments $buildArgs `
+        -Description "正在构建中文游戏包..."
+    
+    Write-Host ""
+    if ($success) {
+        Write-Success "构建完成: $outputDir"
+    }
+    
+    Read-Host "按回车继续"
+}
+
+function Invoke-ReplaceFonts {
+    Write-Step "替换字体"
+    Write-Host "将游戏字体替换为中文字体 (Noto Sans SC)" -ForegroundColor Cyan
+    Write-Host ""
+
+    $gameDir = Read-Host "请输入游戏根目录 (包含 game/ 文件夹)"
+    if (-not $gameDir -or -not (Test-Path $gameDir)) {
+        Write-Error "目录不存在: $gameDir"
+        Read-Host "按回车继续"
+        return
+    }
+
+    $dryRun = Read-Host "是否先预览操作？(Y=预览/N=直接执行) [Y]"
+    if ($dryRun -ne "N" -and $dryRun -ne "n") {
+        Write-Host "`n=== 预览模式 ===" -ForegroundColor Yellow
+        $fontArgs = @("tools/replace_fonts.py", $gameDir, "--dry-run")
+        & python @fontArgs
+        Write-Host ""
+        $proceed = Read-Host "确认执行字体替换？(Y/N)"
+        if ($proceed -ne "Y" -and $proceed -ne "y") {
+            Write-Host "已取消" -ForegroundColor Yellow
+            Read-Host "按回车继续"
+            return
+        }
+    }
+
+    $fontArgs = @("tools/replace_fonts.py", $gameDir, "--backup")
+    & python @fontArgs
+    $success = $LASTEXITCODE -eq 0
+
+    if ($success) {
+        Write-Success "字体替换完成（已备份原字体）"
+    }
+
+    Read-Host "按回车继续"
+}
+
+function Invoke-DiffDirs {
+    Write-Step "中英对比 (Diff)"
+    Write-Host "对比中英文 RPY 文件差异" -ForegroundColor Cyan
+    Write-Host ""
+
+    $cnDir = Read-Host "请输入中文版目录"
+    $enDir = Read-Host "请输入英文版目录"
+
+    if (-not $cnDir -or -not (Test-Path $cnDir)) {
+        Write-Error "中文目录不存在: $cnDir"
+        Read-Host "按回车继续"
+        return
+    }
+    if (-not $enDir -or -not (Test-Path $enDir)) {
+        Write-Error "英文目录不存在: $enDir"
+        Read-Host "按回车继续"
+        return
+    }
+
+    $outDir = Join-Path $PSScriptRoot "../outputs/rpy_diff"
+    $diffArgs = @(
+        "tools/diff_dirs.py",
+        "--cn", $cnDir,
+        "--en", $enDir,
+        "--out", $outDir,
+        "--workers", "8"
+    )
+    & python @diffArgs
+    $success = $LASTEXITCODE -eq 0
+
+    if ($success) {
+        Write-Success "对比完成，结果保存到: $outDir"
+    }
+
+    Read-Host "按回车继续"
+}
+
+function Invoke-BuildTM {
+    Write-Step "构建翻译记忆 (TM)"
+    Write-Host "从已翻译 JSONL 构建翻译记忆库" -ForegroundColor Cyan
+    Write-Host ""
+
+    $jsonlPath = Read-Host "请输入已翻译的 JSONL 文件或目录路径"
+    if (-not $jsonlPath -or -not (Test-Path $jsonlPath)) {
+        Write-Error "路径不存在: $jsonlPath"
+        Read-Host "按回车继续"
+        return
+    }
+
+    $outDir = Join-Path $PSScriptRoot "../outputs/tm"
+    $minLenInput = Read-Host "最小源文本长度 (默认 3)"
+    $minLen = if ($minLenInput) { $minLenInput } else { "3" }
+
+    $tmArgs = @(
+        "tools/build_memory.py",
+        "--jsonl", $jsonlPath,
+        "-o", $outDir,
+        "--min-len", $minLen
+    )
+
+    $tlRoot = Read-Host "是否从 tl 目录额外加载？(留空跳过，或输入 tl 目录路径)"
+    if ($tlRoot -and (Test-Path $tlRoot)) {
+        $tmArgs += @("--tl-root", $tlRoot)
+    }
+
+    & python @tmArgs
+    $success = $LASTEXITCODE -eq 0
+
+    if ($success) {
+        Write-Success "TM 构建完成，保存到: $outDir"
+    }
+
+    Read-Host "按回车继续"
+}
+
 # ==================== 主循环 ====================
 
 # 显示欢迎信息
@@ -1221,7 +1529,7 @@ while ($true) {
     Show-Header
     Show-MainMenu
     
-    $choice = Read-Host "请输入选项 (0-12)"
+    $choice = Read-Host "请输入选项 (0-18)"
     
     switch ($choice) {
         "1" { Invoke-OneClickOllama }
@@ -1236,6 +1544,12 @@ while ($true) {
         "10" { Invoke-QualityFix }
         "11" { Show-Statistics }
         "12" { Show-EnvironmentConfig }
+        "13" { Invoke-UnpackRPA }
+        "14" { Invoke-GenHooks }
+        "15" { Invoke-BuildCN }
+        "16" { Invoke-ReplaceFonts }
+        "17" { Invoke-DiffDirs }
+        "18" { Invoke-BuildTM }
         "0" {
             Clear-Host
             Write-Host ""

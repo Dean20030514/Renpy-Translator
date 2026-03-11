@@ -73,6 +73,23 @@ define gui.name_text_font = "fonts/NotoSansSCBold.ttf"
 - ✅ 字体替换后建议先测试游戏是否正常运行
 - ⚠️ 如果游戏使用了特殊字体效果，可能需要手动调整
 
+## 替代方案：运行时 Hook
+
+v3.0 新增了字体配置 Hook，可通过 `gen_hooks.py` 生成运行时字体配置，无需修改原始字体文件：
+
+```bash
+# 生成字体 Hook 脚本
+python tools/gen_hooks.py -o "E:\Games\MyGame\game" --only font --font "fonts/NotoSansSC.ttf"
+
+# 或在构建中文包时一并生成
+python tools/build.py "E:\Games\MyGame" -o outputs/build_cn --gen-hooks --font "NotoSansSC.ttf"
+```
+
+Hook 方式的优势：
+- 不修改原始游戏文件
+- 通过 Ren'Py 的 `init` 阶段动态设置字体
+- 可与语言切换器配合，中英文使用不同字体
+
 ## 常见问题
 
 ### Q: 字体替换后游戏无法启动？

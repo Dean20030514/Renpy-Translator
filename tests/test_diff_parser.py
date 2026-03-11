@@ -1,17 +1,10 @@
-import unittest, tempfile
+import tempfile
 from pathlib import Path
-
-# 允许直接从源码包导入（不要求已安装）
-import sys
-ROOT = Path(__file__).resolve().parents[1]
-src_path = ROOT / 'src'
-if str(src_path) not in sys.path:
-    sys.path.insert(0, str(src_path))
 
 import importlib
 
 
-class TestDiffParser(unittest.TestCase):
+class TestDiffParser:
     def test_parse_rpy_basic_blocks_and_dialogues(self):
         sample = """
 label start:
@@ -28,22 +21,22 @@ screen ui():
             parse_rpy = getattr(mod, 'parse_rpy')
             parsed = parse_rpy(str(p))
             # blocks
-            self.assertIn('start', parsed.labels)
-            self.assertIn('ui', parsed.screens)
+            assert 'start' in parsed.labels
+            assert 'ui' in parsed.screens
             # dialogues in label start
             start_blk = parsed.labels['start']
-            self.assertEqual(len(start_blk.dialogues), 2)
-            self.assertEqual(start_blk.dialogues[0].kind, 'speaker')
-            self.assertEqual(start_blk.dialogues[0].speaker, 'mc')
-            self.assertEqual(start_blk.dialogues[0].text, 'Hello')
-            self.assertEqual(start_blk.dialogues[1].kind, 'narration')
-            self.assertIsNone(start_blk.dialogues[1].speaker)
-            self.assertEqual(start_blk.dialogues[1].text, 'Narration')
+            assert len(start_blk.dialogues) == 2
+            assert start_blk.dialogues[0].kind == 'speaker'
+            assert start_blk.dialogues[0].speaker == 'mc'
+            assert start_blk.dialogues[0].text == 'Hello'
+            assert start_blk.dialogues[1].kind == 'narration'
+            assert start_blk.dialogues[1].speaker is None
+            assert start_blk.dialogues[1].text == 'Narration'
             # dialogues in screen ui
             ui_blk = parsed.screens['ui']
-            self.assertEqual(len(ui_blk.dialogues), 1)
-            self.assertEqual(ui_blk.dialogues[0].kind, 'text')
-            self.assertEqual(ui_blk.dialogues[0].text, 'Click Here')
+            assert len(ui_blk.dialogues) == 1
+            assert ui_blk.dialogues[0].kind == 'text'
+            assert ui_blk.dialogues[0].text == 'Click Here'
 
     def test_align_by_speaker_minimal(self):
         mod = importlib.import_module('renpy_tools.diff.parser')
@@ -60,10 +53,6 @@ screen ui():
         ]
         mapping = align_by_speaker(en, cn)
         # 期望: 第0对齐，第1删除为 None，第2对齐到 cn 索引1
-        self.assertEqual(mapping[0], (0, 0))
-        self.assertEqual(mapping[1], (1, None))
-        self.assertEqual(mapping[2], (2, 1))
-
-
-if __name__ == '__main__':
-    unittest.main()
+        assert mapping[0] == (0, 0)
+        assert mapping[1] == (1, None)
+        assert mapping[2] == (2, 1)

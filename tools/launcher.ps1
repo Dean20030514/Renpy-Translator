@@ -336,6 +336,7 @@ function Show-OptionsDialog {
         SkipNonDialog = $true
         WorkersMode = "auto"
         WorkersValue = 4
+        MinWords = 2                     # 最少词数（用于过滤短文本）
         FlushInterval = 20
         UseOptimized = $false        # 新增：是否启用优化翻译模式
         QualityThreshold = 0.7       # 新增：优化模式质量阈值
@@ -585,6 +586,7 @@ function Show-AdvancedDialog {
             SkipNonDialog = $checkSkipNonDialog.Checked
             WorkersMode = if ($radioAuto.Checked) { "auto" } else { "manual" }
             WorkersValue = $numericWorkers.Value
+            MinWords = $CurrentSettings.MinWords  # 保持原值
             FlushInterval = $numericFlush.Value
             UseOptimized = $checkUseOptimized.Checked
             QualityThreshold = $CurrentSettings.QualityThreshold  # 保持原值
@@ -916,7 +918,8 @@ if (-not $options.SkipBuild) {
         -o "$outputRoot/cn_build" `
         --mode mirror `
         --zh-mirror "$outputRoot/patched" `
-        --lang zh_CN
+        --lang zh_CN `
+        --gen-hooks
     
     if ($LASTEXITCODE -ne 0) { exit 1 }
     Write-Host ""

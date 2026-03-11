@@ -11,6 +11,44 @@ echo.
 cd /d "%~dp0"
 
 :: ========================================
+:: 解析启动参数
+:: ========================================
+set "FULL_CHECK=0"
+if "%~1"=="--full-check" set "FULL_CHECK=1"
+
+:: ========================================
+:: 完整检查模式：额外的系统架构和权限检查
+:: ========================================
+if "%FULL_CHECK%"=="0" goto skip_full_check
+
+if "%PROCESSOR_ARCHITECTURE%"=="AMD64" goto arch_ok
+if "%PROCESSOR_ARCHITEW6432%"=="AMD64" goto arch_ok
+if exist %windir%\SysWOW64 goto arch_ok
+
+echo ❌ 不支持 32 位系统
+echo    32-bit system not supported
+pause
+exit /b 1
+
+:arch_ok
+
+echo [0/5] 检查目录权限...
+set "TEST_FILE=%~dp0permission_test.tmp"
+echo test > "%TEST_FILE%" 2>nul
+if exist "%TEST_FILE%" (
+    del "%TEST_FILE%" >nul 2>&1
+    echo ✅ 目录权限正常
+) else (
+    echo ❌ 当前目录没有写入权限
+    echo    请将工具移至有权限的位置，或使用管理员权限运行
+    echo.
+    pause
+    exit /b 1
+)
+
+:skip_full_check
+
+:: ========================================
 :: 环境检查
 :: ========================================
 
@@ -104,9 +142,28 @@ echo ====================================================
 echo.
 
 :: ========================================
-:: 选择启动模式
+:: 启动主程序
 :: ========================================
 
+:: 完整检查模式：直接启动终端菜单（面向高级用户）
+if "%FULL_CHECK%"=="1" (
+    timeout /t 2 >nul
+    powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "& {$OutputEncoding=[Console]::OutputEncoding=[Console]::InputEncoding=[System.Text.Encoding]::UTF8; . '%~dp0tools\menu.ps1'}"
+    if %errorlevel% neq 0 (
+        echo.
+        echo ❌ 工具启动失败
+        echo.
+        echo 故障排除：
+        echo 1. 尝试运行 START_SAFE.bat（禁用 GPU 加速）
+        echo 2. 查看 docs/troubleshooting.md 了解常见问题
+        echo 3. 检查是否有杀毒软件拦截
+        echo.
+    )
+    pause
+    goto :eof
+)
+
+:: 普通模式：选择启动方式
 echo 请选择启动模式：
 echo.
 echo   [1] 🖥️  图形界面 (GUI) - 推荐新手使用

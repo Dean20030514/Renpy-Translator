@@ -39,7 +39,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Any, Optional
 from urllib import request as urlreq
 from urllib import error as urlerr
 
@@ -50,11 +50,10 @@ if str(_project_root / "src") not in sys.path:
 
 # 统一日志
 try:
-    from renpy_tools.utils.logger import get_logger, TranslationError
+    from renpy_tools.utils.logger import get_logger
     _logger = get_logger("translate")
 except ImportError:
     _logger = None
-    TranslationError = ValueError
 
 def _log(level: str, msg: str) -> None:
     """统一日志输出"""
@@ -68,6 +67,9 @@ def _log(level: str, msg: str) -> None:
 # 全局文件写入锁，防止并发写入竞态条件
 _file_write_lock = threading.Lock()
 
+# 全局 TM 实例（由 main 设置，translate_one_item 读取）
+_global_tm: Optional["TranslationMemory"] = None
+
 try:
     from rich.console import Console
     from rich.progress import (
@@ -78,30 +80,29 @@ try:
 except ImportError:
     _console = None
 
-# 统一导入（从 common.py 获取，避免重复定义）
+# 统一导入（优先从 placeholder.py，保证正确的 PH_RE）
 try:
-    from renpy_tools.utils.common import (
-        PH_RE, ph_multiset, 
-        TranslationCache, AdaptiveRateLimiter, calculate_quality_score
-    )
+    from renpy_tools.utils.placeholder import PH_RE, ph_multiset
 except ImportError:
-    # Fallback
-    PH_RE = re.compile(
-        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
-        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
-        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
-        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
-    )
-    
-    def ph_multiset(s: str) -> dict[str, int]:
-        cnt: dict[str, int] = {}
-        for m in PH_RE.findall(s or ""):
-            cnt[m] = cnt.get(m, 0) + 1
-        return cnt
-    
-    TranslationCache = None
-    AdaptiveRateLimiter = None
-    calculate_quality_score = None
+    try:
+        from renpy_tools.utils.common import (
+            PH_RE, ph_multiset,
+        )
+    except ImportError:
+        # Fallback
+        PH_RE = re.compile(
+            r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+            r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+            r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+            r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+        )
+
+        def ph_multiset(s: str) -> dict[str, int]:
+            cnt: dict[str, int] = {}
+            for m in PH_RE.findall(s or ""):
+                cnt[m] = cnt.get(m, 0) + 1
+            return cnt
+
 
 # 尝试导入优化翻译器
 try:
@@ -110,6 +111,13 @@ try:
 except ImportError:
     _HAS_OPTIMIZED_TRANSLATOR = False
 
+# 尝试导入翻译记忆
+try:
+    from renpy_tools.utils.tm import TranslationMemory
+    _HAS_TM = True
+except ImportError:
+    _HAS_TM = False
+
 
 # ========================================
 # 配置类
@@ -117,17 +125,19 @@ except ImportError:
 
 @dataclass
 class TranslationConfig:
-    """翻译配置"""
-    host: str = "http://127.0.0.1:11434"
-    model: str = "qwen2.5:14b"
-    workers: int = 4
-    timeout: float = 120.0
-    temperature: float = 0.2
-    retries: int = 1
-    min_words: int = 2
-    flush_interval: int = 20
-    use_optimized: bool = False
-    quality_threshold: float = 0.7
+    """翻译配置（所有参数均可通过命令行 --flag 覆盖）"""
+    host: str = "http://127.0.0.1:11434"  # Ollama 服务地址
+    model: str = "qwen2.5:14b"            # 默认模型
+    workers: int = 4                       # 并发翻译线程数
+    timeout: float = 120.0                 # 单次请求超时（秒）
+    temperature: float = 0.2               # 采样温度（越低越确定性）
+    retries: int = 1                       # 失败重试次数
+    min_words: int = 2                     # 低于该词数的行跳过翻译
+    flush_interval: int = 20               # 每翻译 N 条写盘一次（0=仅末尾写）
+    use_optimized: bool = False            # 启用优化模式（连接池+质量验证）
+    quality_threshold: float = 0.7         # 优化模式质量阈值（0-1）
+    resume: bool = False                   # 断点续译：跳过已翻译 ID
+    tm_path: Optional[str] = None          # TM JSONL 文件路径
     
     def __post_init__(self):
         """验证配置"""
@@ -244,13 +254,11 @@ def is_non_dialog_text(text: str, min_words: int = 2) -> bool:
     """
     判断是否为非对话文本（应跳过翻译）
     
-    【已废弃】此功能容易误判，建议在提取阶段过滤
-    现在只过滤明显的非文本内容
-    
-    跳过规则：
+    仅过滤明显的非文本内容：
     - 空文本
     - 纯布尔值（True/False/None）
     - 明显的资源路径（包含 / 或 .png/.jpg 等）
+    - 单词数少于 min_words 且全为非字母字符
     """
     if not text or not text.strip():
         return True
@@ -275,6 +283,11 @@ def is_non_dialog_text(text: str, min_words: int = 2) -> bool:
     
     # 图片/音频文件
     if re.search(r'\.(png|jpg|jpeg|gif|webp|mp3|ogg|wav)$', lower):
+        return True
+    
+    # 单词数过少（纯符号/数字/单字符）
+    words = re.findall(r'[A-Za-z]+', clean)
+    if len(words) < min_words and not re.search(r'[A-Za-z]{2,}', clean):
         return True
     
     return False
@@ -303,53 +316,61 @@ def strip_thinking_blocks(text: str) -> str:
 # Prompt 构建
 # ========================================
 
-def build_system_prompt() -> str:
-    """构建系统提示词"""
-    return (
-        "你是资深成人游戏本地化译员，将英文台词翻译为简体中文。\n\n"
-        
-        "【重要提示】\n"
-        "- 文本中的 〔数字〕 标记（如〔0〕〔1〕）是占位符，翻译时必须保留\n"
-        "- 不要删除或修改这些标记，保持它们在译文中的位置\n\n"
-        
-        "【翻译风格】\n"
-        "- 成人游戏主基调：直白露骨（鸡巴、奶子、小穴、屁股、骚货、操、干、插）\n"
-        "- 自然口语，避免生硬直译\n"
-        "- 保持换行符数量一致\n"
-        "- UI 文本优先短译\n\n"
-        
-        "【语气指南】（从场景标签判断）\n"
-        "- Love：俏皮、温馨\n"
-        "- Corruption：命令、占有\n"
-        "- NTR：不甘、较劲\n"
-        "- Sadist：嘲弄、压迫\n"
-        "- *dark：加深语气\n\n"
-        
-        "【翻译质量要求】⚠️ 严格遵守\n"
-        "- ⚠️ 严禁输出任何英文单词（专有名词、变量名除外）\n"
-        "- ⚠️ 必须将每一个英文词汇完整翻译为中文\n"
-        "- ⚠️ 禁止中英文混合输出\n"
-        "- ⚠️ 不确定的词宁可意译，也不要保留英文\n\n"
-        
-        "【错误示例】禁止模仿以下错误\n"
-        "❌ '你 also 也喜欢' → ✅ '你也喜欢'\n"
-        "❌ '享受你的 pleasure' → ✅ '享受你的快感'\n"
-        "❌ '一个dirty的秘密' → ✅ '一个肮脏的秘密'\n"
-        "❌ '那副slutty的look' → ✅ '那副淫荡的眼神'\n\n"
-        
-        "【输出规则】\n"
-        "- 只输出纯中文译文\n"
-        "- 不输出思考过程、代码块、额外说明\n"
-        "- 再次强调：绝对不允许输出任何英文单词"
-    )
+try:
+    from renpy_tools.utils.prompts import build_system_prompt
+except ImportError:
+    def build_system_prompt() -> str:
+        """构建系统提示词（fallback）"""
+        return (
+            "你是资深成人游戏本地化译员，将英文台词翻译为简体中文。\n\n"
+
+            "【重要提示】\n"
+            "- 文本中的 〔数字〕 标记（如〔0〕〔1〕）是占位符，翻译时必须保留\n"
+            "- 不要删除或修改这些标记，保持它们在译文中的位置\n\n"
+
+            "【翻译风格】\n"
+            "- 成人游戏主基调：直白露骨（鸡巴、奶子、小穴、屁股、骚货、操、干、插）\n"
+            "- 自然口语，避免生硬直译\n"
+            "- 保持换行符数量一致\n"
+            "- UI 文本优先短译\n\n"
+
+            "【语气指南】（从场景标签判断）\n"
+            "- Love：俏皮、温馨\n"
+            "- Corruption：命令、占有\n"
+            "- NTR：不甘、较劲\n"
+            "- Sadist：嘲弄、压迫\n"
+            "- *dark：加深语气\n\n"
+
+            "【翻译质量要求】⚠️ 严格遵守\n"
+            "- ⚠️ 严禁输出任何英文单词（专有名词、变量名除外）\n"
+            "- ⚠️ 必须将每一个英文词汇完整翻译为中文\n"
+            "- ⚠️ 禁止中英文混合输出\n"
+            "- ⚠️ 不确定的词宁可意译，也不要保留英文\n\n"
+
+            "【错误示例】禁止模仿以下错误\n"
+            "❌ '你 also 也喜欢' → ✅ '你也喜欢'\n"
+            "❌ '享受你的 pleasure' → ✅ '享受你的快感'\n"
+            "❌ '一个dirty的秘密' → ✅ '一个肮脏的秘密'\n"
+            "❌ '那副slutty的look' → ✅ '那副淫荡的眼神'\n\n"
+
+            "【输出规则】\n"
+            "- 只输出纯中文译文\n"
+            "- 不输出思考过程、代码块、额外说明\n"
+            "- 再次强调：绝对不允许输出任何英文单词"
+        )
 
 
 def build_user_prompt(text: str, context: dict[str, Any]) -> str:
-    """构建用户提示词"""
+    """构建用户提示词（含说话者、上下文窗口）"""
     parts = [
         "[翻译任务] 将下列英文翻译为简体中文。",
-        f"[英文]\n{text}",
     ]
+    
+    # 说话者信息 — 帮助 LLM 保持角色语气一致
+    if context.get("speaker"):
+        parts.append(f"[说话者] {context['speaker']}")
+    
+    parts.append(f"[英文]\n{text}")
     
     if context.get("label"):
         parts.append(f"[场景/标签] {context['label']}")
@@ -362,57 +383,53 @@ def build_user_prompt(text: str, context: dict[str, Any]) -> str:
     if context.get("ctx_next"):
         parts.append(f"[同段后句] {' | '.join(context['ctx_next'])}")
     
+    # 角色语气描述（从 character_profiles 注入）
+    if context.get("_char_tone"):
+        parts.append(f"[角色语气] {context['_char_tone']}")
+    
     return "\n\n".join(parts)
 
 
 # ========================================
-# 占位符处理
+# 占位符处理（统一从 placeholder.py 导入）
 # ========================================
 
-def extract_placeholders(text: str) -> tuple[str, list[tuple[str, int]]]:
-    """
-    提取占位符，返回(纯文本, [(占位符, 位置)])
-    
-    提取的占位符类型：
-    1. Ren'Py 标签：{i} {/i} {b} {color=#...}
-    2. 方括号变量：[name] [pov] [ls]
-    3. 格式化占位符：%(name)s %s {0} {name}
-    
-    占位符用 〔0〕, 〔1〕 等替换（全角括号，模型不会删除）
-    """
-    pattern = re.compile(
-        r'\{[/a-z_][^}]*\}'  # {i}, {/i}, {color=#fff}
-        r'|\[[a-z_][^\]]*\]'  # [name], [pov]
-        r'|%\([^)]+\)[sdifeEfgGxXo]'  # %(name)s
-        r'|%[sdifeEfgGxXo]'  # %s, %d
-        r'|\{\d+(?:![rsa])?(?::[^{}]+)?\}'  # {0}, {0:.2f}
-        r'|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}',  # {name}
-        flags=re.IGNORECASE
-    )
-    
-    matches = list(pattern.finditer(text))
-    placeholders: list[tuple[str, int]] = []
-    result = text
-    
-    # 从后往前替换，避免位置偏移
-    for i in range(len(matches) - 1, -1, -1):
-        match = matches[i]
-        ph = match.group(0)
-        pos = match.start()
-        tag = f'〔{i}〕'  # 全角括号
-        placeholders.insert(0, (ph, i))
-        result = result[:pos] + tag + result[pos + len(ph):]
-    
-    return result, placeholders
+try:
+    from renpy_tools.utils.placeholder import extract_placeholders, restore_placeholders
+except ImportError:
+    # Fallback: 内联实现
+    def extract_placeholders(text: str) -> tuple[str, list[tuple[str, int]]]:
+        """
+        提取占位符，返回(纯文本, [(占位符, 位置)])
+        """
+        pattern = re.compile(
+            r'\{[/a-z_][^}]*\}'
+            r'|\[[a-z_][^\]]*\]'
+            r'|%\([^)]+\)[sdifeEfgGxXo]'
+            r'|%[sdifeEfgGxXo]'
+            r'|\{\d+(?:![rsa])?(?::[^{}]+)?\}'
+            r'|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}',
+            flags=re.IGNORECASE
+        )
+        matches = list(pattern.finditer(text))
+        placeholders: list[tuple[str, int]] = []
+        result = text
+        for i in range(len(matches) - 1, -1, -1):
+            match = matches[i]
+            ph = match.group(0)
+            pos = match.start()
+            tag = f'〔{i}〕'
+            placeholders.insert(0, (ph, i))
+            result = result[:pos] + tag + result[pos + len(ph):]
+        return result, placeholders
 
-
-def restore_placeholders(text: str, placeholders: list[tuple[str, int]]) -> str:
-    """将 〔0〕, 〔1〕 等替换回原始占位符"""
-    result = text
-    for ph, idx in placeholders:
-        tag = f'〔{idx}〕'
-        result = result.replace(tag, ph)
-    return result
+    def restore_placeholders(text: str, placeholders: list[tuple[str, int]]) -> str:
+        """将 〔0〕, 〔1〕 等替换回原始占位符"""
+        result = text
+        for ph, idx in placeholders:
+            tag = f'〔{idx}〕'
+            result = result.replace(tag, ph)
+        return result
 
 
 def ensure_valid_translation(source: str, translation: str) -> tuple[bool, str]:
@@ -489,6 +506,15 @@ def translate_one_item(
     if not clean_text.strip() or len(clean_text.strip()) < 2:
         return item_id, original, None
     
+    # TM 精确匹配：跳过 API 调用
+    if _global_tm is not None:
+        tm_match = _global_tm.get_exact(clean_text)
+        if tm_match and tm_match.score >= 100.0:
+            final = restore_placeholders(tm_match.target, placeholders)
+            valid, _ = ensure_valid_translation(original, final)
+            if valid:
+                return item_id, final, None
+    
     # 构建提示词
     context = {k: v for k, v in item.items() if k not in ("id", "en")}
     user_prompt = build_user_prompt(clean_text, context)
@@ -547,6 +573,40 @@ def translate_one_item(
 # 文件处理
 # ========================================
 
+def _load_done_ids(output_file: Path) -> set[str]:
+    """从已有输出文件加载已翻译 ID（用于断点续译）"""
+    done: set[str] = set()
+    if not output_file.exists():
+        return done
+    with output_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+                item_id = obj.get("id")
+                if item_id:
+                    done.add(item_id)
+            except (ValueError, json.JSONDecodeError):
+                continue
+    return done
+
+
+def _load_tm(tm_path: Optional[str]) -> Optional["TranslationMemory"]:
+    """加载翻译记忆（如果可用）"""
+    if not tm_path or not _HAS_TM:
+        return None
+    tm = TranslationMemory(min_length=2)
+    p = Path(tm_path)
+    if not p.exists():
+        _log("warning", f"TM 文件不存在: {tm_path}")
+        return None
+    tm.load_jsonl(str(p))
+    count = len(tm._exact_index)
+    _log("info", f"已加载 TM: {count} 条精确匹配条目")
+    return tm
+
+
 class TranslationProcessor:
     """翻译处理器"""
     
@@ -580,11 +640,11 @@ class TranslationProcessor:
         after = len(filtered)
         
         if before > after:
-            self._print(f"  [dim]过滤非文本内容: {before-after}/{before} 已跳过[/]")
+            self.print_msg(f"  [dim]过滤非文本内容: {before-after}/{before} 已跳过[/]")
         
         return filtered
     
-    def _print(self, msg: str):
+    def print_msg(self, msg: str):
         """打印消息"""
         if _console:
             _console.print(msg)
@@ -626,16 +686,29 @@ class TranslationProcessor:
         items = self.filter_items(items)
         
         if not items:
-            self._print("  [yellow]⚠ 无有效数据[/]")
+            self.print_msg("  [yellow]⚠ 无有效数据[/]")
             return
+        
+        # 断点续译：跳过已完成的 ID
+        if self.config.resume:
+            done_ids = _load_done_ids(output_file)
+            if done_ids:
+                before = len(items)
+                items = [it for it in items if it.get("id") not in done_ids]
+                skipped = before - len(items)
+                self.print_msg(f"  [dim]断点续译: 跳过已翻译 {skipped}/{before} 条[/]")
+                if not items:
+                    self.print_msg("  [green]✓ 全部已翻译，无需继续[/]")
+                    return
         
         self.stats.total = len(items)
         
-        # 清空输出文件
+        # 清空输出文件（续译模式不清空）
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text("", encoding="utf-8")
-        if rejects_file.exists():
-            rejects_file.unlink()
+        if not self.config.resume:
+            output_file.write_text("", encoding="utf-8")
+            if rejects_file.exists():
+                rejects_file.unlink()
         
         out_lines: list[dict] = []
         rej_lines: list[tuple[str, str]] = []
@@ -643,9 +716,9 @@ class TranslationProcessor:
         # 显示GPU信息
         gpu_info = get_gpu_info()
         if gpu_info:
-            self._print(f"  [cyan]🎮 {gpu_info}[/]")
+            self.print_msg(f"  [cyan]🎮 {gpu_info}[/]")
         
-        self._print(f"  [bold]翻译 {len(items)} 条文本...[/]")
+        self.print_msg(f"  [bold]翻译 {len(items)} 条文本...[/]")
         
         # 并发翻译
         if self.config.workers > 1:
@@ -789,8 +862,8 @@ class TranslationProcessor:
     
     def _print_stats(self):
         """打印统计信息"""
-        self._print("  [green]✓ 完成翻译[/]")
-        self._print(
+        self.print_msg("  [green]✓ 完成翻译[/]")
+        self.print_msg(
             f"  [dim]统计: 成功={self.stats.success}, 失败={self.stats.failed}, "
             f"成功率={self.stats.success_rate():.1%}, "
             f"平均耗时={self.stats.avg_time_per_item():.2f}s/条[/]"
@@ -820,22 +893,35 @@ def process_optimized(
     items = processor.filter_items(items)
     
     if not items:
-        processor._print("  [yellow]⚠ 无有效数据[/]")
+        processor.print_msg("  [yellow]⚠ 无有效数据[/]")
         return
+    
+    # 断点续译：跳过已完成的 ID
+    if config.resume:
+        done_ids = _load_done_ids(output_file)
+        if done_ids:
+            before = len(items)
+            items = [it for it in items if it.get("id") not in done_ids]
+            skipped = before - len(items)
+            processor.print_msg(f"  [dim]断点续译: 跳过已翻译 {skipped}/{before} 条[/]")
+            if not items:
+                processor.print_msg("  [green]✓ 全部已翻译，无需继续[/]")
+                return
     
     out_lines: list[dict] = []
     rej_lines: list[tuple[str, str]] = []
     
-    # 清空输出文件
+    # 清空输出文件（续译模式不清空）
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text("", encoding="utf-8")
-    if rejects_file.exists():
-        rejects_file.unlink()
+    if not config.resume:
+        output_file.write_text("", encoding="utf-8")
+        if rejects_file.exists():
+            rejects_file.unlink()
     
     # 显示GPU信息
     gpu_info = get_gpu_info()
     if gpu_info:
-        processor._print(f"  [cyan]🎮 {gpu_info}[/]")
+        processor.print_msg(f"  [cyan]🎮 {gpu_info}[/]")
     
     # 创建优化翻译器
     with OllamaTranslator(
@@ -847,7 +933,7 @@ def process_optimized(
         quality_threshold=config.quality_threshold,
         max_retries=3
     ) as translator:
-        processor._print(
+        processor.print_msg(
             f"  [bold]使用优化翻译器（连接池 + 质量验证）翻译 {len(items)} 条文本...[/]"
         )
         
@@ -888,7 +974,10 @@ def process_optimized(
                     if result["success"]:
                         # 恢复占位符
                         final = restore_placeholders(result["translation"], placeholders)
-                        out_lines.append({"id": item.get("id"), "zh": final})
+                        out_obj: dict[str, Any] = {"id": item.get("id"), "zh": final}
+                        if "quality_score" in result:
+                            out_obj["quality_score"] = round(result["quality_score"], 3)
+                        out_lines.append(out_obj)
                     else:
                         # 记录失败
                         errors = "; ".join(result.get("issues", []))
@@ -925,7 +1014,10 @@ def process_optimized(
                 
                 if result["success"]:
                     final = restore_placeholders(result["translation"], placeholders)
-                    out_lines.append({"id": item.get("id"), "zh": final})
+                    out_obj_nc: dict[str, Any] = {"id": item.get("id"), "zh": final}
+                    if "quality_score" in result:
+                        out_obj_nc["quality_score"] = round(result["quality_score"], 3)
+                    out_lines.append(out_obj_nc)
                 else:
                     errors = "; ".join(result.get("issues", []))
                     rej_lines.append((item.get("id", ""), f"quality_failed: {errors}"))
@@ -941,8 +1033,8 @@ def process_optimized(
         
         # 显示统计
         stats = translator.get_stats()
-        processor._print("  [green]✓ 完成翻译[/]")
-        processor._print(
+        processor.print_msg("  [green]✓ 完成翻译[/]")
+        processor.print_msg(
             f"  [dim]统计: 总数={stats['total']}, 成功={stats['success']}, "
             f"失败={stats['failed']}, 重试={stats['retries']}, "
             f"平均质量={stats['avg_quality']:.2f}[/]"
@@ -1036,6 +1128,20 @@ def main():
         help="每翻译多少条后自动保存（默认 20，设为 0 则仅最后保存）"
     )
     
+    # 断点续译
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="断点续译：跳过输出文件中已有的 ID（崩溃后可直接重跑）"
+    )
+    
+    # 翻译记忆
+    parser.add_argument(
+        "--tm",
+        help="翻译记忆 JSONL 文件路径（精确匹配时直接使用 TM 翻译，跳过 API 调用）"
+    )
+    
     # 优化模式
     parser.add_argument(
         "--use-optimized",
@@ -1085,7 +1191,9 @@ def main():
         min_words=args.min_words,
         flush_interval=args.flush_interval,
         use_optimized=args.use_optimized and _HAS_OPTIMIZED_TRANSLATOR,
-        quality_threshold=args.quality_threshold
+        quality_threshold=args.quality_threshold,
+        resume=args.resume,
+        tm_path=args.tm
     )
     
     # 显示配置
@@ -1099,6 +1207,8 @@ def main():
         )
         if config.use_optimized:
             _console.print(f"[bold]质量阈值:[/] [yellow]{config.quality_threshold:.1f}[/]")
+        if config.resume:
+            _console.print("[bold]断点续译:[/] [yellow]已启用[/]")
         
         gpu_info = get_gpu_info()
         if gpu_info:
@@ -1120,6 +1230,16 @@ def main():
         if gpu_info:
             print(f"GPU 状态: {gpu_info}")
         print()
+    
+    # 加载翻译记忆
+    global _global_tm
+    _global_tm = _load_tm(config.tm_path)
+    if _global_tm:
+        tm_count = len(_global_tm._exact_index)
+        if _console:
+            _console.print(f"[bold]翻译记忆:[/] [yellow]{tm_count} 条精确匹配[/]")
+        else:
+            print(f"翻译记忆: {tm_count} 条精确匹配")
     
     # 处理文件
     for i, f in enumerate(files, 1):
@@ -1149,3 +1269,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

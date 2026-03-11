@@ -30,6 +30,28 @@ DEFAULT_FONTS = {
 FONT_EXTENSIONS = ('.ttf', '.otf', '.TTF', '.OTF')
 
 
+def load_font_map(font_map_path: Optional[str]) -> dict[str, str]:
+    """从 JSON 文件加载自定义字体映射表
+
+    文件格式示例:
+    {
+        "DejaVuSans.ttf": "fonts/NotoSansSC.ttf",
+        "DejaVuSans-Bold.ttf": "fonts/NotoSansSCBold.ttf",
+        "*.ttf": "fonts/NotoSansSC.ttf",
+        "*bold*.ttf": "fonts/NotoSansSCBold.ttf"
+    }
+    """
+    if not font_map_path:
+        return {}
+    import json
+    p = Path(font_map_path)
+    if not p.exists():
+        print(f"⚠ 字体映射文件不存在: {p}")
+        return {}
+    with p.open('r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 def find_font_files(game_dir: Path) -> list[Path]:
     """查找游戏目录中的所有字体文件"""
     fonts = []
@@ -80,8 +102,13 @@ def copy_chinese_fonts(game_dir: Path, font_source_dir: Path) -> dict[str, Path]
     return copied
 
 
-def update_font_references(game_dir: Path) -> int:
-    """更新 .rpy 文件中的字体引用"""
+def update_font_references(game_dir: Path, font_map: dict[str, str] | None = None) -> int:
+    """更新 .rpy 文件中的字体引用
+    
+    Args:
+        game_dir: 游戏根目录
+        font_map: 自定义字体映射表 {原字体文件名: 新字体路径}
+    """
     game_subdir = game_dir / 'game'
     if not game_subdir.exists():
         print(f"  ⚠ game 目录不存在: {game_subdir}")
@@ -90,11 +117,21 @@ def update_font_references(game_dir: Path) -> int:
     rpy_files = list(game_subdir.rglob('*.rpy'))
     updated_count = 0
     
-    # 字体定义的正则模式
-    # 匹配: define gui.text_font = "xxx.ttf"
-    # 或: style.xxx.font = "xxx.ttf"
+    # 更健壮的字体引用正则
+    # 匹配以下模式:
+    #   define gui.text_font = "xxx.ttf"
+    #   style.xxx.font = "xxx.ttf"
+    #   gui.xxx_font = "xxx.ttf" (直接赋值)
+    #   font "xxx.ttf" (属性设置)
     font_pattern = re.compile(
-        r'((?:define\s+gui\.\w+_font|style\.\w+\.font)\s*=\s*["\'])([^"\']+\.(?:ttf|otf))(["\'])',
+        r'('
+        r'(?:define\s+gui\.\w+_font|style\.\w+\.font|gui\.\w+_font)'
+        r'\s*=\s*["\']'
+        r'|'
+        r'font\s+["\']'
+        r')'
+        r'([^"\']+\.(?:ttf|otf))'
+        r'(["\'])',
         re.IGNORECASE
     )
     
@@ -108,8 +145,21 @@ def update_font_references(game_dir: Path) -> int:
                 prefix = match.group(1)
                 old_font = match.group(2)
                 suffix = match.group(3)
+                old_basename = Path(old_font).name.lower()
                 
-                # 根据是否包含 "bold" 选择字体
+                # 1) 优先从自定义映射表匹配
+                if font_map:
+                    # 精确匹配文件名
+                    for pattern, replacement in font_map.items():
+                        if pattern.lower() == old_basename:
+                            return f"{prefix}{replacement}{suffix}"
+                    # 通配符匹配（*bold*.ttf → bold 字体）
+                    import fnmatch
+                    for pattern, replacement in font_map.items():
+                        if '*' in pattern and fnmatch.fnmatch(old_basename, pattern.lower()):
+                            return f"{prefix}{replacement}{suffix}"
+                
+                # 2) 默认逻辑：根据是否包含 "bold" 选择字体
                 if 'bold' in old_font.lower():
                     new_font = 'fonts/NotoSansSCBold.ttf'
                 else:
@@ -136,6 +186,7 @@ def main():
     ap.add_argument('--font-dir', help='中文字体源目录（默认为当前工作区的 data/fonts）')
     ap.add_argument('--backup', action='store_true', help='备份旧字体到 outputs/font_backup')
     ap.add_argument('--dry-run', action='store_true', help='仅显示将要执行的操作，不实际修改')
+    ap.add_argument('--font-map', help='自定义字体映射表（JSON 文件），格式: {"旧字体名": "新字体路径"}')
     args = ap.parse_args()
     
     game_dir = Path(args.game_root).resolve()
@@ -165,6 +216,11 @@ def main():
     print("=" * 60)
     print(f"游戏目录: {game_dir}")
     print(f"字体源: {font_source_dir}")
+    
+    # 加载自定义字体映射
+    custom_font_map = load_font_map(args.font_map)
+    if custom_font_map:
+        print(f"自定义映射: {len(custom_font_map)} 条规则")
     print()
     
     if args.dry_run:
@@ -202,7 +258,7 @@ def main():
     # 步骤 3: 更新字体引用
     print("▶ 步骤 3: 更新 .rpy 文件中的字体引用")
     if not args.dry_run:
-        updated = update_font_references(game_dir)
+        updated = update_font_references(game_dir, custom_font_map)
         if updated > 0:
             print(f"  ✓ 已更新 {updated} 个文件")
         else:

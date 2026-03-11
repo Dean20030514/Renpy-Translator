@@ -23,10 +23,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pre-commit pytest ruff black isort
+          pip install pre-commit pytest ruff isort
       - name: Run pre-commit
         run: |
-          pre-commit run --all-files || true
+          pre-commit run --all-files
       - name: Run pytest
         run: |
           pytest -q
@@ -68,15 +68,15 @@ jobs:
           path.write_text(content, encoding='utf-8')
           PY
           # Extract
-          python renpy_batch_tools/extract_rpy_batch.py $DEMO -o outputs/extract --workers auto
+          python tools/extract.py $DEMO -o outputs/extract --workers auto
           # Prefill (using bundled dictionaries if any)
-          python renpy_batch_tools/prefill_with_dictionary.py outputs/extract/project_en_for_grok.jsonl data/dictionaries -o outputs/prefilled/demo_prefilled.jsonl --case-insensitive --dict-backend memory
+          python tools/prefill.py outputs/extract/project_en_for_grok.jsonl data/dictionaries -o outputs/prefilled/demo_prefilled.jsonl --case-insensitive --dict-backend memory
           # Validate (+ HTML)
-          python renpy_batch_tools/validate_translations_batch.py outputs/extract/project_en_for_grok.jsonl outputs/prefilled/demo_prefilled.jsonl --qa-json outputs/qa/qa.json --qa-tsv outputs/qa/qa.tsv --qa-html outputs/qa/qa.html --ignore-ui-punct
+          python tools/validate.py outputs/extract/project_en_for_grok.jsonl outputs/prefilled/demo_prefilled.jsonl --qa-json outputs/qa/qa.json --qa-tsv outputs/qa/qa.tsv --qa-html outputs/qa/qa.html --ignore-ui-punct
           # Patch (advanced, mirror outputs)
-          python renpy_batch_tools/patch_rpy_batch.py $DEMO outputs/prefilled/demo_prefilled.jsonl -o outputs/out_patch --advanced
+          python tools/patch.py $DEMO outputs/prefilled/demo_prefilled.jsonl -o outputs/out_patch --advanced
           # Build CN package (auto prefers mirror)
-          python renpy_batch_tools/build_cn_package.py $DEMO -o outputs/build_cn --mode auto --zh-mirror outputs/out_patch --lang zh_CN
+          python tools/build.py $DEMO -o outputs/build_cn --mode auto --zh-mirror outputs/out_patch --lang zh_CN
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

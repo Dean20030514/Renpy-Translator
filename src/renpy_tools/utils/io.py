@@ -12,12 +12,17 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import logging
 from pathlib import Path
-from typing import Iterable, Dict, Any, Optional
+from typing import Iterable, Dict, Any
 
-# 获取模块级 logger
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+# 获取模块级 logger（使用项目统一的 TranslationLogger）
+logger = get_logger(__name__)
+
+
+# 统一的编码回退列表（供所有需要读取文件的模块使用）
+FALLBACK_ENCODINGS = ['utf-8-sig', 'utf-8', 'cp1252', 'latin1']
 
 
 def ensure_parent_dir(path: str | Path) -> Path:
@@ -28,7 +33,7 @@ def ensure_parent_dir(path: str | Path) -> Path:
 
 
 def read_text_file(path: str | Path, encoding: str = 'utf-8') -> str:
-    """统一以 UTF-8 优先读取，失败时对常见编码回退。
+    """统一以 UTF-8 优先读取，失败时按 FALLBACK_ENCODINGS 回退。
 
     尝试顺序：指定编码 -> utf-8-sig -> cp1252 -> latin1
 
@@ -40,7 +45,7 @@ def read_text_file(path: str | Path, encoding: str = 'utf-8') -> str:
         文件内容
     """
     p = Path(path)
-    encs = [encoding, 'utf-8-sig', 'cp1252', 'latin1']
+    encs = [encoding] + [e for e in FALLBACK_ENCODINGS if e != encoding]
     for enc in encs:
         try:
             return p.read_text(encoding=enc, errors="replace")

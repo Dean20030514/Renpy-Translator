@@ -1,6 +1,6 @@
 # 10 分钟上手：从抽取到构建
 
-本页以一个极小的 Ren'Py 项目为例，演示 extract → prefill → validate → patch → build 的端到端流程。
+本页以一个极小的 Ren'Py 项目为例，演示完整的端到端流程。
 
 ## 准备一个 demo 项目
 
@@ -25,6 +25,16 @@ label outside:
     "You went out."
 ```
 
+## 0) RPA 解包（如需要）
+
+如果游戏将脚本打包在 `.rpa` 存档中，先解包：
+
+```pwsh
+python tools/unrpa.py demo/game/archive.rpa -o demo/game/ --scripts-only
+```
+
+> 支持 RPA-2.0 和 RPA-3.0 格式。如果游戏目录下已有 `.rpy` 文件，可跳过此步。
+
 ## 1) 抽取英文文案
 
 ```pwsh
@@ -36,6 +46,8 @@ python tools/extract.py demo -o outputs/extract --workers auto
 - `outputs/extract/project_en_for_grok.jsonl`
 - `outputs/extract/per_file_jsonl/...`
 - `outputs/extract/manifest.csv`
+
+> v3.0 会自动识别 screen 块中的 UI 文本（按钮、标签、tooltip），并标记 `is_screen_text`。
 
 ## 2) 预填术语/TM（可选）
 
@@ -70,15 +82,26 @@ python tools/patch.py demo outputs/prefilled/prefilled.jsonl -o outputs/out_patc
 python tools/build.py demo -o outputs/build_cn --mode auto --zh-mirror outputs/out_patch --lang zh_CN
 ```
 
+可选：加入 `--gen-hooks` 自动生成语言切换器和字体配置 Hook：
+
+```pwsh
+python tools/build.py demo -o outputs/build_cn --mode auto --zh-mirror outputs/out_patch --lang zh_CN --gen-hooks --font "SourceHanSansCN-Regular.otf"
+```
+
 二次自检会阻止 `.zh.rpy` 残留或 mirror/tl 双载冲突。
 
 ## 6) LLM 两段式翻译（可选）
 
 ```pwsh
 # 分包（跳过已有译文）
-python tools/split_jsonl_for_llm.py outputs/prefilled/prefilled.jsonl outputs/llm_batches --skip-has-zh --max-tokens 2000
+python tools/split.py outputs/prefilled/prefilled.jsonl outputs/llm_batches --skip-has-zh --max-tokens 2000
 
-# 合并结果（仅填充空译；冲突写入 TSV）
+# API 翻译（可选速率限制 + 批量模式）
+python tools/translate_api.py outputs/llm_batches -o outputs/llm_results \
+    --provider deepseek --api-key YOUR_KEY --workers 20 \
+    --rpm 60 --batch-mode --batch-size 10
+
+# 合并结果（仅填充空译；冲突按质量评分选择最优）
 python tools/merge.py outputs/prefilled/prefilled.jsonl outputs/llm_results -o outputs/prefilled/prefilled_llm_merged.jsonl --conflict-tsv outputs/qa/llm_conflicts.tsv
 ```
 
@@ -89,34 +112,6 @@ python tools/merge.py outputs/prefilled/prefilled.jsonl outputs/llm_results -o o
 当 QA 报告出现以下常见问题时，可用自动修复快速处理：
 
 
-两种调用方式：
-
 ```pwsh
-# 直接调用批处理脚本
-python tools/qa_autofix.py outputs/prefilled/prefilled.jsonl -o outputs/prefilled/prefilled_autofixed.jsonl --tsv outputs/qa/autofix_changes.tsv
-
-# 或使用统一 CLI（等价）
-python -m renpy_tools.cli autofix outputs/prefilled/prefilled.jsonl -- -o outputs/prefilled/prefilled_autofixed.jsonl --tsv outputs/qa/autofix_changes.tsv
+python tools/autofix.py outputs/extract/project_en_for_grok.jsonl outputs/prefilled/prefilled.jsonl -o outputs/prefilled/prefilled_autofixed.jsonl
 ```
-
-说明：
-
-
-## 8) 导出 TMX/TBX（对接 CAT）
-
-TMX（翻译记忆）导出：
-
-```pwsh
-python tools/export_tmx_tbx.py outputs/extract/project_en_for_grok.jsonl outputs/prefilled/prefilled_autofixed.jsonl -o outputs/tmx/project.tmx --src-lang en-US --tgt-lang zh-CN
-
-# 或统一 CLI
-python -m renpy_tools.cli export outputs/extract/project_en_for_grok.jsonl outputs/prefilled/prefilled_autofixed.jsonl -- -o outputs/tmx/project.tmx --src-lang en-US --tgt-lang zh-CN
-```
-
-TBX（术语库）导出：
-
-```pwsh
-python tools/export_tmx_tbx.py --tbx-out outputs/tbx/terms.tbx --dict data/dictionaries --src-lang en-US --tgt-lang zh-CN
-```
-
-导出的 TMX/TBX 可直接导入 Trados、memoQ 等 CAT 工具。

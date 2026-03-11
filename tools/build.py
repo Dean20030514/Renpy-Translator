@@ -97,7 +97,7 @@ def copy_project(src: Path, dst: Path, exclude_dirs: Set[str]) -> None:
             shutil.copy2(p, outp)
 
 
-def apply_mirror_overwrite(dst_root: Path, zh_mirror_root: Path) -> None:
+def apply_mirror_overwrite(dst_root: Path, zh_mirror_root: Path) -> tuple[int, int]:
     """将 zh_mirror_root 中生成的 .zh.rpy 内容覆盖到 dst_root 的同名 .rpy 中，并移除任何 .zh.rpy 文件。"""
     # 1) 用 .zh.rpy 内容替换对应的 .rpy
     replaced = 0
@@ -183,6 +183,9 @@ def main():
     ap.add_argument("--tl-root", help="tl 输出根目录（包含 game/tl/<lang>/）")
     ap.add_argument("--lang", default="zh_CN", help="TL 语言目录名，默认 zh_CN")
     ap.add_argument("--exclude-dirs", default=",".join(sorted(DEFAULT_EXCLUDES)), help="拷贝时排除目录，逗号分隔")
+    ap.add_argument("--gen-hooks", action="store_true", help="在构建输出中生成运行时 Hook 脚本（语言切换+字体+默认语言）")
+    ap.add_argument("--font", default="SourceHanSansCN-Regular.otf", help="Hook 字体文件路径")
+    ap.add_argument("--rtl", action="store_true", help="RTL（从右到左）语言")
     args = ap.parse_args()
 
     project_root = Path(args.project_root).resolve()
@@ -235,6 +238,26 @@ def main():
             _console.print(f"tl 模式完成：拷贝 [bold]{copied}[/] 个 TL 脚本；移除遗留 .zh.rpy [bold]{removed}[/] 个")
         else:
             print(f"tl 模式完成：拷贝 {copied} 个 TL 脚本；移除遗留 .zh.rpy {removed} 个")
+
+    # Hook 脚本生成
+    if args.gen_hooks:
+        game_dir = out_root / "game"
+        game_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from gen_hooks import _gen_language_hook, _gen_font_hook, _gen_default_lang_hook
+        except ImportError:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from gen_hooks import _gen_language_hook, _gen_font_hook, _gen_default_lang_hook
+
+        hooks_written = 0
+        for fname, content in [
+            ("hook_language.rpy", _gen_language_hook(args.lang)),
+            ("hook_font.rpy", _gen_font_hook(args.lang, args.font, args.rtl)),
+            ("hook_default_lang.rpy", _gen_default_lang_hook(args.lang)),
+        ]:
+            _write_text_file_compat(game_dir / fname, content)
+            hooks_written += 1
+        _log(f"生成 {hooks_written} 个 Hook 脚本到 {game_dir}")
 
     # 二次自检（双载风险检测）
     post_build_selfcheck(out_root, mode, args.lang)

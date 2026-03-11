@@ -6,13 +6,14 @@ Inspired by MTool's fakeLocalStorage.json pattern.
 from __future__ import annotations
 
 import json
-import logging
 import threading
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, asdict, field
 
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass

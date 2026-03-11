@@ -10,17 +10,18 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import time
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Callable, TypeVar, Generic
+from typing import Any, Optional, Callable
 
-# 获取模块级 logger
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+# 获取模块级 logger（使用项目统一的 TranslationLogger）
+logger = get_logger(__name__)
 
 # ========================================
 # 常量定义（统一来源 - Single Source of Truth）
@@ -32,20 +33,17 @@ TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "z
 # 英文原文字段名称（按优先级）
 EN_KEYS = ("en", "text", "english", "source", "src", "original", "english_text")
 
-# 占位符正则表达式（统一定义，避免各模块重复）
-# 1) 方括号变量: [name]
-# 2) 百分号格式: %s / %d / %02d / %(name)s / %.2f / %e %g %x %o ...
-# 3) 花括号格式: {0} / {0:.2f} / {name!r:>8}
-PH_RE = re.compile(
-    r"\[[A-Za-z_][A-Za-z0-9_]*\]"                              # [name]
-    r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"    # %s, %02d, %(name)s
-    r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"                          # {0}, {0:.2f}
-    r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"       # {name}
+# 占位符正则表达式与处理函数（统一从 placeholder.py 导入）
+from .placeholder import (
+    PH_RE,
+    RENPY_SINGLE_TAGS,
+    RENPY_PAIRED_TAGS,
+    ph_set,
+    ph_multiset,
+    strip_renpy_tags,
+    _is_escaped_brace,
+    _iter_placeholders,
 )
-
-# Ren'Py 文本标签
-RENPY_SINGLE_TAGS = frozenset({"w", "nw", "p", "fast", "k"})
-RENPY_PAIRED_TAGS = frozenset({"i", "b", "u", "color", "a", "size", "font", "alpha"})
 
 # 常见的资源文件扩展名
 ASSET_EXTS = (
@@ -64,11 +62,13 @@ SKIP_KEYWORDS = frozenset({
 
 
 # ========================================
-# JSONL 读写函数
+# JSONL 读写函数（包装 io.py，保持向后兼容签名）
 # ========================================
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     """加载 JSONL 文件，返回字典列表
+
+    内部委托给 io.read_jsonl_lines（支持错误日志和行号追踪）。
 
     Args:
         path: 文件路径
@@ -76,30 +76,21 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     Returns:
         解析后的字典列表
     """
-    lines = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    lines.append(json.loads(line))
-                except (ValueError, json.JSONDecodeError):
-                    continue
-    return lines
+    from .io import read_jsonl_lines
+    return read_jsonl_lines(path, skip_invalid=True, log_errors=True)
 
 
 def save_jsonl(path: str | Path, data: list[dict[str, Any]]) -> None:
     """保存字典列表为 JSONL 文件
 
+    内部委托给 io.write_jsonl_lines（支持原子写入）。
+
     Args:
         path: 文件路径
         data: 要保存的数据
     """
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w", encoding="utf-8") as f:
-        for item in data:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    from .io import write_jsonl_lines
+    write_jsonl_lines(path, data, atomic=True)
 
 
 # ========================================
@@ -202,6 +193,28 @@ def get_en(obj: dict) -> Optional[str]:
 # ========================================
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_ENGLISH_WORD_RE = re.compile(r'\b[a-zA-Z]{3,}\b')
+_DUP_PUNCT_RE = re.compile(r'[。！？]{2,}|\.{4,}|!{2,}|\?{2,}')
+
+# 英文残留检查允许保留的单词（品牌名、缩写、游戏术语、技术词等）
+_ALLOWED_ENGLISH_WORDS = frozenset({
+    # 通用缩写
+    "ok", "app", "api", "url", "http", "https", "www",
+    "pdf", "jpg", "png", "gif", "mp3", "mp4", "ogg", "wav",
+    # 硬件/技术
+    "cpu", "gpu", "usb", "wifi", "gps", "ram", "rom", "ssd", "hdd",
+    "dna", "rna", "led", "lcd",
+    # 游戏术语
+    "npc", "rpg", "fps", "pvp", "pve", "mmo", "mmorpg",
+    "hp", "mp", "sp", "exp", "atk", "def", "str", "dex", "int", "agi",
+    "vip", "dlc", "mod", "buff", "debuff", "boss", "combo",
+    "xxx",
+    # 品牌/感叹词
+    "pc", "mac", "ios", "android",
+    "lol", "gg", "omg", "wtf",
+    # 角色相关（人名不应被检测为残留）
+    "the", "and",  # 不在此列表 — 作为常见词触发检测
+})
 
 
 def normalize_text(text: str) -> str:
@@ -262,97 +275,8 @@ def should_skip_translation(text: str) -> bool:
 
 
 # ========================================
-# 占位符处理函数（从 placeholder.py 统一导出）
+# 占位符处理函数（已统一到 placeholder.py，此处通过顶部 import 导出）
 # ========================================
-
-def _is_escaped_brace(s: str, start: int, end: int) -> bool:
-    """是否位于 {{...}} 的转义环境中"""
-    left = (start - 1 >= 0 and s[start - 1] == '{')
-    right = (end < len(s) and s[end] == '}')
-    return left or right
-
-
-def _iter_placeholders(s: str):
-    """迭代提取所有占位符"""
-    if not s:
-        return
-    for m in PH_RE.finditer(s):
-        a, b = m.span()
-        if _is_escaped_brace(s, a, b):
-            continue
-        yield m.group(0)
-
-
-def ph_set(s: str) -> set[str]:
-    """提取文本中的唯一占位符集合
-
-    Args:
-        s: 输入文本
-
-    Returns:
-        占位符集合
-    """
-    return set(_iter_placeholders(s or ""))
-
-
-def ph_multiset(s: str) -> dict[str, int]:
-    """统计文本中占位符的出现次数
-
-    Args:
-        s: 输入文本
-
-    Returns:
-        占位符 -> 出现次数的字典
-
-    Example:
-        >>> ph_multiset("Hello [name], score: {0}, {0}")
-        {'[name]': 1, '{0}': 2}
-    """
-    cnt: dict[str, int] = {}
-    for ph in _iter_placeholders(s or ""):
-        cnt[ph] = cnt.get(ph, 0) + 1
-    return cnt
-
-
-def strip_renpy_tags(s: str) -> str:
-    """去除 Ren'Py 文本标签，保留文本与占位符
-
-    Args:
-        s: 输入文本
-
-    Returns:
-        去除标签后的文本
-    """
-    if not s:
-        return ""
-    tag_open_re = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?:=[^}]*)?\}")
-    tag_close_re = re.compile(r"\{/([A-Za-z_][A-Za-z0-9_]*)\}")
-    
-    out = []
-    i = 0
-    n = len(s)
-    while i < n:
-        ch = s[i]
-        if ch == '{':
-            if i + 1 < n and s[i + 1] == '{':
-                out.append('{')
-                i += 2
-                continue
-            m1 = tag_open_re.match(s, i)
-            if m1:
-                name = m1.group(1)
-                if name in RENPY_SINGLE_TAGS or name in RENPY_PAIRED_TAGS:
-                    i = m1.end()
-                    continue
-            m2 = tag_close_re.match(s, i)
-            if m2:
-                name = m2.group(1)
-                if name in RENPY_PAIRED_TAGS:
-                    i = m2.end()
-                    continue
-        out.append(ch)
-        i += 1
-    return ''.join(out)
 
 
 # ========================================
@@ -447,6 +371,18 @@ class QualityScore:
         return self.score >= 90
 
 
+# ---- 质量评分扣分常量 ----
+_PENALTY_PLACEHOLDER  = 30   # 占位符不匹配
+_PENALTY_NEWLINE      = 20   # 换行符不匹配
+_PENALTY_TOO_SHORT    = 15   # 翻译过短
+_PENALTY_TOO_LONG     = 10   # 翻译过长
+_PENALTY_ENGLISH_EACH = 5    # 每个英文残留扣分
+_PENALTY_ENGLISH_MAX  = 25   # 英文残留最大扣分
+_PENALTY_DUP_PUNCT    = 5    # 重复标点
+_LENGTH_RATIO_MIN     = 0.3  # 译文/原文比值下限
+_LENGTH_RATIO_MAX     = 3.0  # 译文/原文比值上限
+
+
 def calculate_quality_score(
     source: str,
     target: str,
@@ -470,7 +406,7 @@ def calculate_quality_score(
     if not target or not target.strip():
         return QualityScore(score=0, issues=["empty_translation"], details={"fatal": True})
     
-    # 1. 占位符检查 (-30)
+    # 1. 占位符检查
     src_ph = ph_multiset(source)
     tgt_ph = ph_multiset(target)
     if src_ph != tgt_ph:
@@ -478,29 +414,29 @@ def calculate_quality_score(
         extra = {k: v for k, v in tgt_ph.items() if tgt_ph.get(k, 0) > src_ph.get(k, 0)}
         issues.append("placeholder_mismatch")
         details["placeholder"] = {"missing": missing, "extra": extra}
-        score -= 30
+        score -= _PENALTY_PLACEHOLDER
     
-    # 2. 换行符检查 (-20)
+    # 2. 换行符检查
     src_newlines = source.count('\n')
     tgt_newlines = target.count('\n')
     if src_newlines != tgt_newlines:
         issues.append("newline_mismatch")
         details["newlines"] = {"source": src_newlines, "target": tgt_newlines}
-        score -= 20
+        score -= _PENALTY_NEWLINE
     
-    # 3. 长度比例检查 (-15)
+    # 3. 长度比例检查
     src_len = len(source.strip())
     tgt_len = len(target.strip())
     if src_len > 0:
         ratio = tgt_len / src_len
-        if ratio < 0.3:
+        if ratio < _LENGTH_RATIO_MIN:
             issues.append("too_short")
             details["length_ratio"] = ratio
-            score -= 15
-        elif ratio > 3.0:
+            score -= _PENALTY_TOO_SHORT
+        elif ratio > _LENGTH_RATIO_MAX:
             issues.append("too_long")
             details["length_ratio"] = ratio
-            score -= 10
+            score -= _PENALTY_TOO_LONG
     
     # 4. 英文残留检查 (-25)
     if check_english:
@@ -509,20 +445,19 @@ def calculate_quality_score(
         for ph in tgt_ph.keys():
             text_for_check = text_for_check.replace(ph, " ")
         
-        english_words = re.findall(r'\b[a-zA-Z]{3,}\b', text_for_check)
-        # 排除常见缩写和特殊词
-        allowed_words = {"ok", "OK", "app", "APP", "PC", "CPU", "GPU", "UI", "API"}
-        leaked_words = [w for w in english_words if w not in allowed_words and w.upper() not in allowed_words]
+        english_words = _ENGLISH_WORD_RE.findall(text_for_check)
+        # 排除常见缩写、品牌名、游戏术语
+        leaked_words = [w for w in english_words if w.lower() not in _ALLOWED_ENGLISH_WORDS]
         
         if leaked_words:
             issues.append("english_leakage")
             details["leaked_words"] = leaked_words[:10]  # 只记录前10个
-            score -= min(25, len(leaked_words) * 5)  # 每个英文单词扣5分，最多25分
+            score -= min(_PENALTY_ENGLISH_MAX, len(leaked_words) * _PENALTY_ENGLISH_EACH)
     
-    # 5. 重复标点检查 (-5)
-    if re.search(r'[。！？]{2,}|\.{4,}|!{2,}|\?{2,}', target):
+    # 5. 重复标点检查
+    if _DUP_PUNCT_RE.search(target):
         issues.append("duplicate_punctuation")
-        score -= 5
+        score -= _PENALTY_DUP_PUNCT
     
     return QualityScore(
         score=max(0, score),
@@ -536,8 +471,8 @@ def calculate_quality_score(
 # ========================================
 
 @dataclass
-class TranslationConfig:
-    """翻译配置"""
+class RuntimeConfig:
+    """运行时翻译配置（原名 TranslationConfig，已重命名以避免与 tools/translate.py 内同名类冲突）"""
     # 翻译服务配置
     provider: str = "ollama"
     model: str = "qwen2.5:14b"
@@ -561,12 +496,12 @@ class TranslationConfig:
     incremental: bool = True
     
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TranslationConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "RuntimeConfig":
         """从字典创建配置"""
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
     
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "TranslationConfig":
+    def from_yaml(cls, path: str | Path) -> "RuntimeConfig":
         """从 YAML 文件加载配置"""
         try:
             import yaml
@@ -587,7 +522,7 @@ class TranslationConfig:
             return cls()
     
     @classmethod
-    def from_env(cls) -> "TranslationConfig":
+    def from_env(cls) -> "RuntimeConfig":
         """从环境变量加载配置"""
         return cls(
             provider=os.environ.get("RENPY_TRANSLATE_PROVIDER", "ollama"),
@@ -621,6 +556,10 @@ class TranslationConfig:
                 "incremental": self.incremental,
             },
         }
+
+
+# 向后兼容别名
+TranslationConfig = RuntimeConfig
 
 
 # ========================================

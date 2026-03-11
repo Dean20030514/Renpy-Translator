@@ -11,13 +11,14 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Optional
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 # 尝试导入 rapidfuzz
 try:
@@ -289,7 +290,7 @@ class TranslationMemory:
         
         count = 0
         with open(path, 'w', encoding='utf-8') as f:
-            for source, entries in self._exact_index.items():
+            for _source, entries in self._exact_index.items():
                 for entry in entries:
                     data = {
                         'en': entry.source,

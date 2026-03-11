@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sys
 from urllib import request as urlreq
 from urllib import error as urlerr
@@ -65,10 +66,16 @@ def test_api(api_key: str):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
+    # 优先从命令行参数获取，其次从环境变量
+    if len(sys.argv) >= 2:
+        api_key = sys.argv[1]
+    else:
+        api_key = os.environ.get('XAI_API_KEY') or os.environ.get('API_KEY')
+    
+    if not api_key:
         print("用法: python test_api_simple.py YOUR_API_KEY")
+        print("或设置环境变量: XAI_API_KEY 或 API_KEY")
         sys.exit(1)
     
-    api_key = sys.argv[1]
     success = test_api(api_key)
     sys.exit(0 if success else 1)

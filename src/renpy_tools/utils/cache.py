@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import atexit
 import hashlib
-import logging
 import os
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional, Callable
 
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 _LOCAL = threading.local()
 _ALL_CONNS: dict[str, sqlite3.Connection] = {}
@@ -67,7 +68,7 @@ def _get_conn(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
 def close_all_connections() -> None:
     """关闭所有缓存数据库连接"""
     with _CONNS_LOCK:
-        for conn_key, conn in list(_ALL_CONNS.items()):
+        for _key, conn in list(_ALL_CONNS.items()):
             try:
                 conn.close()
             except sqlite3.Error:
@@ -184,7 +185,8 @@ def kv_set_batch(
 
 def kv_get_batch(
     keys: list[str],
-    db_path: Optional[str | Path] = None
+    db_path: Optional[str | Path] = None,
+    chunk_size: int = 500
 ) -> dict[str, Optional[str]]:
     """
     批量获取缓存值
@@ -192,6 +194,7 @@ def kv_get_batch(
     Args:
         keys: 缓存键列表
         db_path: 可选的数据库路径
+        chunk_size: 每批查询的数量（避免 SQL IN 子句过大）
 
     Returns:
         {key: value} 字典，未找到的键值为 None
@@ -203,13 +206,15 @@ def kv_get_batch(
     
     try:
         conn = _get_conn(db_path)
-        # 使用 IN 查询批量获取
-        placeholders = ','.join('?' * len(keys))
-        query = f"SELECT k, v FROM kv WHERE k IN ({placeholders})"
-        cur = conn.execute(query, keys)
-        
-        for row in cur.fetchall():
-            result[row[0]] = row[1]
+        # 分块使用 IN 查询批量获取
+        for i in range(0, len(keys), chunk_size):
+            chunk = keys[i:i + chunk_size]
+            placeholders = ','.join('?' * len(chunk))
+            query = f"SELECT k, v FROM kv WHERE k IN ({placeholders})"
+            cur = conn.execute(query, chunk)
+            
+            for row in cur.fetchall():
+                result[row[0]] = row[1]
         
         return result
         
@@ -285,10 +290,6 @@ def kv_count(db_path: Optional[str | Path] = None) -> int:
 def text_hash(s: str) -> str:
     """计算文本的 SHA256 哈希（用于缓存键）"""
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
-
-
-# 保留旧名称以保持向后兼容
-text_sha1 = text_hash
 
 
 def cached(

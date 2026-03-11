@@ -18,7 +18,6 @@ import math
 import hashlib
 import sys
 from pathlib import Path
-from typing import Any
 
 # 添加 src 到路径
 _project_root = Path(__file__).parent.parent
@@ -91,8 +90,9 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=2000, help="每包最大近似 tokens（默认 2000）")
     ap.add_argument("--skip-has-zh", action="store_true", help="跳过已有译文的条目，仅导出未译或空译")
     ap.add_argument("--include-context", action="store_true", default=True, help="导出基础上下文字段（label/anchor_prev/anchor_next），默认开启")
-    ap.add_argument("--include-speaker", action="store_true", help="导出 speaker 字段（若存在）")
-    ap.add_argument("--bundle-window", type=int, default=0, help="同 label 内前后各拼接 N 句上下文，提供给 LLM 参考（默认 0 不拼接）")
+    ap.add_argument("--include-speaker", action="store_true", default=True, help="导出 speaker 字段（若存在），默认开启")
+    ap.add_argument("--no-include-speaker", action="store_false", dest="include_speaker", help="禁用 speaker 字段导出")
+    ap.add_argument("--bundle-window", type=int, default=2, help="同 label 内前后各拼接 N 句上下文，提供给 LLM 参考（默认 2）")
     # LLM 批次元数据
     ap.add_argument("--model", default=None, help="（可选）LLM 模型名，写入批次元数据")
     ap.add_argument("--temperature", type=float, default=None, help="（可选）采样温度，写入批次元数据")
@@ -127,7 +127,7 @@ def main():
             if sp.exists():
                 try:
                     content = sp.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
+                except (OSError, UnicodeDecodeError):
                     content = ""
                 meta["system_prompt_sha1"] = hashlib.sha1(content.encode("utf-8")).hexdigest()
         (out_dir / f"batch_{batch_idx:04d}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

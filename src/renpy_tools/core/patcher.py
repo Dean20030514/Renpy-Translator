@@ -13,12 +13,6 @@ import shutil
 import time
 from pathlib import Path
 from typing import Optional, Callable
-import sys
-
-# 添加项目根目录到 sys.path
-project_root = Path(__file__).parent.parent.parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
 
 from ..utils.logger import logger
 
@@ -174,7 +168,7 @@ class SafePatcher:
             self._verify_python_syntax(text)
     
     def _verify_renpy_syntax(self, text: str):
-        """验证 Ren'Py 语法"""
+        """验证 Ren'Py 语法（使用状态机检查引号配对）"""
         lines = text.splitlines()
 
         for i, line in enumerate(lines, 1):
@@ -184,24 +178,41 @@ class SafePatcher:
                 continue
 
             # 检查缩进（Ren'Py 允许 4 空格的倍数）
-            # 注意：行首的空格数量
             if line and not line[0].isspace():
-                # 非缩进行，跳过检查
                 pass
             else:
                 indent = len(line) - len(line.lstrip())
-                # Ren'Py 标准使用 4 空格缩进
                 if indent % 4 != 0:
                     logger.warning(
                         f"Line {i}: Non-standard indentation ({indent} spaces)"
                     )
 
-            # 检查引号匹配（双引号或单引号不匹配都报错）
-            # 注意：需要排除转义引号和字符串内的引号
-            # 简化检查：只检查引号数量是否为偶数
-            double_quotes = line.count('"') - line.count('\\"')
-            single_quotes = line.count("'") - line.count("\\'")
-            if double_quotes % 2 != 0 or single_quotes % 2 != 0:
+            # 使用状态机检查引号配对
+            # 遍历字符，跳过转义引号和注释，跟踪引号嵌套
+            in_double = False
+            in_single = False
+            j = 0
+            chars = stripped
+            while j < len(chars):
+                c = chars[j]
+
+                # 跳过转义序列
+                if c == '\\' and j + 1 < len(chars):
+                    j += 2
+                    continue
+
+                # 行内注释（仅在字符串外）
+                if c == '#' and not in_double and not in_single:
+                    break
+
+                if c == '"' and not in_single:
+                    in_double = not in_double
+                elif c == "'" and not in_double:
+                    in_single = not in_single
+
+                j += 1
+
+            if in_double or in_single:
                 raise SyntaxError(f"Line {i}: Unmatched quotes")
     
     def _verify_python_syntax(self, text: str):

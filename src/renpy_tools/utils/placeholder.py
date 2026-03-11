@@ -10,11 +10,12 @@ This module provides functions to:
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 from typing import Optional, Callable
 
-logger = logging.getLogger(__name__)
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 # 轻量 KV 缓存（可选）
 cached: Optional[Callable] = None
@@ -24,15 +25,15 @@ try:
 except ImportError:
     # 可选依赖，缓存模块不可用时静默降级
     pass
-except Exception as e:  # pragma: no cover
+except RuntimeError as e:  # pragma: no cover
     # 其他异常需要记录以便排查
     logger.warning(f"Failed to import cache module: {e}")
 
 # —— Ren'Py 文本标签与指令 ——
 # 单次指令（不成对）
-RENPY_SINGLE_TAGS = {"w","nw","p","fast","k"}
+RENPY_SINGLE_TAGS = frozenset({"w","nw","p","fast","k"})
 # 成对标签（需闭合/允许嵌套）
-RENPY_PAIRED_TAGS = {"i","b","u","color","a","size","font","alpha"}
+RENPY_PAIRED_TAGS = frozenset({"i","b","u","color","a","size","font","alpha"})
 
 
 # —— 占位符匹配 ——
@@ -48,6 +49,9 @@ _PH_BRACE_NAME = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
 PH_RE = re.compile(
     _PH_SQUARE.pattern + r"|" + _PH_PERCENT.pattern + r"|" + _PH_BRACE_INDEX.pattern + r"|" + _PH_BRACE_NAME.pattern
 )
+
+# 变量名匹配（用于 _iter_placeholders 的 brace 变量提取）
+_VARNAME_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?:![rsa])?(?::[^}]*)?$")
 
 def _is_escaped_brace(s: str, start: int, end: int) -> bool:
     """是否位于 {{...}} 的转义环境中：左侧还有一个 { 或右侧还有一个 }"""
@@ -125,7 +129,7 @@ def extract_var_name_counts(s: str) -> dict[str, int]:
         if '=' in inner:
             # {color=...} {a=...} {size=...} 视作文本标签/指令，不计为占位变量
             continue
-        mname = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(?:![rsa])?(?::[^}]*)?$", inner)
+        mname = _VARNAME_RE.match(inner)
         if not mname:
             continue
         name = mname.group(1)
@@ -187,3 +191,62 @@ def compute_semantic_signature(s: str) -> str:
         return cached("sig", "v2", norm, lambda x: "sig:v2:" + hashlib.sha256(x.encode('utf-8')).hexdigest()[:12])
     h = hashlib.sha256(norm.encode('utf-8')).hexdigest()
     return "sig:v2:" + h[:12]
+
+
+# —— 占位符提取 / 恢复（用于翻译引擎） ——
+_EXTRACT_PH_RE = re.compile(
+    r'\{[/a-z_][^}]*\}'           # {i}, {/i}, {color=#fff}
+    r'|\[[a-z_][^\]]*\]'          # [name], [pov]
+    r'|%\([^)]+\)[sdifeEfgGxXo]'  # %(name)s
+    r'|%[sdifeEfgGxXo]'           # %s, %d
+    r'|\{\d+(?:![rsa])?(?::[^{}]+)?\}'           # {0}, {0:.2f}
+    r'|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}',  # {name}
+    flags=re.IGNORECASE
+)
+
+
+def extract_placeholders(text: str) -> tuple[str, list[tuple[str, int]]]:
+    """提取占位符，用 〔n〕 全角标记替换。
+
+    提取的占位符类型：
+    1. Ren'Py 标签：{i} {/i} {b} {color=#...}
+    2. 方括号变量：[name] [pov] [ls]
+    3. 格式化占位符：%(name)s %s {0} {name}
+
+    Args:
+        text: 原始英文文本
+
+    Returns:
+        (替换后的纯文本, [(占位符原文, 索引)])
+    """
+    matches = list(_EXTRACT_PH_RE.finditer(text))
+    placeholders: list[tuple[str, int]] = []
+    result = text
+
+    # 从后往前替换，避免位置偏移
+    for i in range(len(matches) - 1, -1, -1):
+        match = matches[i]
+        ph = match.group(0)
+        pos = match.start()
+        tag = f'〔{i}〕'
+        placeholders.insert(0, (ph, i))
+        result = result[:pos] + tag + result[pos + len(ph):]
+
+    return result, placeholders
+
+
+def restore_placeholders(text: str, placeholders: list[tuple[str, int]]) -> str:
+    """将 〔n〕 标记替换回原始占位符。
+
+    Args:
+        text: 含 〔n〕 标记的译文
+        placeholders: extract_placeholders 返回的占位符列表
+
+    Returns:
+        替换回占位符后的译文
+    """
+    result = text
+    for ph, idx in placeholders:
+        tag = f'〔{idx}〕'
+        result = result.replace(tag, ph)
+    return result

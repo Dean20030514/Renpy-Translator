@@ -1,14 +1,17 @@
 # 📖 Renpy汉化工具 - 完整使用指南
 
-> **版本**：v2.0 优化版  
-> **最后更新**：2025-01-22
+> **版本**：v3.0  
+> **最后更新**：2026-03
 
 ---
 
 ## 🎯 快速导航
 
 - [快速开始](#-快速开始)
+- [RPA 解包](#-rpa-解包)
 - [优化模式使用](#-优化模式详解)
+- [API 翻译增强](#-api-翻译增强)
+- [运行时 Hook](#-运行时-hook)
 - [命令行使用](#-命令行使用)
 - [高级功能](#-高级功能)
 - [故障排查](#-故障排查)
@@ -311,7 +314,124 @@ outputs/llm_results/translate_<timestamp>.log
 
 ---
 
-## 💻 命令行使用
+## � RPA 解包
+
+部分 Ren'Py 游戏将脚本打包在 `.rpa` 存档中。使用 `unrpa.py` 解包：
+
+### GUI 方式
+
+在 `START.bat` 菜单中选择 **13. RPA 解包**，选择 `.rpa` 文件或包含 `.rpa` 文件的目录。
+
+### 命令行
+
+```bash
+# 解包单个 RPA 文件
+python tools/unrpa.py "E:\Games\MyGame\game\archive.rpa" -o extracted/
+
+# 仅提取 .rpy/.rpyc 脚本（推荐）
+python tools/unrpa.py "E:\Games\MyGame\game\archive.rpa" -o extracted/ --scripts-only
+
+# 解包目录下所有 RPA 文件
+python tools/unrpa.py "E:\Games\MyGame\game" -o extracted/
+```
+
+支持 RPA-2.0 和 RPA-3.0 格式，多线程(12)并行解包。
+
+---
+
+## 🔌 API 翻译增强
+
+v3.0 的 `translate_api.py` 新增三大能力：
+
+### 速率限制（RPM/RPS/TPM）
+
+防止 API 超配额被封：
+
+```bash
+python tools/translate_api.py outputs/llm_batches -o outputs/llm_results \
+    --provider deepseek --api-key YOUR_KEY \
+    --rpm 60 --rps 5 --tpm 100000
+```
+
+| 参数 | 含义 | 推荐值 |
+|------|------|--------|
+| `--rpm` | 每分钟最大请求数 | DeepSeek: 60, OpenAI: 60 |
+| `--rps` | 每秒最大请求数 | DeepSeek: 5, OpenAI: 10 |
+| `--tpm` | 每分钟最大 token 数 | DeepSeek: 100000, OpenAI: 90000 |
+
+### 批量 JSON 模式
+
+合并多条文本为单次 API 请求，大幅减少调用次数：
+
+```bash
+python tools/translate_api.py outputs/llm_batches -o outputs/llm_results \
+    --provider deepseek --api-key YOUR_KEY \
+    --batch-mode --batch-size 10
+```
+
+- `--batch-size 10`：每次发送 10 条合并为一个 JSON 请求
+- API 失败时自动递归拆分重试（10 → 5+5 → ...）
+
+### 自定义 Prompt 模板
+
+使用 JSON 格式自定义翻译提示词：
+
+```bash
+python tools/translate_api.py outputs/llm_batches -o outputs/llm_results \
+    --provider deepseek --api-key YOUR_KEY \
+    --prompt-template data/prompt_template.json
+```
+
+模板格式（OpenAI messages 格式），支持占位符：
+- `#SOURCE_LANGUAGE#` → 源语言
+- `#TARGET_LANGUAGE#` → 目标语言  
+- `#JSON_DATA#` → 翻译数据
+
+---
+
+## 🪝 运行时 Hook
+
+`gen_hooks.py` 可生成 4 种 Ren'Py 运行时 Hook 脚本：
+
+### GUI 方式
+
+菜单选择 **14. 生成 Hook 脚本**，选择 Hook 类型和配置。
+
+### 命令行
+
+```bash
+# 生成所有 Hook
+python tools/gen_hooks.py -o "E:\Games\MyGame\game" \
+    --lang zh_CN --font "fonts/SourceHanSansCN-Regular.otf"
+
+# 仅生成语言切换器
+python tools/gen_hooks.py -o hooks/ --only language --lang zh_CN
+
+# 仅生成字体配置
+python tools/gen_hooks.py -o hooks/ --only font --font "fonts/zh.ttf"
+```
+
+### Hook 类型
+
+| Hook | 功能 |
+|------|------|
+| `hook_extract.rpy` | 运行时将 .rpyc 反编译为 .rpy |
+| `hook_language.rpy` | 语言切换器，注入首选项菜单 |
+| `hook_font.rpy` | 中文字体配置 |
+| `hook_default_lang.rpy` | 设置游戏启动默认语言 |
+
+### 构建时自动生成
+
+也可在构建中文包时一并生成 Hook：
+
+```bash
+python tools/build.py "E:\Games\MyGame" -o outputs/build_cn \
+    --gen-hooks --font "fonts/zh.ttf" --lang zh_CN
+```
+
+---
+
+## �💻 命令行使用
 
 ### 完整工作流
 
@@ -392,6 +512,22 @@ python tools/patch.py \
 --flush-interval  # 自动保存间隔 (条数)
 --use-optimized   # 启用优化模式 ⭐
 --quality-threshold  # 质量阈值 (0-1)
+--resume          # 从上次中断处继续 ⭐
+--tm              # 加载翻译记忆 TM 文件 ⭐
+```
+
+#### translate_api.py 参数
+
+```bash
+--provider        # API 提供商 (deepseek/openai/claude)
+--api-key         # API 密钥
+--workers         # 并发线程数
+--rpm             # 每分钟最大请求数 ⭐
+--rps             # 每秒最大请求数 ⭐
+--tpm             # 每分钟最大 token 数 ⭐
+--batch-mode      # 启用批量 JSON 模式 ⭐
+--batch-size      # 批量大小 (默认 10) ⭐
+--prompt-template # 自定义 Prompt 模板路径 ⭐
 ```
 
 #### validate.py 参数
@@ -403,6 +539,7 @@ python tools/patch.py \
 --ignore-ui-punct # 忽略UI标点差异
 --require-ph-count-eq    # 要求占位符数量相等
 --require-newline-eq     # 要求换行符数量相等
+--autofix         # 校验时直接修复常见问题 ⭐
 ```
 
 ---
@@ -466,7 +603,7 @@ python tools/diff_dirs.py \
 
 ### 4. 自动修复
 
-自动修复常见问题：
+自动修复常见翻译问题：
 
 ```bash
 python tools/autofix.py \
@@ -476,9 +613,40 @@ python tools/autofix.py \
 ```
 
 **修复内容：**
-- 占位符补齐
-- 换行符调整
+- 占位符补齐（丢失的 `[name]`、`{0}` 等）
+- 换行符调整（保持原文换行结构）
 - 首尾空白符
+- 英文残留检测（上下文感知，不误报专有名词）
+- 术语一致性修复（字典中定义的术语）
+
+### 5. 断点续传
+
+翻译和回填均支持断点续传，中断后可接续：
+
+```bash
+# 翻译断点续传
+python tools/translate.py outputs/llm_batches -o outputs/llm_results \
+    --model qwen2.5:14b --resume
+
+# 回填断点续传
+python tools/patch.py "E:\Games\MyGame" outputs/merged.jsonl \
+    -o outputs/patched --advanced --resume
+
+# 流水线断点续传
+python tools/pipeline.py "E:\Games\MyGame" --resume
+```
+
+### 6. 构建中文游戏包
+
+菜单选择 **15. 构建中文游戏包**，或命令行：
+
+```bash
+python tools/build.py "E:\Games\MyGame" -o outputs/build_cn \
+    --mode auto --zh-mirror outputs/patched --lang zh_CN \
+    --gen-hooks --font "SourceHanSansCN-Regular.otf"
+```
+
+`--gen-hooks` 会在游戏目录生成语言切换器和字体配置，玩家可在游戏设置中切换中英文。
 
 ---
 
@@ -562,23 +730,89 @@ pip install -r requirements.txt
 
 ---
 
-## 📚 相关文档
+## 相关文档
 
-### 用户文档
 - [快速开始](quickstart.md) - 10分钟上手教程
-- [安装指南](SETUP_GUIDE.md) - 完整安装流程
-- [GUI使用说明](gui_usage.md) - 图形界面操作
+- [安装指南](SETUP_GUIDE.md) - 完整安装流程、GPU 加速配置
+- [API 翻译指南](API_GUIDE.md) - 云端 API 和免费机翻方案
+- [字体替换](font_replacement.md) - 中文字体替换
 - [故障排查](troubleshooting.md) - 常见问题
-
-### 技术文档
-- [代码优化详解](CODE_OPTIMIZATION.md) - 架构设计
-- [完整优化报告](OPTIMIZATION_COMPLETE.md) - 优化成果
-- [GPU优化指南](gpu_optimization.md) - 性能调优
-- [CUDA配置](cuda_setup.md) - GPU环境配置
+- [开发者指南](DEVELOPMENT.md) - 架构说明与贡献指引
 
 ---
 
-## 🎉 总结
+## GUI 使用说明
+
+### 启动方式
+
+**方法 1：双击启动（推荐）**
+1. 双击 `START.bat`
+2. 选择游戏文件夹（Ren'Py 游戏根目录，包含 `game` 文件夹）
+3. 进入交互式菜单，选择功能
+
+**方法 2：PowerShell**
+```powershell
+.\tools\launcher.ps1
+```
+
+### 功能菜单
+
+| 选项 | 功能 | 说明 |
+|------|------|------|
+| 1 | 一键自动汉化（Ollama 本地） | 完全离线，30-60 分钟 |
+| 2 | 一键快速翻译（云端 API） | 支持 DeepSeek/Grok/OpenAI/Claude，2-5 分钟 |
+| 3 | 一键免费机翻（Google/Bing） | 完全免费，5-15 分钟 |
+| 4 | 提取文本 | 从游戏提取可翻译文本（含 screen 文本） |
+| 5 | 生成字典 | 自动生成游戏专用术语字典 |
+| 6 | 翻译文本 | 选择翻译方案 |
+| 7 | 质量检查 | 生成 HTML 质量报告 |
+| 8 | 回填翻译 | 将翻译回填到游戏文件 |
+| 9 | 质量修复工具 | 检测/修复英文残留 |
+| 10 | 翻译统计 | 查看翻译进度 |
+| 11 | 环境配置 | 检查开发环境 |
+| 12 | TM 翻译记忆 | 构建/使用翻译记忆 |
+| 13 | RPA 解包 | 解包 RPA 存档提取脚本 |
+| 14 | 生成 Hook 脚本 | 语言切换器/字体/提取 Hook |
+| 15 | 构建中文游戏包 | 打包中文版（可含 Hook） |
+| 16 | 替换字体 | 替换游戏字体为中文字体 |
+| 17 | 中英对比 (Diff) | 对比中英文 RPY 文件差异 |
+| 18 | 构建翻译记忆 (TM) | 从已翻译 JSONL 构建 TM |
+
+### AI 模型自动检测
+
+工具会自动扫描已安装的 Ollama 模型（`ollama list`），列出可选模型并智能推荐。模型质量对比详见 [安装指南](SETUP_GUIDE.md)。
+
+### 自动生成字典
+
+启用后，工具会分析游戏文本并自动生成：
+- **UI 术语字典** — 按钮、菜单项等短文本
+- **占位符字典** — `[角色名]`、`{变量名}` 等（标记为保留不翻译）
+- **地点字典** — 从文件名推断的场景名称
+- **关系字典** — 家庭关系称谓
+
+字典生成到 `outputs/[游戏名]/dictionaries/`，可手动编辑 CSV 中的 `zh` 列优化翻译。
+
+### 字典优先级
+
+1. **游戏专用字典**（优先）：`outputs/[游戏名]/dictionaries/`
+2. **通用字典**（回退）：`data/dictionaries/`
+
+同名条目以游戏专用字典为准。
+
+---
+
+## 推荐工作流对比
+
+| 方案 | 成本 | 质量 | 速度 | 适用场景 |
+|------|------|------|------|----------|
+| DeepSeek API | ￥3-10 | ⭐⭐⭐⭐⭐ | ⚡⚡⚡⚡⚡ | 追求质量与速度 |
+| Google 免费机翻 | ￥0 | ⭐⭐⭐ | ⚡⚡⚡⚡ | 零成本 |
+| Ollama 本地 | ￥0 | ⭐⭐⭐ | ⚡⚡ | 完全离线 |
+| 混合流程 | ￥0-2 | ⭐⭐⭐⭐ | ⚡⚡⚡ | 省钱+高质量 |
+
+---
+
+## 总结
 
 ### 优化模式核心优势
 

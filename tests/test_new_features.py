@@ -11,17 +11,11 @@
 - 增强的 Validator 检查规则
 """
 
-import sys
 import tempfile
 import time
 from pathlib import Path
 
 import pytest
-
-# 添加项目根目录
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / "src"))
 
 from renpy_tools.utils.common import (
     PH_RE, ph_set, ph_multiset, strip_renpy_tags,
@@ -384,7 +378,7 @@ class TestEnhancedValidator:
         """测试术语一致性检查"""
         # 创建新的 validator 配置，包含 term_consistency
         config = MultiLevelValidator.DEFAULT_CHECKS.copy()
-        config['term_consistency'] = {'level': 'info', 'autofix': False}
+        config['term_consistency'] = {'level': 'warning', 'autofix': True}
         
         validator = MultiLevelValidator(config=config)
         validator.set_term_dict({'Player': '玩家'})
@@ -395,7 +389,7 @@ class TestEnhancedValidator:
         fixed, issues = validator.validate_with_autofix(source, target)
         
         # 应该检测到术语不一致
-        assert any(i['type'] == 'term_inconsistent' for i in issues['info'])
+        assert any(i['type'] == 'term_inconsistent' for i in issues['warning'])
 
 
 if __name__ == '__main__':

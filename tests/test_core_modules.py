@@ -5,17 +5,11 @@
 使用 pytest 风格的断言
 """
 
-import sys
 import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
-
-# 添加项目根目录
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / "src"))
 
 from renpy_tools.core import MultiLevelValidator, SafePatcher
 from renpy_tools.core.patcher import IncrementalBuilder
@@ -33,7 +27,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Hello!'}]
         target = [{'id': 'test_1', 'zh': ''}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        _fixed, issues = self.validator.validate_with_autofix(source, target)
 
         assert len(issues['critical']) > 0
         assert any(i['type'] == 'empty' for i in issues['critical'])
@@ -43,7 +37,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Hello, [name]!'}]
         target = [{'id': 'test_1', 'zh': '你好！'}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        _fixed, issues = self.validator.validate_with_autofix(source, target)
 
         assert len(issues['critical']) > 0
         assert any(i['type'] == 'placeholder' for i in issues['critical'])
@@ -53,7 +47,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Hello, [name]!'}]
         target = [{'id': 'test_1', 'zh': '你好！'}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        fixed, _issues = self.validator.validate_with_autofix(source, target)
 
         # 检查是否添加了缺失的占位符
         assert '[name]' in fixed[0]['zh']
@@ -63,7 +57,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Line 1\nLine 2'}]
         target = [{'id': 'test_1', 'zh': '第一行第二行'}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        _fixed, issues = self.validator.validate_with_autofix(source, target)
 
         assert len(issues['critical']) > 0
         assert any(i['type'] == 'newline' for i in issues['critical'])
@@ -73,7 +67,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Hello!'}]
         target = [{'id': 'test_1', 'zh': '你好！！'}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        _fixed, issues = self.validator.validate_with_autofix(source, target)
 
         assert any(i['type'] == 'duplicate_punct' for i in issues['info'])
 
@@ -82,7 +76,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Hello!'}]
         target = [{'id': 'test_1', 'zh': '你好。。'}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        fixed, _issues = self.validator.validate_with_autofix(source, target)
 
         # 检查是否修复了重复标点
         assert '。。' not in fixed[0]['zh']
@@ -92,7 +86,7 @@ class TestMultiLevelValidator:
         source = [{'id': 'test_1', 'en': 'Welcome to {game}!'}]
         target = [{'id': 'test_1', 'zh': '欢迎来到 {game}！'}]
 
-        fixed, issues = self.validator.validate_with_autofix(source, target)
+        _fixed, issues = self.validator.validate_with_autofix(source, target)
 
         assert len(issues['critical']) == 0
 
@@ -161,7 +155,7 @@ class TestSafePatcher:
         patcher = SafePatcher(backup_dir=self.backup_dir, verify=False)
         trans_data = {'test.rpy': 'label start:\n    "你好！"\n'}
 
-        result = patcher.patch_with_rollback(
+        patcher.patch_with_rollback(
             target_dir=self.target_dir,
             trans_data=trans_data,
             patch_fn=lambda orig, new: new

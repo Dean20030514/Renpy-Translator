@@ -34,12 +34,13 @@ except ImportError:
     class FileOperationError(Exception):
         pass
 
-# 统一导入（从 common.py 获取，避免重复定义）
+# 统一导入（优先从 placeholder.py）
 try:
-    from renpy_tools.utils.common import get_id, get_zh, ph_multiset, TRANS_KEYS
+    from renpy_tools.utils.placeholder import ph_multiset
+    from renpy_tools.utils.common import get_id, get_zh
 except ImportError:
     # 极端情况下的后备（几乎不会触发）
-    from renpy_tools.utils import get_id, get_zh, ph_multiset, TRANS_KEYS
+    from renpy_tools.utils import get_id, get_zh, ph_multiset
 
 
 def _log(msg: str, level: str = "info") -> None:
@@ -64,7 +65,7 @@ def extract_zh(o: Dict[str, Any]) -> Optional[str]:
     return value
 
 
-def load_llm_dir(p: Path) -> Dict[str, Set[str]]:
+def load_llm_dir(p: Path) -> Dict[str, List[Dict[str, Any]]]:
     """
     Load translations from LLM output directory.
     
@@ -72,7 +73,7 @@ def load_llm_dir(p: Path) -> Dict[str, Set[str]]:
         p: Path to JSONL file or directory containing JSONL files
         
     Returns:
-        Dictionary mapping id to set of translations
+        Dictionary mapping id to list of candidate dicts (zh, quality_score)
         
     Raises:
         FileOperationError: If path doesn't exist
@@ -80,7 +81,7 @@ def load_llm_dir(p: Path) -> Dict[str, Set[str]]:
     if not p.exists():
         raise FileOperationError(f"LLM output path not found: {p}", file_path=p)
     
-    merged: Dict[str, Set[str]] = {}
+    merged: Dict[str, List[Dict[str, Any]]] = {}
     files: List[Path] = []
     
     if p.is_dir():
@@ -104,8 +105,45 @@ def load_llm_dir(p: Path) -> Dict[str, Set[str]]:
                 zh = extract_zh(o)
                 if zh is None:
                     continue
-                merged.setdefault(_id, set()).add(zh)
+                cand = {"zh": zh, "quality_score": o.get("quality_score")}
+                merged.setdefault(_id, []).append(cand)
     return merged
+
+
+def _select_best_candidate(candidates: List[Dict[str, Any]], src_en: str) -> str:
+    """从多个候选译文中选出最佳的一个。
+    
+    策略（按优先级）：
+    1. 优先选质量分数最高的
+    2. 质量分数相同时，选长度比更合理的（中文/英文 ≈ 0.5-1.5）
+    3. 兜底：字典序
+    """
+    if len(candidates) == 1:
+        return candidates[0]["zh"]
+    
+    # 去重
+    seen: Dict[str, Optional[float]] = {}
+    for c in candidates:
+        zh = c["zh"]
+        qs = c.get("quality_score")
+        if zh not in seen or (qs is not None and (seen[zh] is None or qs > seen[zh])):
+            seen[zh] = qs
+    
+    if len(seen) == 1:
+        return next(iter(seen))
+    
+    en_len = max(1, len(src_en))
+    
+    def score_key(item: tuple[str, Optional[float]]) -> tuple[float, float, str]:
+        zh, qs = item
+        q = qs if qs is not None else 0.0
+        # 长度比离 0.7 越近越好（中文通常比英文短）
+        ratio = len(zh) / en_len
+        ratio_penalty = -abs(ratio - 0.7)
+        return (q, ratio_penalty, zh)
+    
+    best_zh = max(seen.items(), key=score_key)[0]
+    return best_zh
 
 
 def main():
@@ -155,22 +193,23 @@ def main():
                 fout.write(json.dumps(o, ensure_ascii=False) + "\n")
                 continue
             has_any_zh = extract_zh(o) is not None
-            zhs = llm_map.get(_id)
-            if not zhs:
+            candidates = llm_map.get(_id)
+            if not candidates:
                 # LLM 未覆盖此 id
                 if not has_any_zh:
                     missing_ids.append(_id)
                 fout.write(json.dumps(o, ensure_ascii=False) + "\n")
                 continue
-            if len(zhs) > 1:
+            unique_zhs = set(c["zh"] for c in candidates)
+            if len(unique_zhs) > 1:
                 # 冲突：多种译文
-                conflict_rows.append((_id, " ; ".join(sorted(zhs))))
+                conflict_rows.append((_id, " ; ".join(sorted(unique_zhs))))
             if not has_any_zh:
                 # 仅在空译时写入（避免覆盖人工/TM）
                 new_o = dict(o)
-                cand = sorted(zhs)[0]
-                # 快检：占位符与换行数一致
                 src_en = src_map.get(_id) or ""
+                cand = _select_best_candidate(candidates, src_en)
+                # 快检：占位符与换行数一致
                 if src_en:
                     if ph_multiset(src_en) != ph_multiset(cand):
                         rejects.append((_id, "placeholder_multiset_diff", cand))

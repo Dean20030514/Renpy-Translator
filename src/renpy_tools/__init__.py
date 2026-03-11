@@ -8,5 +8,5 @@ Ren'Py 汉化工具集
 - 文件回填
 """
 
-__version__ = "0.2.0"
+__version__ = "3.0.0"
 __all__ = ["utils", "core", "cli"]

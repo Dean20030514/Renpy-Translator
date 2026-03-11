@@ -76,16 +76,20 @@ except ImportError:
 
 # 统一导入
 try:
-    from renpy_tools.utils.common import (
-        PH_RE, ph_multiset, AdaptiveRateLimiter, 
-        TranslationCache, calculate_quality_score
-    )
+    from renpy_tools.utils.placeholder import PH_RE, ph_multiset
 except ImportError:
-    PH_RE = re.compile(r"\[[A-Za-z_][A-Za-z0-9_]*\]|\{[^}]+\}|%[sdifeEfgGxXo]")
-    ph_multiset = None
-    AdaptiveRateLimiter = None
-    TranslationCache = None
-    calculate_quality_score = None
+    try:
+        from renpy_tools.utils.common import (
+            PH_RE, ph_multiset
+        )
+    except ImportError:
+        PH_RE = re.compile(
+            r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+            r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+            r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+            r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+        )
+        ph_multiset = None
 
 
 def _log(msg: str, level: str = "info") -> None:
@@ -161,14 +165,6 @@ API_CONFIGS: Dict[str, Dict[str, Any]] = {
         'cost_per_1m_tokens': 48.0,  # ￥48/百万字符
         'is_translator_api': True,
     },
-    # 新增：阿里翻译
-    'aliyun': {
-        'name': '阿里翻译',
-        'endpoint': 'https://mt.cn-hangzhou.aliyuncs.com/api/translate/web/general',
-        'model': 'aliyun-general',
-        'cost_per_1m_tokens': 50.0,  # ￥50/百万字符
-        'is_translator_api': True,
-    },
 }
 
 
@@ -183,30 +179,57 @@ class APIConfig:
     timeout: float = 30.0
     temperature: float = 0.2
     max_retries: int = 3
+    # 三级速率限制
+    rpm: int = 0       # 每分钟请求数上限（0=不限）
+    rps: int = 0       # 每秒请求数上限（0=不限）
+    tpm: int = 0       # 每分钟 Token 数上限（0=不限）
 
 
-def build_system_prompt() -> str:
-    """构建系统提示词（与本地版本相同但更严格）"""
-    return (
-        "你是资深成人游戏本地化译员，将英文台词翻译为简体中文。\n\n"
-        
-        "【核心要求】\n"
-        "⚠️ 严禁输出任何英文单词（变量名除外如[name]）\n"
-        "⚠️ 必须将每个英文词汇完整翻译为中文\n"
-        "⚠️ 禁止中英文混合输出\n\n"
-        
-        "【翻译风格】\n"
-        "- 成人游戏风格：直白露骨（鸡巴、奶子、小穴、屁股、骚货、操、干、插）\n"
-        "- 自然口语化，避免生硬直译\n"
-        "- 保持换行符数量一致\n\n"
-        
-        "【错误示例】禁止以下错误\n"
-        "❌ '你 also 也喜欢' → ✅ '你也喜欢'\n"
-        "❌ '享受你的 pleasure' → ✅ '享受你的快感'\n"
-        "❌ '一个dirty的秘密' → ✅ '一个肮脏的秘密'\n\n"
-        
-        "【输出】只输出纯中文译文，不要任何解释"
-    )
+# 全局速率限制器实例
+_rate_limiter: Optional["RateLimiter"] = None
+
+def _init_rate_limiter(config: APIConfig) -> None:
+    """初始化全局速率限制器"""
+    global _rate_limiter
+    if config.rpm > 0 or config.rps > 0 or config.tpm > 0:
+        try:
+            from renpy_tools.utils.rate_limiter import RateLimiter
+            _rate_limiter = RateLimiter(
+                rpm=config.rpm, rps=config.rps, tpm=config.tpm
+            )
+            _log(f"速率限制已启用: RPM={config.rpm}, RPS={config.rps}, TPM={config.tpm}")
+        except ImportError:
+            _log("rate_limiter 模块不可用，跳过速率限制", "warning")
+            _rate_limiter = None
+    else:
+        _rate_limiter = None
+
+
+try:
+    from renpy_tools.utils.prompts import build_api_system_prompt as build_system_prompt
+except ImportError:
+    def build_system_prompt() -> str:
+        """构建系统提示词（fallback）"""
+        return (
+            "你是资深成人游戏本地化译员，将英文台词翻译为简体中文。\n\n"
+
+            "【核心要求】\n"
+            "⚠️ 严禁输出任何英文单词（变量名除外如[name]）\n"
+            "⚠️ 必须将每个英文词汇完整翻译为中文\n"
+            "⚠️ 禁止中英文混合输出\n\n"
+
+            "【翻译风格】\n"
+            "- 成人游戏风格：直白露骨（鸡巴、奶子、小穴、屁股、骚货、操、干、插）\n"
+            "- 自然口语化，避免生硬直译\n"
+            "- 保持换行符数量一致\n\n"
+
+            "【错误示例】禁止以下错误\n"
+            "❌ '你 also 也喜欢' → ✅ '你也喜欢'\n"
+            "❌ '享受你的 pleasure' → ✅ '享受你的快感'\n"
+            "❌ '一个dirty的秘密' → ✅ '一个肮脏的秘密'\n\n"
+
+            "【输出】只输出纯中文译文，不要任何解释"
+        )
 
 
 # ========== 专用翻译 API 实现 ==========
@@ -246,7 +269,7 @@ def _call_baidu_api(text: str, config: APIConfig) -> Optional[str]:
             result = json.loads(resp.read().decode('utf-8'))
             if 'trans_result' in result:
                 return '\n'.join(item['dst'] for item in result['trans_result'])
-    except Exception as e:
+    except (OSError, ValueError, KeyError) as e:
         print(f"[WARN] 百度API错误: {e}")
     return None
 
@@ -292,7 +315,7 @@ def _call_youdao_api(text: str, config: APIConfig) -> Optional[str]:
             result = json.loads(resp.read().decode('utf-8'))
             if result.get('errorCode') == '0' and 'translation' in result:
                 return '\n'.join(result['translation'])
-    except Exception as e:
+    except (OSError, ValueError, KeyError) as e:
         print(f"[WARN] 有道API错误: {e}")
     return None
 
@@ -302,25 +325,6 @@ def _truncate(text: str) -> str:
     if len(text) <= 20:
         return text
     return text[:10] + str(len(text)) + text[-10:]
-
-
-def _call_aliyun_api(text: str, config: APIConfig) -> Optional[str]:
-    """阿里翻译 API
-    
-    需要 api_key 格式: "accessKeyId:accessKeySecret"
-    """
-    try:
-        parts = config.api_key.split(':')
-        if len(parts) != 2:
-            print("[WARN] 阿里API需要格式: accessKeyId:accessKeySecret")
-            return None
-        
-        # 阿里云翻译需要更复杂的签名，这里简化处理
-        print("[INFO] 阿里翻译API需要SDK，建议使用pip install alibabacloud-alimt20181012")
-        return None
-    except Exception as e:
-        print(f"[WARN] 阿里API错误: {e}")
-    return None
 
 
 def _call_azure_api(text: str, config: APIConfig) -> Optional[str]:
@@ -354,7 +358,7 @@ def _call_azure_api(text: str, config: APIConfig) -> Optional[str]:
             result = json.loads(resp.read().decode('utf-8'))
             if result and len(result) > 0:
                 return result[0]['translations'][0]['text']
-    except Exception as e:
+    except (OSError, ValueError, KeyError) as e:
         print(f"[WARN] Azure API错误: {e}")
     return None
 
@@ -424,10 +428,6 @@ def call_api(
     elif config.provider == 'youdao':
         return _call_youdao_api(text, config)
     
-    # 阿里翻译 API
-    elif config.provider == 'aliyun':
-        return _call_aliyun_api(text, config)
-    
     # Azure Translator API
     elif config.provider == 'azure':
         return _call_azure_api(text, config)
@@ -437,6 +437,10 @@ def call_api(
     
     # 重试逻辑
     for attempt in range(config.max_retries):
+        # 速率限制
+        if _rate_limiter:
+            estimated_tokens = int(len(text) * 1.5)
+            _rate_limiter.acquire(estimated_tokens)
         try:
             data = json.dumps(payload).encode('utf-8')
             req = urlreq.Request(config.endpoint, data=data, headers=headers)
@@ -470,6 +474,169 @@ def call_api(
     return None
 
 
+def call_api_batch(
+    items: List[dict],
+    config: APIConfig,
+    _depth: int = 0,
+    prompt_template_path: Optional[str] = None
+) -> Dict[str, str]:
+    """批量翻译 — JSON 键值对模式 + 递归拆分
+
+    借鉴 RenpyTranslator：将多条文本打包为 {"0": "text0", "1": "text1", ...}
+    发送给 LLM，要求返回同结构 JSON。若解析失败或 ID 不匹配，递归拆半重试。
+
+    Args:
+        items: [{"id": ..., "en": ...}, ...]
+        config: API 配置
+        _depth: 递归深度（内部使用）
+        prompt_template_path: JSON 提示词模板路径
+
+    Returns:
+        {id: translation} 映射
+    """
+    if not items or _depth > 6:
+        return {}
+
+    # 构建 JSON 键值对
+    id_map: Dict[str, str] = {}
+    kv: Dict[str, str] = {}
+    for i, item in enumerate(items):
+        kv[str(i)] = item.get("en", "")
+        id_map[str(i)] = item.get("id", "")
+
+    batch_json = json.dumps(kv, ensure_ascii=False)
+
+    # 尝试使用模板
+    messages = None
+    if prompt_template_path:
+        try:
+            from renpy_tools.utils.prompts import load_prompt_template
+            messages = load_prompt_template(
+                prompt_template_path,
+                source_lang="English",
+                target_lang="简体中文",
+                json_data=batch_json
+            )
+        except ImportError:
+            pass
+
+    if not messages:
+        system_prompt = build_system_prompt()
+        user_prompt = (
+            f"将以下 JSON 中的英文翻译为简体中文，返回相同格式的 JSON（key 不变）：\n\n"
+            f"{batch_json}"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+    # 速率限制
+    if _rate_limiter:
+        _rate_limiter.acquire(int(len(batch_json) * 1.5))
+
+    # 构建请求
+    if config.provider in ['deepseek', 'openai', 'openai-gpt4', 'grok']:
+        payload = {
+            "model": config.model,
+            "messages": messages,
+            "temperature": config.temperature,
+            "max_tokens": max(2000, len(batch_json) * 2),
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config.api_key}"
+        }
+    elif config.provider in ['claude', 'claude-sonnet']:
+        # Claude: 提取 system 和 user messages
+        sys_content = ""
+        user_msgs = []
+        for m in messages:
+            if m.get("role") == "system":
+                sys_content = m.get("content", "")
+            else:
+                user_msgs.append(m)
+        if not user_msgs:
+            user_msgs = [{"role": "user", "content": batch_json}]
+        payload = {
+            "model": config.model,
+            "max_tokens": max(2000, len(batch_json) * 2),
+            "system": sys_content,
+            "messages": user_msgs,
+            "temperature": config.temperature,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": config.api_key,
+            "anthropic-version": "2023-06-01"
+        }
+    else:
+        # 非 LLM 提供商，逐条翻译
+        result = {}
+        for item in items:
+            iid = item.get("id", "")
+            tr = call_api(item.get("en", ""), config)
+            if tr:
+                result[iid] = tr
+        return result
+
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        req = urlreq.Request(config.endpoint, data=data, headers=headers)
+        with urlreq.urlopen(req, timeout=config.timeout * 2) as resp:
+            raw = json.loads(resp.read().decode('utf-8'))
+            if config.provider in ['deepseek', 'openai', 'openai-gpt4', 'grok']:
+                content = raw['choices'][0]['message']['content']
+            else:
+                content = raw['content'][0]['text']
+
+            # 提取 JSON（可能包裹在 ```json ... ```）
+            content = content.strip()
+            if content.startswith("```"):
+                lines = content.split("\n")
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                content = "\n".join(lines)
+
+            parsed = json.loads(content)
+
+            # 验证 ID 匹配
+            if not isinstance(parsed, dict) or len(parsed) != len(kv):
+                raise ValueError("ID count mismatch")
+
+            result = {}
+            for k, v in parsed.items():
+                k_clean = ''.join(c for c in k if c.isprintable()).strip()
+                if k_clean in id_map:
+                    result[id_map[k_clean]] = str(v).strip()
+            return result
+
+    except (json.JSONDecodeError, ValueError, KeyError):
+        # 递归拆半重试
+        if len(items) <= 2:
+            # 太少了，逐条翻译
+            result = {}
+            for item in items:
+                iid = item.get("id", "")
+                tr = call_api(item.get("en", ""), config)
+                if tr:
+                    result[iid] = tr
+            return result
+        half = len(items) // 2
+        r1 = call_api_batch(items[:half], config, _depth + 1, prompt_template_path)
+        r2 = call_api_batch(items[half:], config, _depth + 1, prompt_template_path)
+        r1.update(r2)
+        return r1
+
+    except (urlerr.HTTPError, urlerr.URLError, TimeoutError):
+        if len(items) <= 2:
+            return {}
+        half = len(items) // 2
+        r1 = call_api_batch(items[:half], config, _depth + 1, prompt_template_path)
+        r2 = call_api_batch(items[half:], config, _depth + 1, prompt_template_path)
+        r1.update(r2)
+        return r1
+
+
 def translate_item(
     item: dict,
     config: APIConfig
@@ -499,9 +666,12 @@ def process_file(
     input_file: Path,
     output_file: Path,
     rejects_file: Path,
-    config: APIConfig
+    config: APIConfig,
+    batch_mode: bool = False,
+    batch_size: int = 10,
+    prompt_template_path: Optional[str] = None
 ):
-    """处理单个文件"""
+    """处理单个文件（支持逐条或批量模式）"""
     # 加载数据
     items: list[dict] = []
     with input_file.open('r', encoding='utf-8') as f:
@@ -526,67 +696,86 @@ def process_file(
     # 统计
     success = 0
     failed = 0
-    
-    # 并发翻译
-    if _console:
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn("•"),
-            TimeElapsedColumn(),
-            console=_console
-        ) as progress:
-            task = progress.add_task(
-                f"  [cyan]翻译中 ({config.workers} 并发)[/]",
-                total=len(items)
-            )
-            
+
+    if batch_mode and config.provider in ['deepseek', 'openai', 'openai-gpt4', 'grok', 'claude', 'claude-sonnet']:
+        # ── 批量 JSON 键值对模式（递归拆分）──
+        batches = [items[i:i+batch_size] for i in range(0, len(items), batch_size)]
+        total_batches = len(batches)
+        _log(f"批量模式: {len(items)} 条分为 {total_batches} 批，每批 {batch_size} 条")
+
+        for bi, batch in enumerate(batches, 1):
+            result_map = call_api_batch(batch, config, prompt_template_path=prompt_template_path)
+            for item in batch:
+                iid = item.get("id", "")
+                if iid in result_map:
+                    with output_file.open('a', encoding='utf-8') as f:
+                        obj = {'id': iid, 'zh': result_map[iid]}
+                        f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                    success += 1
+                else:
+                    with rejects_file.open('a', encoding='utf-8') as f:
+                        f.write(f"{iid}\tbatch_miss\n")
+                    failed += 1
+            if bi % 5 == 0 or bi == total_batches:
+                _log(f"  批次进度: {bi}/{total_batches} ({100*bi//total_batches}%)")
+    else:
+        # ── 逐条并发模式 ──
+        if _console:
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("•"),
+                TimeElapsedColumn(),
+                console=_console
+            ) as progress:
+                task = progress.add_task(
+                    f"  [cyan]翻译中 ({config.workers} 并发)[/]",
+                    total=len(items)
+                )
+                
+                with cf.ThreadPoolExecutor(max_workers=config.workers) as executor:
+                    futures = [
+                        executor.submit(translate_item, item, config)
+                        for item in items
+                    ]
+                    
+                    for fut in cf.as_completed(futures):
+                        item_id, translation, error = fut.result()
+                        
+                        if translation:
+                            with output_file.open('a', encoding='utf-8') as f:
+                                obj = {'id': item_id, 'zh': translation}
+                                f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+                            success += 1
+                        else:
+                            with rejects_file.open('a', encoding='utf-8') as f:
+                                f.write(f"{item_id}\t{error}\n")
+                            failed += 1
+                        
+                        progress.advance(task)
+        else:
             with cf.ThreadPoolExecutor(max_workers=config.workers) as executor:
                 futures = [
                     executor.submit(translate_item, item, config)
                     for item in items
                 ]
                 
-                for fut in cf.as_completed(futures):
+                for i, fut in enumerate(cf.as_completed(futures), 1):
                     item_id, translation, error = fut.result()
                     
                     if translation:
-                        # 保存成功的翻译
                         with output_file.open('a', encoding='utf-8') as f:
                             obj = {'id': item_id, 'zh': translation}
                             f.write(json.dumps(obj, ensure_ascii=False) + '\n')
                         success += 1
                     else:
-                        # 记录失败
                         with rejects_file.open('a', encoding='utf-8') as f:
                             f.write(f"{item_id}\t{error}\n")
                         failed += 1
                     
-                    progress.advance(task)
-    else:
-        # 无 Rich 库的简单版本
-        with cf.ThreadPoolExecutor(max_workers=config.workers) as executor:
-            futures = [
-                executor.submit(translate_item, item, config)
-                for item in items
-            ]
-            
-            for i, fut in enumerate(cf.as_completed(futures), 1):
-                item_id, translation, error = fut.result()
-                
-                if translation:
-                    with output_file.open('a', encoding='utf-8') as f:
-                        obj = {'id': item_id, 'zh': translation}
-                        f.write(json.dumps(obj, ensure_ascii=False) + '\n')
-                    success += 1
-                else:
-                    with rejects_file.open('a', encoding='utf-8') as f:
-                        f.write(f"{item_id}\t{error}\n")
-                    failed += 1
-                
-                if i % 10 == 0:
-                    print(f"  进度: {i}/{len(items)} ({100*i//len(items)}%)")
+                    if i % 10 == 0:
+                        print(f"  进度: {i}/{len(items)} ({100*i//len(items)}%)")
     
     # 显示结果
     if _console:
@@ -664,6 +853,39 @@ def main():
         default=0.2,
         help="采样温度（默认 0.2）"
     )
+    parser.add_argument(
+        "--rpm",
+        type=int,
+        default=0,
+        help="每分钟最大请求数（0=不限）"
+    )
+    parser.add_argument(
+        "--rps",
+        type=int,
+        default=0,
+        help="每秒最大请求数（0=不限）"
+    )
+    parser.add_argument(
+        "--tpm",
+        type=int,
+        default=0,
+        help="每分钟最大 Token 数（0=不限）"
+    )
+    parser.add_argument(
+        "--batch-mode",
+        action="store_true",
+        help="启用批量 JSON 键值对模式（多条合并翻译，借鉴 RenpyTranslator）"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="批量模式下每批条数（默认 10）"
+    )
+    parser.add_argument(
+        "--prompt-template",
+        help="JSON 提示词模板文件路径（参考 data/prompt_template.json）"
+    )
     
     args = parser.parse_args()
     
@@ -684,7 +906,13 @@ def main():
         workers=args.workers,
         timeout=args.timeout,
         temperature=args.temperature,
+        rpm=args.rpm,
+        rps=args.rps,
+        tpm=args.tpm,
     )
+
+    # 初始化速率限制器
+    _init_rate_limiter(config)
     
     # 收集文件
     input_path = Path(args.input)
@@ -729,7 +957,9 @@ def main():
         else:
             print(f"\n▶ [{i}/{len(files)}] {f.name}")
         
-        process_file(f, output_file, rejects_file, config)
+        process_file(f, output_file, rejects_file, config,
+                     batch_mode=args.batch_mode, batch_size=args.batch_size,
+                     prompt_template_path=args.prompt_template)
     
     # 总结
     elapsed = time.time() - start_time

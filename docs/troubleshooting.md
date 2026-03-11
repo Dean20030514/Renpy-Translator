@@ -70,8 +70,37 @@ python tools/validate.py outputs/extract/project_en_for_grok.jsonl outputs/prefi
 
 - Extract：项目根、glob、排除目录；支持并发（脚本参数 `--workers auto` 已支持）。
 - Prefill：源 JSONL、字典目录、输出；可选 `--dict-backend sqlite`。
-- Validate：源 EN JSONL、译文 JSONL、QA 输出路径。
-- Patch：项目根、译文 JSONL、输出目录；高级模式 `--advanced` 默认开启 TL 分文件输出。
-- Build：项目根、输出目录、`--zh-mirror` 指向镜像译文目录、语言 `zh_CN`。
+- Validate：源 EN JSONL、译文 JSONL、QA 输出路径；可选 `--autofix` 直接修复。
+- Patch：项目根、译文 JSONL、输出目录；高级模式 `--advanced` 默认开启 TL 分文件输出；支持 `--resume` 断点续传。
+- Build：项目根、输出目录、`--zh-mirror` 指向镜像译文目录、语言 `zh_CN`；可选 `--gen-hooks` 生成语言切换器。
+
+## RPA 解包失败
+
+症状：`unrpa.py` 报错 "unsupported archive format"。
+
+解决：
+- 确认 `.rpa` 文件完整（非损坏/截断）
+- 仅支持 RPA-2.0 和 RPA-3.0 格式
+- 某些加密 RPA 需要先解密
+
+## API 速率限制 (429 Too Many Requests)
+
+症状：翻译过程中频繁出现 429 错误。
+
+解决：
+- 使用三级速率限制：`--rpm 60 --rps 5 --tpm 100000`
+- 降低并发数：`--workers 5`
+- 启用批量模式减少请求数：`--batch-mode --batch-size 10`
+
+## 翻译中断后恢复
+
+症状：大批量翻译中断，想从断点继续。
+
+解决：
+- `translate.py`：添加 `--resume` 参数
+- `pipeline.py`：添加 `--resume` 参数
+- `patch.py`：添加 `--resume` 参数
+
+已完成的文件会自动跳过。
 
 若遇到未覆盖的问题，请附上报错栈与命令行参数开 Issue。

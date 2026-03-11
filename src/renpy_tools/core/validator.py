@@ -11,21 +11,24 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from pathlib import Path
 from typing import Optional
 from collections import Counter
 
-from ..utils.placeholder import ph_multiset
-from ..utils.common import PH_RE
+from ..utils.placeholder import ph_multiset, PH_RE
+from ..utils.logger import get_logger
 
-# 获取模块级 logger
-logger = logging.getLogger(__name__)
+# 获取模块级 logger（使用项目统一的 TranslationLogger）
+logger = get_logger(__name__)
 
 
 class MultiLevelValidator:
     """多级别质量检查器"""
+    
+    # 长度比例阈值（译文/原文字符数比值）
+    LENGTH_RATIO_MIN = 0.3   # 低于此值视为翻译过短
+    LENGTH_RATIO_MAX = 3.0   # 高于此值视为翻译过长
     
     # 检查规则配置（扩展版）
     DEFAULT_CHECKS = {
@@ -39,7 +42,7 @@ class MultiLevelValidator:
         'tag_mismatch': {'level': 'critical', 'autofix': True},
         'english_leakage': {'level': 'warning', 'autofix': False},
         'number_mismatch': {'level': 'warning', 'autofix': False},
-        'term_consistency': {'level': 'info', 'autofix': False},
+        'term_consistency': {'level': 'warning', 'autofix': True},
     }
     
     # Ren'Py 标签正则
@@ -49,9 +52,20 @@ class MultiLevelValidator:
     # 英文单词检测（排除常见缩写）
     _ENGLISH_WORD_RE = re.compile(r'\b[a-zA-Z]{3,}\b')
     _ALLOWED_ENGLISH = frozenset({
-        'ok', 'pc', 'cpu', 'gpu', 'ui', 'api', 'app', 'id', 'ip', 'url',
-        'dna', 'rna', 'vip', 'npc', 'rpg', 'fps', 'hp', 'mp', 'sp', 'exp',
-        'xxx', 'www', 'http', 'https', 'wifi', 'gps', 'usb', 'pdf', 'jpg', 'png',
+        # 通用缩写
+        'ok', 'app', 'api', 'url', 'http', 'https', 'www',
+        'pdf', 'jpg', 'png', 'gif', 'mp3', 'mp4', 'ogg', 'wav',
+        # 硬件/技术
+        'cpu', 'gpu', 'usb', 'wifi', 'gps', 'ram', 'rom', 'ssd', 'hdd',
+        'dna', 'rna', 'led', 'lcd',
+        # 游戏术语
+        'npc', 'rpg', 'fps', 'pvp', 'pve', 'mmo', 'mmorpg',
+        'hp', 'mp', 'sp', 'exp', 'atk', 'def', 'str', 'dex', 'int', 'agi',
+        'vip', 'dlc', 'mod', 'buff', 'debuff', 'boss', 'combo',
+        'xxx',
+        # 品牌/感叹词
+        'pc', 'mac', 'ios', 'android',
+        'lol', 'omg', 'wtf',
     })
     
     # 数字检测
@@ -185,6 +199,9 @@ class MultiLevelValidator:
                 issue = self._check_term_consistency(tgt)
                 if issue:
                     self._add_issue(issue)
+                    if self._can_autofix('term_consistency'):
+                        tgt, fix = self._autofix_term_consistency(src, tgt)
+                        fixes_applied.append(fix)
             
             # 记录修复
             if fixes_applied:
@@ -207,7 +224,7 @@ class MultiLevelValidator:
         level = issue.get('level', 'info')
         self.issues[level].append(issue)
     
-    def _check_empty(self, src: dict, tgt: dict) -> Optional[dict]:
+    def _check_empty(self, _src: dict, tgt: dict) -> Optional[dict]:
         """检查空翻译"""
         if not tgt.get('zh', '').strip():
             return {
@@ -266,14 +283,14 @@ class MultiLevelValidator:
         
         ratio = tgt_len / src_len
         
-        if ratio < 0.3:
+        if ratio < self.LENGTH_RATIO_MIN:
             return {
                 'level': 'warning',
                 'id': tgt['id'],
                 'type': 'length_ratio',
                 'message': f"Translation too short (ratio: {ratio:.2f})"
             }
-        elif ratio > 3.0:
+        elif ratio > self.LENGTH_RATIO_MAX:
             return {
                 'level': 'warning',
                 'id': tgt['id'],
@@ -349,59 +366,94 @@ class MultiLevelValidator:
         tgt['zh'] = zh_text
         return tgt, f"Added missing placeholders: {dict(missing)}"
     
+    # 中文句子边界正则（句号、感叹号、问号、省略号后）
+    _SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[。！？…」』）])')
+
     def _autofix_newline(self, src: dict, tgt: dict) -> tuple[dict, str]:
-        """自动修复换行符"""
+        """自动修复换行符（基于中文句子边界智能断行）"""
         src_lines = src.get('en', '').count('\n')
         tgt_lines = tgt.get('zh', '').count('\n')
 
         zh_text = tgt.get('zh', '')
 
         if src_lines > tgt_lines:
-            # 需要添加换行符
             diff = src_lines - tgt_lines
-            # 简单策略：在句号后添加换行
-            parts = zh_text.split('。')
-            num_parts = len(parts)
+            # 找到所有可能的断行位置（中文句子边界）
+            candidates = [m.start() for m in self._SENTENCE_BOUNDARY_RE.finditer(zh_text)]
+            # 过滤掉最开头和最末尾的位置
+            candidates = [p for p in candidates if 0 < p < len(zh_text)]
 
-            if num_parts > 1 and diff > 0:
-                # 计算间隔，确保均匀分布
-                interval = max(1, (num_parts - 1) // (diff + 1))
-                added = 0
-                for i in range(interval, num_parts - 1, interval):
-                    if added >= diff:
+            if candidates and diff > 0:
+                # 选择最均匀分布的断行点
+                text_len = len(zh_text)
+                ideal_interval = text_len / (diff + 1)
+                chosen = []
+                for d in range(1, diff + 1):
+                    target_pos = ideal_interval * d
+                    # 找最接近 target_pos 的候选位置
+                    best = min(candidates, key=lambda p: abs(p - target_pos))
+                    if best not in chosen:
+                        chosen.append(best)
+                        candidates.remove(best)
+                    if not candidates:
                         break
-                    # 在部分末尾添加换行（重组时会在句号后）
-                    parts[i] = parts[i] + '\n'
-                    added += 1
-                zh_text = '。'.join(parts)
+
+                # 按位置从后往前插入换行符
+                for pos in sorted(chosen, reverse=True):
+                    zh_text = zh_text[:pos] + '\n' + zh_text[pos:]
+            elif diff > 0:
+                # 无句子边界时回退：按逗号断行
+                comma_positions = [i for i, c in enumerate(zh_text) if c in '，,；：']
+                comma_positions = [p for p in comma_positions if 0 < p < len(zh_text) - 1]
+                if comma_positions:
+                    text_len = len(zh_text)
+                    ideal_interval = text_len / (diff + 1)
+                    chosen = []
+                    for d in range(1, diff + 1):
+                        target_pos = ideal_interval * d
+                        best = min(comma_positions, key=lambda p: abs(p - target_pos))
+                        if best not in chosen:
+                            chosen.append(best)
+                            comma_positions.remove(best)
+                        if not comma_positions:
+                            break
+                    for pos in sorted(chosen, reverse=True):
+                        zh_text = zh_text[:pos + 1] + '\n' + zh_text[pos + 1:]
 
         elif src_lines < tgt_lines:
-            # 需要删除换行符
+            # 需要删除换行符 — 从末尾开始删除
             diff = tgt_lines - src_lines
             for _ in range(diff):
-                zh_text = zh_text.replace('\n', '', 1)
+                last_nl = zh_text.rfind('\n')
+                if last_nl >= 0:
+                    zh_text = zh_text[:last_nl] + zh_text[last_nl + 1:]
 
         tgt['zh'] = zh_text
         return tgt, f"Fixed newline count: {src_lines} vs {tgt_lines}"
     
+    # 预编译重复标点正则
+    _DUP_PERIOD_RE = re.compile(r'。{2,}')
+    _DUP_COMMA_RE = re.compile(r'，{2,}')
+    _DUP_EXCL_RE = re.compile(r'！{2,}')
+    _DUP_QUES_RE = re.compile(r'？{2,}')
+    _DUP_SPACE_RE = re.compile(r' {2,}')
+
     def _autofix_duplicate_punct(self, tgt: dict) -> tuple[dict, str]:
         """自动修复重复标点"""
         zh_text = tgt.get('zh', '')
 
-        # 使用正则表达式一次性替换连续的重复标点
-        # 比 while 循环更高效，O(n) vs O(n²)
-        zh_text = re.sub(r'。{2,}', '。', zh_text)
-        zh_text = re.sub(r'，{2,}', '，', zh_text)
-        zh_text = re.sub(r'！{2,}', '！', zh_text)
-        zh_text = re.sub(r'？{2,}', '？', zh_text)
-        zh_text = re.sub(r' {2,}', ' ', zh_text)  # 多个空格
+        zh_text = self._DUP_PERIOD_RE.sub('。', zh_text)
+        zh_text = self._DUP_COMMA_RE.sub('，', zh_text)
+        zh_text = self._DUP_EXCL_RE.sub('！', zh_text)
+        zh_text = self._DUP_QUES_RE.sub('？', zh_text)
+        zh_text = self._DUP_SPACE_RE.sub(' ', zh_text)
 
         tgt['zh'] = zh_text
         return tgt, "Removed duplicate punctuation"
     
     # ========== 新增检查方法 ==========
     
-    def _check_tag_mismatch(self, src: dict, tgt: dict) -> Optional[dict]:
+    def _check_tag_mismatch(self, _src: dict, tgt: dict) -> Optional[dict]:
         """检查 Ren'Py 标签配对是否正确"""
         zh_text = tgt.get('zh', '')
         if not zh_text:
@@ -449,8 +501,8 @@ class MultiLevelValidator:
         # 过滤允许的单词
         suspicious = [w for w in words if w.lower() not in self._ALLOWED_ENGLISH]
         
-        # 如果超过3个可疑英文单词，报警告
-        if len(suspicious) > 3:
+        # 如果有可疑英文单词，报警告
+        if len(suspicious) > 1:
             return {
                 'level': 'warning',
                 'id': tgt['id'],
@@ -511,7 +563,7 @@ class MultiLevelValidator:
         
         if inconsistent:
             return {
-                'level': 'info',
+                'level': 'warning',
                 'id': tgt['id'],
                 'type': 'term_inconsistent',
                 'message': f"Term inconsistency: {', '.join(inconsistent[:3])}"
@@ -519,14 +571,38 @@ class MultiLevelValidator:
         
         return None
     
-    def _autofix_tag_mismatch(self, src: dict, tgt: dict) -> tuple[dict, str]:
-        """自动修复标签不匹配"""
-        en_text = src.get('en', '')
-        zh_text = tgt.get('zh', '')
+    def _autofix_term_consistency(self, src: dict, tgt: dict) -> tuple[dict, str]:
+        """自动修复术语一致性（将错误的术语翻译替换为字典中的标准翻译）"""
+        if not self._term_dict:
+            return tgt, "No term dict"
         
-        # 从原文提取标签结构
-        en_open = self._TAG_OPEN_RE.findall(en_text)
-        en_close = self._TAG_CLOSE_RE.findall(en_text)
+        zh_text = tgt.get('zh', '')
+        en_text = src.get('en', '') if src else tgt.get('en', '')
+        fixed_terms = []
+        
+        for en_term, expected_zh in self._term_dict.items():
+            if en_term.lower() not in en_text.lower():
+                continue
+            if expected_zh in zh_text:
+                continue
+            # 术语存在于原文但标准翻译不在译文中 — 无法自动替换（不知道用了什么替代词）
+            # 仅当术语本身（英文）残留在译文中时才替换
+            if re.search(r'\b' + re.escape(en_term) + r'\b', zh_text, re.IGNORECASE):
+                zh_text = re.sub(
+                    r'\b' + re.escape(en_term) + r'\b',
+                    expected_zh,
+                    zh_text,
+                    flags=re.IGNORECASE
+                )
+                fixed_terms.append(f"{en_term} → {expected_zh}")
+        
+        tgt['zh'] = zh_text
+        msg = f"Fixed terms: {', '.join(fixed_terms)}" if fixed_terms else "No term fix needed"
+        return tgt, msg
+    
+    def _autofix_tag_mismatch(self, _src: dict, tgt: dict) -> tuple[dict, str]:
+        """自动修复标签不匹配"""
+        zh_text = tgt.get('zh', '')
         
         # 从译文提取标签
         zh_open = self._TAG_OPEN_RE.findall(zh_text)
@@ -552,25 +628,25 @@ class MultiLevelValidator:
     
     # ========== 结束新增方法 ==========
     
-    def generate_report(self, format: str = 'html', output_path: Optional[str] = None) -> str:
+    def generate_report(self, fmt: str = 'html', output_path: Optional[str] = None) -> str:
         """
         生成质量报告
         
         Args:
-            format: 报告格式（'html', 'json', 'tsv'）
+            fmt: 报告格式（'html', 'json', 'tsv'）
             output_path: 输出路径（如果提供，会写入文件）
         
         Returns:
             报告内容
         """
-        if format == 'html':
+        if fmt == 'html':
             report = self._generate_html_report()
-        elif format == 'json':
+        elif fmt == 'json':
             report = json.dumps(self.issues, indent=2, ensure_ascii=False)
-        elif format == 'tsv':
+        elif fmt == 'tsv':
             report = self._generate_tsv_report()
         else:
-            raise ValueError(f"Unsupported format: {format}")
+            raise ValueError(f"Unsupported format: {fmt}")
         
         # 写入文件
         if output_path:

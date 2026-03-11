@@ -1,12 +1,12 @@
-# 📦 完整安装和使用指南
+# 完整安装和使用指南
 
-本指南包含从零开始配置环境到分享到其他电脑的所有内容。
+本指南包含从零开始配置环境、GPU 加速优化到分享部署的所有内容。
 
 ---
 
-## 🚀 快速开始（推荐）
+## 快速开始（推荐）
 
-### 💻 全新电脑（什么都没装）
+### 全新电脑
 
 ```bash
 第1步：双击 INSTALL_ALL.bat
@@ -19,7 +19,7 @@
       → 开始翻译
 ```
 
-### 📦 已有环境的电脑
+### 已有环境
 
 ```bash
 直接双击 START.bat → 开始使用
@@ -27,7 +27,7 @@
 
 ---
 
-## 📋 系统要求
+## 系统要求
 
 ### 必需
 - **操作系统**: Windows 10/11（64位）
@@ -126,6 +126,7 @@
 ```
 Renpy汉化/
 ├── tools/           ✅ 必需
+├── src/             ✅ 必需（核心库）
 ├── data/            ✅ 必需
 ├── docs/            ✅ 推荐
 ├── START.bat     ✅ 必需
@@ -231,56 +232,113 @@ Renpy汉化/
 
 ---
 
-## 💡 高级技巧
-
-### 选择合适的模型
+## 选择合适的模型
 
 | 模型 | 大小 | VRAM | 速度 | 质量 | 推荐场景 |
 |------|------|------|------|------|----------|
-| qwen2.5:7b | 4.7GB | 6GB | 快 | 优秀 | 8GB VRAM |
-| qwen2.5:14b | 9GB | 12GB | 中 | 更好 | 12GB+ VRAM |
-| qwen2.5:32b | 19GB | 24GB | 慢 | 最好 | 24GB VRAM |
+| qwen2.5:3b | 2GB | 2GB | 极快 | 可接受 | 轻量测试 |
+| qwen2.5:7b | 4.7GB | 6GB | 快 | 优秀 | 8GB VRAM（推荐） |
+| qwen2.5:14b | 9GB | 10GB | 中 | 最佳平衡 | 12GB+ VRAM |
+| qwen2.5:32b | 19GB | 18GB+ | 慢 | 顶级 | 24GB VRAM |
 
-### 优化翻译速度
+```bash
+# 安装模型
+ollama pull qwen2.5:7b    # 推荐：速度与质量平衡
+ollama pull qwen2.5:14b   # 更好质量
+```
 
-1. **使用 GPU**: 确保 NVIDIA 驱动最新
-2. **合适的模型**: 7b 模型最快
-3. **并发数**: 4 是最佳平衡（不要设太高）
-4. **关闭其他程序**: 释放 GPU 资源
-
-### 批量部署（多台电脑）
-
-1. 在一台电脑上完成 INSTALL_ALL.bat
-2. 导出 Ollama 模型文件
-3. 使用 PACKAGE.bat 打包工具
-4. 制作包含安装程序的完整安装包
-5. 在其他电脑批量部署
+> **注意**：不推荐使用 DeepSeek R1 系列做翻译——R1 是推理模型，会生成 `<think>...</think>` 思考过程，污染翻译输出且速度慢。
 
 ---
 
-## 📞 获取更多帮助
+## GPU 加速配置
 
-- **GPU 优化**: 查看 `docs/gpu_optimization.md`
-- **故障排查**: 查看 `docs/troubleshooting.md`
-- **项目主页**: 查看 `README.md`
+### 自动配置
+
+`START.bat` 启动时会自动检测 GPU 并配置 Ollama：
+
+```powershell
+$env:OLLAMA_NUM_GPU = "999"      # 尽可能多的层放到 GPU
+$env:OLLAMA_GPU_OVERHEAD = "0"   # 减少 GPU 开销保留
+```
+
+### CUDA 加速（可选）
+
+如果已安装 CUDA Toolkit，可手动启用以获得额外 10-15% 加速：
+
+```powershell
+.\tools\init_cuda.ps1
+```
+
+**CUDA 配置要求：**
+- NVIDIA GPU（计算能力 6.0+）
+- CUDA Toolkit 11.0+（推荐 12.x）
+- cuDNN（与 CUDA 版本匹配）
+
+> 没有 CUDA 也完全可以使用——Ollama 内置 GPU 支持已经很快。
+
+### 验证 GPU 使用
+
+```powershell
+# 查看 GPU 信息
+nvidia-smi
+
+# 查看 Ollama 模型加载情况
+ollama ps
+
+# 实时监控（另一个终端窗口）
+nvidia-smi -l 1
+```
+
+### GPU 性能参考（qwen2.5 系列）
+
+| 模型 | GPU 使用率 | 速度 (tokens/s) | 显存占用 |
+|------|-----------|----------------|----------|
+| qwen2.5:3b | 100% | ~150 | 2 GB |
+| qwen2.5:7b | 100% | ~100 | 4.7 GB |
+| qwen2.5:14b | 85-95% | ~60 | 8-10 GB |
+| qwen2.5:32b | 40-50% | ~30 | 16+ GB |
+
+### GPU 常见问题
+
+**GPU 显存不足：**
+```bash
+ollama stop <模型名>       # 停止当前模型
+ollama pull qwen2.5:7b    # 换更小的模型
+```
+
+**GPU 未使用：**
+- 检查 `ollama ps`，确认 PROCESSOR 列显示 GPU 百分比
+- 检查环境变量：`$env:OLLAMA_NUM_GPU` 应该 > 0
+
+**GPU 问题应急：** 双击 `START_SAFE.bat` 以 CPU 模式启动。
 
 ---
 
-## 🎉 总结
+## 分享到其他电脑
 
-### 新手流程
-```
-INSTALL_ALL.bat → START.bat → 选择游戏 → 开始翻译
-```
+### 方法一：使用打包工具（推荐）
 
-### 老手流程
-```
-START.bat → 开始翻译
-```
+```bash
+# 当前电脑
+1. 双击 PACKAGE.bat → 生成打包文件夹
+2. 压缩后分享
 
-### 分享流程
-```
-PACKAGE.bat → 压缩 → 分享 → INSTALL_ALL.bat → START.bat
+# 新电脑
+1. 解压
+2. 双击 INSTALL_ALL.bat
+3. 双击 START.bat
 ```
 
-**就这么简单！** 🚀
+### 方法二：手动复制
+
+**需要复制：** `tools/`, `data/`, `src/`, `START.bat`, `INSTALL_ALL.bat`, `requirements.txt`
+
+**不需要复制：** `outputs/`（翻译产出）, `__pycache__/`
+
+### 离线安装
+
+在有网络的电脑预先下载：
+1. Python: https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe
+2. Ollama: https://ollama.com/download/OllamaSetup.exe
+3. 模型文件: `C:\Users\用户名\.ollama\models\`（整个目录）

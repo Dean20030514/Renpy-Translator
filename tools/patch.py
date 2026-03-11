@@ -30,21 +30,25 @@ _project_root = Path(__file__).parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.insert(0, str(_project_root / "src"))
 
-# 统一导入（从 common.py 获取，避免重复定义）
+# 统一导入（优先从 placeholder.py）
 try:
-    from renpy_tools.utils.common import PH_RE, TRANS_KEYS
-    from renpy_tools.utils.placeholder import compute_semantic_signature as _comp_sig, normalize_for_signature as _norm_sig
+    from renpy_tools.utils.placeholder import PH_RE, compute_semantic_signature as _comp_sig, normalize_for_signature as _norm_sig
+    from renpy_tools.utils.common import TRANS_KEYS
 except ImportError:
-    # Fallback
-    PH_RE = re.compile(
-        r"\[[A-Za-z_][A-Za-z0-9_]*\]"
-        r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
-        r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
-        r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
-    )
-    TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
-    _comp_sig = None
-    _norm_sig = None
+    try:
+        from renpy_tools.utils.common import PH_RE, TRANS_KEYS
+        from renpy_tools.utils.placeholder import compute_semantic_signature as _comp_sig, normalize_for_signature as _norm_sig
+    except ImportError:
+        # Fallback
+        PH_RE = re.compile(
+            r"\[[A-Za-z_][A-Za-z0-9_]*\]"
+            r"|%(?:\([^)]+\))?[+#0\- ]?\d*(?:\.\d+)?[sdifeEfgGxXo]"
+            r"|\{\d+(?:![rsa])?(?::[^{}]+)?\}"
+            r"|\{[A-Za-z_][A-Za-z0-9_]*(?:![rsa])?(?::[^{}]+)?\}"
+        )
+        TRANS_KEYS = ("zh", "cn", "zh_cn", "translation", "text_zh", "target", "tgt", "zh_final")
+        _comp_sig = None
+        _norm_sig = None
 
 try:
     from rapidfuzz import fuzz as _fuzz
@@ -654,11 +658,19 @@ def main():
     ap.add_argument("--lang", default="zh_CN", help="TL 语言目录名（默认 zh_CN）")
     ap.add_argument("--tl-per-file", action="store_true", default=True, help="将 strings 分拆为 tl/<lang>/<相对路径>.rpy（默认开启；取消请显式传 --no-tl-per-file）")
     ap.add_argument("--no-tl-per-file", action="store_false", dest="tl_per_file", help="禁用按源文件拆分，输出单一 strings.rpy")
+    ap.add_argument("--resume", action="store_true", help="跳过已成功补丁的文件（基于 .patchlog 记录）")
     args = ap.parse_args()
 
     root = Path(args.project_root).resolve()
     out_root = Path(args.out).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
+
+    # --resume: 加载已完成文件列表
+    patchlog_path = out_root / ".patchlog"
+    done_files: set[str] = set()
+    if args.resume and patchlog_path.exists():
+        done_files = set(patchlog_path.read_text(encoding="utf-8").splitlines())
+        print(f"[resume] 已完成 {len(done_files)} 个文件，将跳过")
 
     trans = load_translations(Path(args.translated_jsonl).resolve())
     exclude_dirs = set([d.strip() for d in args.exclude_dirs.split(",") if d.strip()])
@@ -771,6 +783,8 @@ def main():
         targets = []
         for p in files:
             rel = p.relative_to(root).as_posix()
+            if rel in done_files:
+                continue
             if any((isinstance(_id, str) and _id.startswith(rel + ":")) or 
                    (rec["obj"].get("file") == rel) for _id, rec in trans.items()):
                 targets.append(p)
@@ -812,6 +826,7 @@ def main():
                 def do_chunk(chunk_files):
                     local_rows = []
                     modified_count = 0
+                    modified_rels = []
                     for p in chunk_files:
                         rel = p.relative_to(root).as_posix()
                         orig_text = p.read_text(encoding="utf-8", errors="ignore")
@@ -820,14 +835,23 @@ def main():
                             if not args.dry_run:
                                 if _safe_write_output(out_root, rel, patched_text):
                                     modified_count += 1
+                                    modified_rels.append(rel)
                             else:
                                 modified_count += 1
-                    return local_rows, modified_count
+                    return local_rows, modified_count, modified_rels
 
+                chunk_patched_rels = []
                 with concurrent.futures.ProcessPoolExecutor(max_workers=workers_val) as ex:
-                    for lrows, mcnt in ex.map(do_chunk, list(chunks(targets, args.chunk_size))):
+                    for lrows, mcnt, mrels in ex.map(do_chunk, list(chunks(targets, args.chunk_size))):
                         report_rows.extend(lrows)
                         count_files += mcnt
+                        chunk_patched_rels.extend(mrels)
+
+                # 更新 patchlog (chunk 模式)
+                if args.resume and chunk_patched_rels and not args.dry_run:
+                    with patchlog_path.open("a", encoding="utf-8") as plf:
+                        for rel in chunk_patched_rels:
+                            plf.write(rel + "\n")
             else:
                 with concurrent.futures.ProcessPoolExecutor(max_workers=workers_val) as ex:
                     for res in ex.map(do_one, targets):
@@ -836,14 +860,22 @@ def main():
             for p in targets:
                 results.append(do_one(p))
 
+        patched_rels = []
         for rel, _orig_text, patched_text, modified, local_reports in results:
             report_rows.extend(local_reports)
             if modified:
                 if not args.dry_run:
                     if _safe_write_output(out_root, rel, patched_text):
                         count_files += 1
+                        patched_rels.append(rel)
                 else:
                     count_files += 1
+
+        # 更新 patchlog
+        if args.resume and patched_rels and not args.dry_run:
+            with patchlog_path.open("a", encoding="utf-8") as plf:
+                for rel in patched_rels:
+                    plf.write(rel + "\n")
 
         # 写出报告
         tsv_path = Path(args.translated_jsonl).with_suffix(".patch_report.tsv")
@@ -854,8 +886,11 @@ def main():
         print(f"详细报告: {tsv_path}")
     else:
         # 简单模式(向后兼容)
+        simple_patched_rels = []
         for p in files:
             rel = p.relative_to(root).as_posix()
+            if rel in done_files:
+                continue
             text = p.read_text(encoding="utf-8", errors="ignore")
             patched_text, applied, warn = patch_file_text(text, rel, trans)
             if applied or warn:
@@ -864,10 +899,17 @@ def main():
                         p.with_suffix(".bak.rpy").write_text(text, encoding="utf-8")
                     if _safe_write_output(out_root, rel, patched_text):
                         count_files += 1
+                        simple_patched_rels.append(rel)
                 else:
                     count_files += 1
             total_applied += applied
             total_warn += warn
+
+        # 更新 patchlog (简单模式)
+        if args.resume and simple_patched_rels and not args.dry_run:
+            with patchlog_path.open("a", encoding="utf-8") as plf:
+                for rel in simple_patched_rels:
+                    plf.write(rel + "\n")
 
         print(f"Patched files written: {count_files}")
         print(f"Applied replacements: {total_applied}, warnings: {total_warn}")

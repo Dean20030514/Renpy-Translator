@@ -13,18 +13,10 @@
 """
 
 import json
-import os
-import sys
-import tempfile
 from pathlib import Path
 from typing import List, Dict, Any
-from unittest.mock import Mock, patch, MagicMock
 
 import pytest
-
-# 添加项目路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root / "src"))
 
 
 # ========================================
@@ -144,8 +136,7 @@ class TestCoreModulesIntegration:
         """测试 common 模块可以正常导入"""
         from renpy_tools.utils.common import (
             PH_RE, ph_multiset,
-            AdaptiveRateLimiter, QualityScore,
-            TranslationConfig, TranslationCache
+            AdaptiveRateLimiter,
         )
         
         # 测试占位符正则
@@ -174,7 +165,7 @@ class TestValidatorIntegration:
         source = [{"id": "test", "en": "Hello, [name]!"}]
         target = [{"id": "test", "zh": "你好，[name]！"}]
         
-        fixed, report = v.validate_with_autofix(source, target)
+        _fixed, report = v.validate_with_autofix(source, target)
         
         # 检查没有严重问题
         assert len(report.get('critical', [])) == 0
@@ -188,7 +179,7 @@ class TestValidatorIntegration:
         source = [{"id": "test", "en": "Hello, [name]! You have {0} items."}]
         target = [{"id": "test", "zh": "你好！你有东西。"}]  # 缺少占位符
         
-        fixed, report = v.validate_with_autofix(source, target)
+        _fixed, report = v.validate_with_autofix(source, target)
         
         # 应该检测到占位符问题（critical 级别）
         assert len(report.get('critical', [])) > 0
@@ -203,7 +194,7 @@ class TestValidatorIntegration:
         source = [{"id": item["id"], "en": item["en"]} for item in sample_jsonl_data]
         target = [{"id": item["id"], "zh": item["zh"]} for item in sample_translated_data]
         
-        fixed, report = v.validate_with_autofix(source, target)
+        fixed, _report = v.validate_with_autofix(source, target)
         
         # 验证返回结果
         assert len(fixed) == len(source)
@@ -398,7 +389,7 @@ class TestEndToEndWorkflow:
         source = [{"id": item["id"], "en": item["en"]} for item in sample_jsonl_data]
         target = [{"id": item["id"], "zh": item["zh"]} for item in sample_translated_data]
         
-        fixed, report = v.validate_with_autofix(source, target)
+        _fixed, report = v.validate_with_autofix(source, target)
         
         # 写入 QA 报告
         qa_file = tmp_path / "qa.json"
@@ -500,7 +491,7 @@ class TestErrorHandling:
         # 应该能优雅处理
         valid_items = []
         with open(bad_file, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f):
+            for _i, line in enumerate(f):
                 try:
                     if line.strip():
                         valid_items.append(json.loads(line))
@@ -558,7 +549,7 @@ class TestPerformance:
         target = [{"id": f"test_{i}", "zh": f"测试句子 {i}。"} for i in range(100)]
         
         start = time.time()
-        fixed, report = v.validate_with_autofix(source, target)
+        fixed, _report = v.validate_with_autofix(source, target)
         elapsed = time.time() - start
         
         # 100 条应该在 1 秒内完成

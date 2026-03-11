@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
 
-ENCODINGS = ["utf-8-sig", "utf-8", "cp1252", "latin1"]
+from ..utils.io import read_text_file
 
 EN_MARKERS = ["英", "_en", "-en", ".en", "_ENG", "_English", "English", "_EN", "-EN"]
 CN_MARKERS = ["_zh", "-zh", ".zh", "_cn", "-cn", ".cn", "中文", "中", "_ZH", "_CN", "-ZH", "-CN"]
@@ -18,7 +18,6 @@ CALL_LBL_RE= re.compile(r'^\s*call\s+([A-Za-z_]\w*)\s*$')
 SCENE_RE   = re.compile(r'^\s*scene\s+')
 SHOW_RE    = re.compile(r'^\s*show\s+')
 HIDE_RE    = re.compile(r'^\s*hide\s+')
-DEFAULT_RE = re.compile(r'^\s*default\s+')
 IMAGEBUTTON_JUMP_RE = re.compile(r"action\s+Jump\(\s*'([^']+)'\s*\)")
 
 SPEAKER_LINE_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s+"(.+?)"\s*$')
@@ -68,16 +67,8 @@ class ParsedFile:
 
 
 def read_text(path: str) -> List[str]:
-    for enc in ENCODINGS:
-        try:
-            with open(path, "r", encoding=enc, errors="replace") as f:
-                return f.read().splitlines()
-        except (UnicodeDecodeError, OSError):
-            # 尝试下一种编码
-            continue
-    # 最后一次显式使用 utf-8 忽略错误，保证有编码且不触发 lint 警告
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        return f.read().splitlines()
+    """读取文本文件并按行分割（委托给 io.read_text_file 统一编码回退策略）"""
+    return read_text_file(path).splitlines()
 
 
 def normalize_key(name: str, is_en: bool) -> str:
