@@ -271,11 +271,341 @@ function Show-ModelSelector {
     return $null
 }
 
+function Show-TranslationMethodDialog {
+    # 翻译方式选择窗口
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "选择翻译方式"
+    $form.Size = New-Object System.Drawing.Size(520, 560)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+
+    # 标题
+    $labelTitle = New-Object System.Windows.Forms.Label
+    $labelTitle.Location = New-Object System.Drawing.Point(15, 10)
+    $labelTitle.Size = New-Object System.Drawing.Size(480, 30)
+    $labelTitle.Text = "请选择翻译方式"
+    $labelTitle.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 11, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($labelTitle)
+
+    # ======= 方案 1: 云端 API =======
+    $radioAPI = New-Object System.Windows.Forms.RadioButton
+    $radioAPI.Location = New-Object System.Drawing.Point(20, 50)
+    $radioAPI.Size = New-Object System.Drawing.Size(460, 25)
+    $radioAPI.Text = "☁️  云端 API 翻译（推荐）— 速度最快，质量最好，￥3-10"
+    $radioAPI.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9, [System.Drawing.FontStyle]::Bold)
+    $radioAPI.Checked = $true
+    $form.Controls.Add($radioAPI)
+
+    # API 选项组
+    $groupAPI = New-Object System.Windows.Forms.GroupBox
+    $groupAPI.Location = New-Object System.Drawing.Point(40, 78)
+    $groupAPI.Size = New-Object System.Drawing.Size(440, 130)
+    $groupAPI.Text = ""
+    $form.Controls.Add($groupAPI)
+
+    # API Provider 选择
+    $labelProvider = New-Object System.Windows.Forms.Label
+    $labelProvider.Location = New-Object System.Drawing.Point(10, 15)
+    $labelProvider.Size = New-Object System.Drawing.Size(80, 22)
+    $labelProvider.Text = "API 提供商:"
+    $labelProvider.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupAPI.Controls.Add($labelProvider)
+
+    $comboProvider = New-Object System.Windows.Forms.ComboBox
+    $comboProvider.Location = New-Object System.Drawing.Point(95, 13)
+    $comboProvider.Size = New-Object System.Drawing.Size(160, 25)
+    $comboProvider.DropDownStyle = "DropDownList"
+    $comboProvider.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    @("deepseek", "grok", "openai", "claude", "claude-sonnet") | ForEach-Object { [void]$comboProvider.Items.Add($_) }
+    $comboProvider.SelectedIndex = 0
+    $groupAPI.Controls.Add($comboProvider)
+
+    $labelProviderHint = New-Object System.Windows.Forms.Label
+    $labelProviderHint.Location = New-Object System.Drawing.Point(265, 15)
+    $labelProviderHint.Size = New-Object System.Drawing.Size(170, 22)
+    $labelProviderHint.Text = "💡 DeepSeek 性价比最高"
+    $labelProviderHint.ForeColor = [System.Drawing.Color]::Gray
+    $labelProviderHint.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $groupAPI.Controls.Add($labelProviderHint)
+
+    # API Key 输入
+    $labelKey = New-Object System.Windows.Forms.Label
+    $labelKey.Location = New-Object System.Drawing.Point(10, 45)
+    $labelKey.Size = New-Object System.Drawing.Size(80, 22)
+    $labelKey.Text = "API Key:"
+    $labelKey.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupAPI.Controls.Add($labelKey)
+
+    $textAPIKey = New-Object System.Windows.Forms.TextBox
+    $textAPIKey.Location = New-Object System.Drawing.Point(95, 43)
+    $textAPIKey.Size = New-Object System.Drawing.Size(335, 25)
+    $textAPIKey.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $textAPIKey.UseSystemPasswordChar = $true
+    $groupAPI.Controls.Add($textAPIKey)
+
+    # Workers
+    $labelAPIWorkers = New-Object System.Windows.Forms.Label
+    $labelAPIWorkers.Location = New-Object System.Drawing.Point(10, 75)
+    $labelAPIWorkers.Size = New-Object System.Drawing.Size(80, 22)
+    $labelAPIWorkers.Text = "并发数:"
+    $labelAPIWorkers.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupAPI.Controls.Add($labelAPIWorkers)
+
+    $numAPIWorkers = New-Object System.Windows.Forms.NumericUpDown
+    $numAPIWorkers.Location = New-Object System.Drawing.Point(95, 73)
+    $numAPIWorkers.Size = New-Object System.Drawing.Size(60, 25)
+    $numAPIWorkers.Minimum = 1
+    $numAPIWorkers.Maximum = 50
+    $numAPIWorkers.Value = 20
+    $numAPIWorkers.Font = New-Object System.Drawing.Font("Consolas", 10)
+    $groupAPI.Controls.Add($numAPIWorkers)
+
+    # 批量模式
+    $checkBatch = New-Object System.Windows.Forms.CheckBox
+    $checkBatch.Location = New-Object System.Drawing.Point(170, 75)
+    $checkBatch.Size = New-Object System.Drawing.Size(120, 22)
+    $checkBatch.Text = "批量模式"
+    $checkBatch.Checked = $true
+    $checkBatch.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupAPI.Controls.Add($checkBatch)
+
+    # 速率限制
+    $checkRateLimit = New-Object System.Windows.Forms.CheckBox
+    $checkRateLimit.Location = New-Object System.Drawing.Point(300, 75)
+    $checkRateLimit.Size = New-Object System.Drawing.Size(130, 22)
+    $checkRateLimit.Text = "速率限制"
+    $checkRateLimit.Checked = $true
+    $checkRateLimit.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupAPI.Controls.Add($checkRateLimit)
+
+    # RPM 设置
+    $labelRPM = New-Object System.Windows.Forms.Label
+    $labelRPM.Location = New-Object System.Drawing.Point(10, 103)
+    $labelRPM.Size = New-Object System.Drawing.Size(40, 22)
+    $labelRPM.Text = "RPM:"
+    $labelRPM.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $labelRPM.ForeColor = [System.Drawing.Color]::Gray
+    $groupAPI.Controls.Add($labelRPM)
+
+    $numRPM = New-Object System.Windows.Forms.NumericUpDown
+    $numRPM.Location = New-Object System.Drawing.Point(50, 101)
+    $numRPM.Size = New-Object System.Drawing.Size(55, 22)
+    $numRPM.Minimum = 1
+    $numRPM.Maximum = 600
+    $numRPM.Value = 60
+    $numRPM.Font = New-Object System.Drawing.Font("Consolas", 8)
+    $groupAPI.Controls.Add($numRPM)
+
+    $labelRPS = New-Object System.Windows.Forms.Label
+    $labelRPS.Location = New-Object System.Drawing.Point(115, 103)
+    $labelRPS.Size = New-Object System.Drawing.Size(35, 22)
+    $labelRPS.Text = "RPS:"
+    $labelRPS.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $labelRPS.ForeColor = [System.Drawing.Color]::Gray
+    $groupAPI.Controls.Add($labelRPS)
+
+    $numRPS = New-Object System.Windows.Forms.NumericUpDown
+    $numRPS.Location = New-Object System.Drawing.Point(150, 101)
+    $numRPS.Size = New-Object System.Drawing.Size(55, 22)
+    $numRPS.Minimum = 1
+    $numRPS.Maximum = 100
+    $numRPS.Value = 5
+    $numRPS.Font = New-Object System.Drawing.Font("Consolas", 8)
+    $groupAPI.Controls.Add($numRPS)
+
+    $labelTPM = New-Object System.Windows.Forms.Label
+    $labelTPM.Location = New-Object System.Drawing.Point(215, 103)
+    $labelTPM.Size = New-Object System.Drawing.Size(35, 22)
+    $labelTPM.Text = "TPM:"
+    $labelTPM.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $labelTPM.ForeColor = [System.Drawing.Color]::Gray
+    $groupAPI.Controls.Add($labelTPM)
+
+    $numTPM = New-Object System.Windows.Forms.NumericUpDown
+    $numTPM.Location = New-Object System.Drawing.Point(250, 101)
+    $numTPM.Size = New-Object System.Drawing.Size(80, 22)
+    $numTPM.Minimum = 1000
+    $numTPM.Maximum = 1000000
+    $numTPM.Value = 100000
+    $numTPM.Increment = 10000
+    $numTPM.Font = New-Object System.Drawing.Font("Consolas", 8)
+    $groupAPI.Controls.Add($numTPM)
+
+    # ======= 方案 2: 免费机翻 =======
+    $radioFree = New-Object System.Windows.Forms.RadioButton
+    $radioFree.Location = New-Object System.Drawing.Point(20, 218)
+    $radioFree.Size = New-Object System.Drawing.Size(460, 25)
+    $radioFree.Text = "🆓  免费机器翻译 — 完全免费，质量一般"
+    $radioFree.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($radioFree)
+
+    $groupFree = New-Object System.Windows.Forms.GroupBox
+    $groupFree.Location = New-Object System.Drawing.Point(40, 246)
+    $groupFree.Size = New-Object System.Drawing.Size(440, 50)
+    $groupFree.Text = ""
+    $form.Controls.Add($groupFree)
+
+    $labelFreeProvider = New-Object System.Windows.Forms.Label
+    $labelFreeProvider.Location = New-Object System.Drawing.Point(10, 18)
+    $labelFreeProvider.Size = New-Object System.Drawing.Size(80, 22)
+    $labelFreeProvider.Text = "翻译引擎:"
+    $labelFreeProvider.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupFree.Controls.Add($labelFreeProvider)
+
+    $comboFreeProvider = New-Object System.Windows.Forms.ComboBox
+    $comboFreeProvider.Location = New-Object System.Drawing.Point(95, 16)
+    $comboFreeProvider.Size = New-Object System.Drawing.Size(120, 25)
+    $comboFreeProvider.DropDownStyle = "DropDownList"
+    $comboFreeProvider.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $comboFreeProvider.Enabled = $false
+    @("google", "bing", "deepl") | ForEach-Object { [void]$comboFreeProvider.Items.Add($_) }
+    $comboFreeProvider.SelectedIndex = 0
+    $groupFree.Controls.Add($comboFreeProvider)
+
+    $labelFreeHint = New-Object System.Windows.Forms.Label
+    $labelFreeHint.Location = New-Object System.Drawing.Point(225, 18)
+    $labelFreeHint.Size = New-Object System.Drawing.Size(200, 22)
+    $labelFreeHint.Text = "💡 Google 翻译效果最稳定"
+    $labelFreeHint.ForeColor = [System.Drawing.Color]::Gray
+    $labelFreeHint.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $groupFree.Controls.Add($labelFreeHint)
+
+    # ======= 方案 3: Ollama 本地 =======
+    $radioOllama = New-Object System.Windows.Forms.RadioButton
+    $radioOllama.Location = New-Object System.Drawing.Point(20, 306)
+    $radioOllama.Size = New-Object System.Drawing.Size(460, 25)
+    $radioOllama.Text = "🖥️  Ollama 本地翻译 — 完全免费+离线，速度较慢"
+    $radioOllama.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($radioOllama)
+
+    $labelOllamaHint = New-Object System.Windows.Forms.Label
+    $labelOllamaHint.Location = New-Object System.Drawing.Point(40, 334)
+    $labelOllamaHint.Size = New-Object System.Drawing.Size(440, 22)
+    $labelOllamaHint.Text = "需要 Ollama + 模型（4-8GB），下一步选择模型"
+    $labelOllamaHint.ForeColor = [System.Drawing.Color]::Gray
+    $labelOllamaHint.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $form.Controls.Add($labelOllamaHint)
+
+    # ======= 方案 4: 跳过翻译 =======
+    $radioSkip = New-Object System.Windows.Forms.RadioButton
+    $radioSkip.Location = New-Object System.Drawing.Point(20, 366)
+    $radioSkip.Size = New-Object System.Drawing.Size(460, 25)
+    $radioSkip.Text = "⏭️  跳过翻译 — 仅使用字典预填"
+    $radioSkip.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $form.Controls.Add($radioSkip)
+
+    # ======= 对比表 =======
+    $labelCompare = New-Object System.Windows.Forms.Label
+    $labelCompare.Location = New-Object System.Drawing.Point(20, 400)
+    $labelCompare.Size = New-Object System.Drawing.Size(460, 70)
+    $labelCompare.Text = @"
+方案对比：
+  云端 API    ⭐⭐⭐⭐⭐ 质量  |  ⚡⚡⚡⚡⚡ 速度  |  ￥3-10
+  免费机翻    ⭐⭐⭐ 质量       |  ⚡⚡⚡⚡ 速度     |  ￥0
+  Ollama 本地  ⭐⭐⭐ 质量       |  ⚡⚡ 速度           |  ￥0
+"@
+    $labelCompare.ForeColor = [System.Drawing.Color]::DarkSlateGray
+    $labelCompare.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $form.Controls.Add($labelCompare)
+
+    # Radio 事件 - 启用/禁用对应组
+    $radioAPI.Add_Click({
+        $comboProvider.Enabled = $true; $textAPIKey.Enabled = $true
+        $numAPIWorkers.Enabled = $true; $checkBatch.Enabled = $true
+        $checkRateLimit.Enabled = $true; $numRPM.Enabled = $true
+        $numRPS.Enabled = $true; $numTPM.Enabled = $true
+        $comboFreeProvider.Enabled = $false
+    })
+    $radioFree.Add_Click({
+        $comboProvider.Enabled = $false; $textAPIKey.Enabled = $false
+        $numAPIWorkers.Enabled = $false; $checkBatch.Enabled = $false
+        $checkRateLimit.Enabled = $false; $numRPM.Enabled = $false
+        $numRPS.Enabled = $false; $numTPM.Enabled = $false
+        $comboFreeProvider.Enabled = $true
+    })
+    $radioOllama.Add_Click({
+        $comboProvider.Enabled = $false; $textAPIKey.Enabled = $false
+        $numAPIWorkers.Enabled = $false; $checkBatch.Enabled = $false
+        $checkRateLimit.Enabled = $false; $numRPM.Enabled = $false
+        $numRPS.Enabled = $false; $numTPM.Enabled = $false
+        $comboFreeProvider.Enabled = $false
+    })
+    $radioSkip.Add_Click({
+        $comboProvider.Enabled = $false; $textAPIKey.Enabled = $false
+        $numAPIWorkers.Enabled = $false; $checkBatch.Enabled = $false
+        $checkRateLimit.Enabled = $false; $numRPM.Enabled = $false
+        $numRPS.Enabled = $false; $numTPM.Enabled = $false
+        $comboFreeProvider.Enabled = $false
+    })
+
+    # ======= 按钮 =======
+    $okButton = New-Object System.Windows.Forms.Button
+    $okButton.Location = New-Object System.Drawing.Point(310, 480)
+    $okButton.Size = New-Object System.Drawing.Size(90, 30)
+    $okButton.Text = "确定"
+    $okButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $form.Controls.Add($okButton)
+    $form.AcceptButton = $okButton
+
+    $cancelButton = New-Object System.Windows.Forms.Button
+    $cancelButton.Location = New-Object System.Drawing.Point(410, 480)
+    $cancelButton.Size = New-Object System.Drawing.Size(90, 30)
+    $cancelButton.Text = "取消"
+    $cancelButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.Controls.Add($cancelButton)
+    $form.CancelButton = $cancelButton
+
+    # 显示
+    $result = $form.ShowDialog()
+
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        if ($radioAPI.Checked) {
+            $apiKey = $textAPIKey.Text.Trim()
+            if ([string]::IsNullOrEmpty($apiKey)) {
+                [System.Windows.Forms.MessageBox]::Show("请输入 API Key", "错误", "OK", "Error")
+                return $null
+            }
+            $config = @{
+                Method = "api"
+                Provider = $comboProvider.SelectedItem
+                APIKey = $apiKey
+                Workers = [int]$numAPIWorkers.Value
+                BatchMode = $checkBatch.Checked
+                RateLimit = $checkRateLimit.Checked
+                RPM = [int]$numRPM.Value
+                RPS = [int]$numRPS.Value
+                TPM = [int]$numTPM.Value
+            }
+            return $config
+        } elseif ($radioFree.Checked) {
+            return @{
+                Method = "free"
+                Provider = $comboFreeProvider.SelectedItem
+                Workers = 10
+            }
+        } elseif ($radioOllama.Checked) {
+            return @{
+                Method = "ollama"
+            }
+        } else {
+            return @{
+                Method = "skip"
+            }
+        }
+    }
+
+    return $null
+}
+
 function Show-OptionsDialog {
     # 创建窗口
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "翻译选项"
-    $form.Size = New-Object System.Drawing.Size(450, 420)
+    $form.Size = New-Object System.Drawing.Size(450, 380)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -289,25 +619,17 @@ function Show-OptionsDialog {
     $label.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 10, [System.Drawing.FontStyle]::Bold)
     $form.Controls.Add($label)
     
-    # 选项 1: 跳过翻译
-    $checkSkipTranslate = New-Object System.Windows.Forms.CheckBox
-    $checkSkipTranslate.Location = New-Object System.Drawing.Point(20, 50)
-    $checkSkipTranslate.Size = New-Object System.Drawing.Size(400, 30)
-    $checkSkipTranslate.Text = "跳过 AI 翻译 (仅使用字典预填)"
-    $checkSkipTranslate.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
-    $form.Controls.Add($checkSkipTranslate)
-    
-    # 选项 2: 跳过构建
+    # 选项 1: 跳过构建
     $checkSkipBuild = New-Object System.Windows.Forms.CheckBox
-    $checkSkipBuild.Location = New-Object System.Drawing.Point(20, 90)
+    $checkSkipBuild.Location = New-Object System.Drawing.Point(20, 50)
     $checkSkipBuild.Size = New-Object System.Drawing.Size(400, 30)
     $checkSkipBuild.Text = "跳过游戏构建 (仅生成翻译文件)"
     $checkSkipBuild.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
     $form.Controls.Add($checkSkipBuild)
     
-    # 选项 3: 自动生成字典
+    # 选项 2: 自动生成字典
     $checkAutoDict = New-Object System.Windows.Forms.CheckBox
-    $checkAutoDict.Location = New-Object System.Drawing.Point(20, 130)
+    $checkAutoDict.Location = New-Object System.Drawing.Point(20, 90)
     $checkAutoDict.Size = New-Object System.Drawing.Size(400, 30)
     $checkAutoDict.Text = "自动生成游戏专用字典"
     $checkAutoDict.Checked = $true
@@ -316,7 +638,7 @@ function Show-OptionsDialog {
     
     # 高级设置按钮
     $advancedButton = New-Object System.Windows.Forms.Button
-    $advancedButton.Location = New-Object System.Drawing.Point(20, 170)
+    $advancedButton.Location = New-Object System.Drawing.Point(20, 130)
     $advancedButton.Size = New-Object System.Drawing.Size(100, 28)
     $advancedButton.Text = "⚙ 高级设置"
     $advancedButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
@@ -324,7 +646,7 @@ function Show-OptionsDialog {
     
     # 高级设置状态标签
     $advancedLabel = New-Object System.Windows.Forms.Label
-    $advancedLabel.Location = New-Object System.Drawing.Point(130, 172)
+    $advancedLabel.Location = New-Object System.Drawing.Point(130, 132)
     $advancedLabel.Size = New-Object System.Drawing.Size(300, 25)
     $advancedLabel.Text = "过滤: 开 | Workers: 自动 | Flush: 20 | 优化: 关"
     $advancedLabel.ForeColor = [System.Drawing.Color]::Gray
@@ -361,7 +683,7 @@ function Show-OptionsDialog {
     
     # 说明
     $labelInfo = New-Object System.Windows.Forms.Label
-    $labelInfo.Location = New-Object System.Drawing.Point(20, 210)
+    $labelInfo.Location = New-Object System.Drawing.Point(20, 170)
     $labelInfo.Size = New-Object System.Drawing.Size(400, 100)
     $labelInfo.Text = @"
 提示: 
@@ -376,7 +698,7 @@ function Show-OptionsDialog {
     
     # 确定按钮
     $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Location = New-Object System.Drawing.Point(240, 330)
+    $okButton.Location = New-Object System.Drawing.Point(240, 290)
     $okButton.Size = New-Object System.Drawing.Size(80, 30)
     $okButton.Text = "确定"
     $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
@@ -385,7 +707,7 @@ function Show-OptionsDialog {
     
     # 取消按钮
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(330, 330)
+    $cancelButton.Location = New-Object System.Drawing.Point(330, 290)
     $cancelButton.Size = New-Object System.Drawing.Size(80, 30)
     $cancelButton.Text = "取消"
     $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
@@ -397,7 +719,6 @@ function Show-OptionsDialog {
     
     if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
         return @{
-            SkipTranslate = $checkSkipTranslate.Checked
             SkipBuild = $checkSkipBuild.Checked
             AutoDict = $checkAutoDict.Checked
             Advanced = $advancedSettings
@@ -643,7 +964,6 @@ if ($null -eq $options) {
 }
 
 Write-Host "✓ 选项已配置" -ForegroundColor Green
-Write-Host "  跳过 AI 翻译: $($options.SkipTranslate)" -ForegroundColor Gray
 Write-Host "  跳过游戏构建: $($options.SkipBuild)" -ForegroundColor Gray
 Write-Host "  自动生成字典: $($options.AutoDict)" -ForegroundColor Gray
 Write-Host "  过滤非台词: $(if ($options.Advanced.SkipNonDialog) { '开' } else { '关' })" -ForegroundColor Gray
@@ -656,33 +976,55 @@ Write-Host "  最少词数: $($options.Advanced.MinWords)" -ForegroundColor Gray
 Write-Host "  自动保存间隔: $($options.Advanced.FlushInterval)" -ForegroundColor Gray
 Write-Host ""
 
-# 步骤 3: 选择模型 (如果不跳过翻译)
-$model = $null
-if (-not $options.SkipTranslate) {
-    Write-Host "▶ 步骤 3: 选择翻译模型" -ForegroundColor Yellow
-    
-    # 支持刷新功能
-    do {
-        $modelResult = Show-ModelSelector
-        
-        if ($null -eq $modelResult) {
-            Write-Host "❌ 已取消" -ForegroundColor Red
-            exit 0
-        }
-        
-        # 如果点击了刷新，重新显示对话框
-        if ($modelResult.Refresh) {
-            Write-Host "正在刷新模型列表..." -ForegroundColor Cyan
-            continue
-        }
-        
-        $model = $modelResult.Model
-        break
-    } while ($true)
-    
-    Write-Host "✓ 已选择模型: $model" -ForegroundColor Green
-    Write-Host ""
+# 步骤 3: 选择翻译方式
+Write-Host "▶ 步骤 3: 选择翻译方式" -ForegroundColor Yellow
+
+$translateConfig = Show-TranslationMethodDialog
+
+if ($null -eq $translateConfig) {
+    Write-Host "❌ 已取消" -ForegroundColor Red
+    exit 0
 }
+
+$model = $null
+$skipTranslate = $false
+
+switch ($translateConfig.Method) {
+    "api" {
+        Write-Host "✓ 云端 API 翻译: $($translateConfig.Provider)" -ForegroundColor Green
+        Write-Host "  并发数: $($translateConfig.Workers)" -ForegroundColor Gray
+        if ($translateConfig.BatchMode) { Write-Host "  批量模式: 开" -ForegroundColor Gray }
+        if ($translateConfig.RateLimit) { Write-Host "  速率限制: RPM=$($translateConfig.RPM) RPS=$($translateConfig.RPS) TPM=$($translateConfig.TPM)" -ForegroundColor Gray }
+    }
+    "free" {
+        Write-Host "✓ 免费机翻: $($translateConfig.Provider)" -ForegroundColor Green
+    }
+    "ollama" {
+        Write-Host "✓ Ollama 本地翻译" -ForegroundColor Green
+        # 选择 Ollama 模型
+        Write-Host ""
+        Write-Host "▶ 步骤 3b: 选择 Ollama 模型" -ForegroundColor Yellow
+        do {
+            $modelResult = Show-ModelSelector
+            if ($null -eq $modelResult) {
+                Write-Host "❌ 已取消" -ForegroundColor Red
+                exit 0
+            }
+            if ($modelResult.Refresh) {
+                Write-Host "正在刷新模型列表..." -ForegroundColor Cyan
+                continue
+            }
+            $model = $modelResult.Model
+            break
+        } while ($true)
+        Write-Host "✓ 已选择模型: $model" -ForegroundColor Green
+    }
+    "skip" {
+        $skipTranslate = $true
+        Write-Host "✓ 跳过翻译（仅字典预填）" -ForegroundColor Yellow
+    }
+}
+Write-Host ""
 
 # 提取游戏名称
 $gameName = Split-Path -Leaf $gamePath
@@ -692,8 +1034,14 @@ Write-Host "══════════════════════�
 Write-Host "开始处理..." -ForegroundColor Green
 Write-Host "游戏: $gameName" -ForegroundColor White
 Write-Host "输出: $outputRoot" -ForegroundColor White
-if ($model) {
-    Write-Host "模型: $model" -ForegroundColor White
+if ($translateConfig.Method -eq "ollama" -and $model) {
+    Write-Host "翻译: Ollama 本地 ($model)" -ForegroundColor White
+} elseif ($translateConfig.Method -eq "api") {
+    Write-Host "翻译: 云端 API ($($translateConfig.Provider))" -ForegroundColor White
+} elseif ($translateConfig.Method -eq "free") {
+    Write-Host "翻译: 免费机翻 ($($translateConfig.Provider))" -ForegroundColor White
+} else {
+    Write-Host "翻译: 跳过（仅字典预填）" -ForegroundColor Yellow
 }
 Write-Host "════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
@@ -803,9 +1151,9 @@ Write-Host ""
 
 $prefilledJsonl = "$outputRoot/prefilled/prefilled.jsonl"
 
-# ========== 步骤 3-5: LLM 翻译 ==========
-if (-not $options.SkipTranslate) {
-    Write-Host "▶ 步骤 3/7: 拆分 LLM 翻译批次" -ForegroundColor Green
+# ========== 步骤 3-5: 翻译 ==========
+if (-not $skipTranslate) {
+    Write-Host "▶ 步骤 3/7: 拆分翻译批次" -ForegroundColor Green
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     
     python tools/split.py `
@@ -817,41 +1165,83 @@ if (-not $options.SkipTranslate) {
     if ($LASTEXITCODE -ne 0) { exit 1 }
     Write-Host ""
     
-    Write-Host "▶ 步骤 4/7: 使用 Ollama 翻译" -ForegroundColor Green
+    Write-Host "▶ 步骤 4/7: 翻译文本" -ForegroundColor Green
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
-    Write-Host "模型: $model" -ForegroundColor Cyan
-    Write-Host ""
     
-    # 优化 GPU 使用：尽可能多的层放到 GPU
-    $env:OLLAMA_NUM_GPU = "999"
-    $env:OLLAMA_GPU_OVERHEAD = "0"
-    
-    # 根据高级设置构建参数
-    $workersArg = if ($options.Advanced.WorkersMode -eq "auto") { "auto" } else { $options.Advanced.WorkersValue }
-    $skipNonDialogArg = if ($options.Advanced.SkipNonDialog) { "--skip-non-dialog" } else { "--no-skip-non-dialog" }
-    
-    # 构建翻译命令
-    $translateArgs = @(
-        "$outputRoot/llm_batches",
-        "-o", "$outputRoot/llm_results",
-        "--model", $model,
-        "--workers", $workersArg,
-        "--timeout", "180",
-        $skipNonDialogArg,
-        "--flush-interval", $options.Advanced.FlushInterval
-    )
-    
-    # 如果启用优化模式，添加相应参数
-    if ($options.Advanced.UseOptimized) {
-        $translateArgs += "--use-optimized"
-        $translateArgs += "--quality-threshold"
-        $translateArgs += $options.Advanced.QualityThreshold
+    switch ($translateConfig.Method) {
+        "api" {
+            Write-Host "使用云端 API: $($translateConfig.Provider)" -ForegroundColor Cyan
+            
+            # 构建 API 翻译参数
+            $apiArgs = @(
+                "tools/translate_api.py",
+                "$outputRoot/llm_batches",
+                "-o", "$outputRoot/llm_results",
+                "--provider", $translateConfig.Provider,
+                "--api-key", $translateConfig.APIKey,
+                "--workers", $translateConfig.Workers
+            )
+            
+            # 批量模式
+            if ($translateConfig.BatchMode) {
+                $apiArgs += "--batch-mode"
+                $apiArgs += "--batch-size"
+                $apiArgs += "10"
+            }
+            
+            # 速率限制
+            if ($translateConfig.RateLimit) {
+                $apiArgs += "--rpm"
+                $apiArgs += $translateConfig.RPM
+                $apiArgs += "--rps"
+                $apiArgs += $translateConfig.RPS
+                $apiArgs += "--tpm"
+                $apiArgs += $translateConfig.TPM
+            }
+            
+            python @apiArgs
+        }
+        "free" {
+            Write-Host "使用免费机翻: $($translateConfig.Provider)" -ForegroundColor Cyan
+            
+            python tools/translate_free.py `
+                "$outputRoot/llm_batches" `
+                -o "$outputRoot/llm_results" `
+                --provider $translateConfig.Provider `
+                --workers 10
+        }
+        "ollama" {
+            Write-Host "使用 Ollama 本地翻译: $model" -ForegroundColor Cyan
+            
+            # 优化 GPU 使用
+            $env:OLLAMA_NUM_GPU = "999"
+            $env:OLLAMA_GPU_OVERHEAD = "0"
+            
+            $workersArg = if ($options.Advanced.WorkersMode -eq "auto") { "auto" } else { $options.Advanced.WorkersValue }
+            $skipNonDialogArg = if ($options.Advanced.SkipNonDialog) { "--skip-non-dialog" } else { "--no-skip-non-dialog" }
+            
+            $translateArgs = @(
+                "$outputRoot/llm_batches",
+                "-o", "$outputRoot/llm_results",
+                "--model", $model,
+                "--workers", $workersArg,
+                "--timeout", "180",
+                $skipNonDialogArg,
+                "--flush-interval", $options.Advanced.FlushInterval
+            )
+            
+            if ($options.Advanced.UseOptimized) {
+                $translateArgs += "--use-optimized"
+                $translateArgs += "--quality-threshold"
+                $translateArgs += $options.Advanced.QualityThreshold
+            }
+            
+            python tools/translate.py @translateArgs
+        }
     }
     
-    python tools/translate.py @translateArgs
-    
     if ($LASTEXITCODE -ne 0) { 
-        [System.Windows.Forms.MessageBox]::Show("AI 翻译失败", "错误", "OK", "Error")
+        [System.Windows.Forms.MessageBox]::Show("翻译失败", "错误", "OK", "Error")
         exit 1 
     }
     Write-Host ""
@@ -868,7 +1258,7 @@ if (-not $options.SkipTranslate) {
     if ($LASTEXITCODE -ne 0) { exit 1 }
     Write-Host ""
 } else {
-    Write-Host "⊘ 跳过步骤 3-5: LLM 翻译" -ForegroundColor Yellow
+    Write-Host "⊘ 跳过步骤 3-5: 翻译" -ForegroundColor Yellow
     Copy-Item "$prefilledJsonl" "$outputRoot/final/translated.jsonl"
 }
 
