@@ -322,6 +322,15 @@ function Show-TranslationMethodDialog {
     $comboProvider.SelectedIndex = 0
     $groupAPI.Controls.Add($comboProvider)
 
+    # 提供商→默认模型映射
+    $defaultModels = @{
+        "deepseek" = "deepseek-chat"
+        "grok" = "grok-4-1-fast-reasoning"
+        "openai" = "gpt-4o-mini"
+        "claude" = "claude-sonnet-4-20250514"
+        "claude-sonnet" = "claude-sonnet-4-20250514"
+    }
+
     $labelProviderHint = New-Object System.Windows.Forms.Label
     $labelProviderHint.Location = New-Object System.Drawing.Point(265, 15)
     $labelProviderHint.Size = New-Object System.Drawing.Size(170, 22)
@@ -355,18 +364,18 @@ function Show-TranslationMethodDialog {
 
     $textModel = New-Object System.Windows.Forms.TextBox
     $textModel.Location = New-Object System.Drawing.Point(95, 73)
-    $textModel.Size = New-Object System.Drawing.Size(200, 25)
+    $textModel.Size = New-Object System.Drawing.Size(335, 25)
     $textModel.Font = New-Object System.Drawing.Font("Consolas", 9)
-    $textModel.Text = ""
+    $textModel.Text = $defaultModels["deepseek"]
     $groupAPI.Controls.Add($textModel)
 
-    $labelModelHint = New-Object System.Windows.Forms.Label
-    $labelModelHint.Location = New-Object System.Drawing.Point(300, 75)
-    $labelModelHint.Size = New-Object System.Drawing.Size(130, 22)
-    $labelModelHint.Text = "空=使用默认模型"
-    $labelModelHint.ForeColor = [System.Drawing.Color]::Gray
-    $labelModelHint.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
-    $groupAPI.Controls.Add($labelModelHint)
+    # 切换提供商时自动更新模型名
+    $comboProvider.Add_SelectedIndexChanged({
+        $provider = $comboProvider.SelectedItem
+        if ($defaultModels.ContainsKey($provider)) {
+            $textModel.Text = $defaultModels[$provider]
+        }
+    })
 
     # Workers
     $labelAPIWorkers = New-Object System.Windows.Forms.Label

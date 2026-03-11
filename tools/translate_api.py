@@ -120,25 +120,25 @@ API_CONFIGS: Dict[str, Dict[str, Any]] = {
     'openai': {
         'name': 'OpenAI',
         'endpoint': 'https://api.openai.com/v1/chat/completions',
-        'model': 'gpt-3.5-turbo',
-        'cost_per_1m_tokens': 7.0,  # $1/百万Token ≈ ￥7
+        'model': 'gpt-4o-mini',
+        'cost_per_1m_tokens': 1.0,  # $0.15/百万Token ≈ ￥1
     },
     'openai-gpt4': {
-        'name': 'OpenAI GPT-4',
+        'name': 'OpenAI GPT-4o',
         'endpoint': 'https://api.openai.com/v1/chat/completions',
-        'model': 'gpt-4-turbo',
-        'cost_per_1m_tokens': 70.0,  # $10/百万Token ≈ ￥70
+        'model': 'gpt-4o',
+        'cost_per_1m_tokens': 17.5,  # $2.5/百万Token ≈ ￥17.5
     },
     'claude': {
         'name': 'Claude',
         'endpoint': 'https://api.anthropic.com/v1/messages',
-        'model': 'claude-3-haiku-20240307',
-        'cost_per_1m_tokens': 3.5,  # $0.5/百万Token ≈ ￥3.5
+        'model': 'claude-sonnet-4-20250514',
+        'cost_per_1m_tokens': 21.0,  # $3/百万Token ≈ ￥21
     },
     'claude-sonnet': {
         'name': 'Claude Sonnet',
         'endpoint': 'https://api.anthropic.com/v1/messages',
-        'model': 'claude-3-5-sonnet-20241022',
+        'model': 'claude-sonnet-4-20250514',
         'cost_per_1m_tokens': 21.0,  # $3/百万Token ≈ ￥21
     },
     # 新增：Azure Translator
