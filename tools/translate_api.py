@@ -114,7 +114,7 @@ API_CONFIGS: Dict[str, Dict[str, Any]] = {
     'grok': {
         'name': 'Grok (xAI)',
         'endpoint': 'https://api.x.ai/v1/chat/completions',
-        'model': 'grok-beta',
+        'model': 'grok-4-1-fast-reasoning',
         'cost_per_1m_tokens': 35.0,  # $5/百万Token ≈ ￥35
     },
     'openai': {
@@ -832,6 +832,10 @@ def main():
         help="API 提供商"
     )
     parser.add_argument(
+        "--model",
+        help="覆盖默认模型名称（如 grok-4-1-fast-reasoning）"
+    )
+    parser.add_argument(
         "--api-key",
         help="API Key（或设置环境变量 API_KEY）"
     )
@@ -902,7 +906,7 @@ def main():
         provider=args.provider,
         api_key=api_key,
         endpoint=api_info['endpoint'],
-        model=api_info['model'],
+        model=args.model or api_info['model'],
         workers=args.workers,
         timeout=args.timeout,
         temperature=args.temperature,

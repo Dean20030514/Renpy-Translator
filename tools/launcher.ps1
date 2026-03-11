@@ -275,7 +275,7 @@ function Show-TranslationMethodDialog {
     # 翻译方式选择窗口
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "选择翻译方式"
-    $form.Size = New-Object System.Drawing.Size(520, 560)
+    $form.Size = New-Object System.Drawing.Size(520, 590)
     $form.StartPosition = "CenterScreen"
     $form.FormBorderStyle = "FixedDialog"
     $form.MaximizeBox = $false
@@ -301,7 +301,7 @@ function Show-TranslationMethodDialog {
     # API 选项组
     $groupAPI = New-Object System.Windows.Forms.GroupBox
     $groupAPI.Location = New-Object System.Drawing.Point(40, 78)
-    $groupAPI.Size = New-Object System.Drawing.Size(440, 130)
+    $groupAPI.Size = New-Object System.Drawing.Size(440, 160)
     $groupAPI.Text = ""
     $form.Controls.Add($groupAPI)
 
@@ -345,16 +345,39 @@ function Show-TranslationMethodDialog {
     $textAPIKey.UseSystemPasswordChar = $true
     $groupAPI.Controls.Add($textAPIKey)
 
+    # 模型名称
+    $labelModel = New-Object System.Windows.Forms.Label
+    $labelModel.Location = New-Object System.Drawing.Point(10, 75)
+    $labelModel.Size = New-Object System.Drawing.Size(80, 22)
+    $labelModel.Text = "模型名称:"
+    $labelModel.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
+    $groupAPI.Controls.Add($labelModel)
+
+    $textModel = New-Object System.Windows.Forms.TextBox
+    $textModel.Location = New-Object System.Drawing.Point(95, 73)
+    $textModel.Size = New-Object System.Drawing.Size(200, 25)
+    $textModel.Font = New-Object System.Drawing.Font("Consolas", 9)
+    $textModel.Text = ""
+    $groupAPI.Controls.Add($textModel)
+
+    $labelModelHint = New-Object System.Windows.Forms.Label
+    $labelModelHint.Location = New-Object System.Drawing.Point(300, 75)
+    $labelModelHint.Size = New-Object System.Drawing.Size(130, 22)
+    $labelModelHint.Text = "空=使用默认模型"
+    $labelModelHint.ForeColor = [System.Drawing.Color]::Gray
+    $labelModelHint.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
+    $groupAPI.Controls.Add($labelModelHint)
+
     # Workers
     $labelAPIWorkers = New-Object System.Windows.Forms.Label
-    $labelAPIWorkers.Location = New-Object System.Drawing.Point(10, 75)
+    $labelAPIWorkers.Location = New-Object System.Drawing.Point(10, 105)
     $labelAPIWorkers.Size = New-Object System.Drawing.Size(80, 22)
     $labelAPIWorkers.Text = "并发数:"
     $labelAPIWorkers.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
     $groupAPI.Controls.Add($labelAPIWorkers)
 
     $numAPIWorkers = New-Object System.Windows.Forms.NumericUpDown
-    $numAPIWorkers.Location = New-Object System.Drawing.Point(95, 73)
+    $numAPIWorkers.Location = New-Object System.Drawing.Point(95, 103)
     $numAPIWorkers.Size = New-Object System.Drawing.Size(60, 25)
     $numAPIWorkers.Minimum = 1
     $numAPIWorkers.Maximum = 50
@@ -364,7 +387,7 @@ function Show-TranslationMethodDialog {
 
     # 批量模式
     $checkBatch = New-Object System.Windows.Forms.CheckBox
-    $checkBatch.Location = New-Object System.Drawing.Point(170, 75)
+    $checkBatch.Location = New-Object System.Drawing.Point(170, 105)
     $checkBatch.Size = New-Object System.Drawing.Size(120, 22)
     $checkBatch.Text = "批量模式"
     $checkBatch.Checked = $true
@@ -373,7 +396,7 @@ function Show-TranslationMethodDialog {
 
     # 速率限制
     $checkRateLimit = New-Object System.Windows.Forms.CheckBox
-    $checkRateLimit.Location = New-Object System.Drawing.Point(300, 75)
+    $checkRateLimit.Location = New-Object System.Drawing.Point(300, 105)
     $checkRateLimit.Size = New-Object System.Drawing.Size(130, 22)
     $checkRateLimit.Text = "速率限制"
     $checkRateLimit.Checked = $true
@@ -382,7 +405,7 @@ function Show-TranslationMethodDialog {
 
     # RPM 设置
     $labelRPM = New-Object System.Windows.Forms.Label
-    $labelRPM.Location = New-Object System.Drawing.Point(10, 103)
+    $labelRPM.Location = New-Object System.Drawing.Point(10, 133)
     $labelRPM.Size = New-Object System.Drawing.Size(40, 22)
     $labelRPM.Text = "RPM:"
     $labelRPM.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
@@ -390,7 +413,7 @@ function Show-TranslationMethodDialog {
     $groupAPI.Controls.Add($labelRPM)
 
     $numRPM = New-Object System.Windows.Forms.NumericUpDown
-    $numRPM.Location = New-Object System.Drawing.Point(50, 101)
+    $numRPM.Location = New-Object System.Drawing.Point(50, 131)
     $numRPM.Size = New-Object System.Drawing.Size(55, 22)
     $numRPM.Minimum = 1
     $numRPM.Maximum = 600
@@ -399,7 +422,7 @@ function Show-TranslationMethodDialog {
     $groupAPI.Controls.Add($numRPM)
 
     $labelRPS = New-Object System.Windows.Forms.Label
-    $labelRPS.Location = New-Object System.Drawing.Point(115, 103)
+    $labelRPS.Location = New-Object System.Drawing.Point(115, 133)
     $labelRPS.Size = New-Object System.Drawing.Size(35, 22)
     $labelRPS.Text = "RPS:"
     $labelRPS.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
@@ -407,7 +430,7 @@ function Show-TranslationMethodDialog {
     $groupAPI.Controls.Add($labelRPS)
 
     $numRPS = New-Object System.Windows.Forms.NumericUpDown
-    $numRPS.Location = New-Object System.Drawing.Point(150, 101)
+    $numRPS.Location = New-Object System.Drawing.Point(150, 131)
     $numRPS.Size = New-Object System.Drawing.Size(55, 22)
     $numRPS.Minimum = 1
     $numRPS.Maximum = 100
@@ -416,7 +439,7 @@ function Show-TranslationMethodDialog {
     $groupAPI.Controls.Add($numRPS)
 
     $labelTPM = New-Object System.Windows.Forms.Label
-    $labelTPM.Location = New-Object System.Drawing.Point(215, 103)
+    $labelTPM.Location = New-Object System.Drawing.Point(215, 133)
     $labelTPM.Size = New-Object System.Drawing.Size(35, 22)
     $labelTPM.Text = "TPM:"
     $labelTPM.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 8)
@@ -424,7 +447,7 @@ function Show-TranslationMethodDialog {
     $groupAPI.Controls.Add($labelTPM)
 
     $numTPM = New-Object System.Windows.Forms.NumericUpDown
-    $numTPM.Location = New-Object System.Drawing.Point(250, 101)
+    $numTPM.Location = New-Object System.Drawing.Point(250, 131)
     $numTPM.Size = New-Object System.Drawing.Size(80, 22)
     $numTPM.Minimum = 1000
     $numTPM.Maximum = 1000000
@@ -435,14 +458,14 @@ function Show-TranslationMethodDialog {
 
     # ======= 方案 2: 免费机翻 =======
     $radioFree = New-Object System.Windows.Forms.RadioButton
-    $radioFree.Location = New-Object System.Drawing.Point(20, 218)
+    $radioFree.Location = New-Object System.Drawing.Point(20, 248)
     $radioFree.Size = New-Object System.Drawing.Size(460, 25)
     $radioFree.Text = "🆓  免费机器翻译 — 完全免费，质量一般"
     $radioFree.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9, [System.Drawing.FontStyle]::Bold)
     $form.Controls.Add($radioFree)
 
     $groupFree = New-Object System.Windows.Forms.GroupBox
-    $groupFree.Location = New-Object System.Drawing.Point(40, 246)
+    $groupFree.Location = New-Object System.Drawing.Point(40, 276)
     $groupFree.Size = New-Object System.Drawing.Size(440, 50)
     $groupFree.Text = ""
     $form.Controls.Add($groupFree)
@@ -474,14 +497,14 @@ function Show-TranslationMethodDialog {
 
     # ======= 方案 3: Ollama 本地 =======
     $radioOllama = New-Object System.Windows.Forms.RadioButton
-    $radioOllama.Location = New-Object System.Drawing.Point(20, 306)
+    $radioOllama.Location = New-Object System.Drawing.Point(20, 336)
     $radioOllama.Size = New-Object System.Drawing.Size(460, 25)
     $radioOllama.Text = "🖥️  Ollama 本地翻译 — 完全免费+离线，速度较慢"
     $radioOllama.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9, [System.Drawing.FontStyle]::Bold)
     $form.Controls.Add($radioOllama)
 
     $labelOllamaHint = New-Object System.Windows.Forms.Label
-    $labelOllamaHint.Location = New-Object System.Drawing.Point(40, 334)
+    $labelOllamaHint.Location = New-Object System.Drawing.Point(40, 364)
     $labelOllamaHint.Size = New-Object System.Drawing.Size(440, 22)
     $labelOllamaHint.Text = "需要 Ollama + 模型（4-8GB），下一步选择模型"
     $labelOllamaHint.ForeColor = [System.Drawing.Color]::Gray
@@ -490,7 +513,7 @@ function Show-TranslationMethodDialog {
 
     # ======= 方案 4: 跳过翻译 =======
     $radioSkip = New-Object System.Windows.Forms.RadioButton
-    $radioSkip.Location = New-Object System.Drawing.Point(20, 366)
+    $radioSkip.Location = New-Object System.Drawing.Point(20, 396)
     $radioSkip.Size = New-Object System.Drawing.Size(460, 25)
     $radioSkip.Text = "⏭️  跳过翻译 — 仅使用字典预填"
     $radioSkip.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
@@ -498,7 +521,7 @@ function Show-TranslationMethodDialog {
 
     # ======= 对比表 =======
     $labelCompare = New-Object System.Windows.Forms.Label
-    $labelCompare.Location = New-Object System.Drawing.Point(20, 400)
+    $labelCompare.Location = New-Object System.Drawing.Point(20, 430)
     $labelCompare.Size = New-Object System.Drawing.Size(460, 70)
     $labelCompare.Text = @"
 方案对比：
@@ -513,6 +536,7 @@ function Show-TranslationMethodDialog {
     # Radio 事件 - 启用/禁用对应组
     $radioAPI.Add_Click({
         $comboProvider.Enabled = $true; $textAPIKey.Enabled = $true
+        $textModel.Enabled = $true
         $numAPIWorkers.Enabled = $true; $checkBatch.Enabled = $true
         $checkRateLimit.Enabled = $true; $numRPM.Enabled = $true
         $numRPS.Enabled = $true; $numTPM.Enabled = $true
@@ -520,6 +544,7 @@ function Show-TranslationMethodDialog {
     })
     $radioFree.Add_Click({
         $comboProvider.Enabled = $false; $textAPIKey.Enabled = $false
+        $textModel.Enabled = $false
         $numAPIWorkers.Enabled = $false; $checkBatch.Enabled = $false
         $checkRateLimit.Enabled = $false; $numRPM.Enabled = $false
         $numRPS.Enabled = $false; $numTPM.Enabled = $false
@@ -527,6 +552,7 @@ function Show-TranslationMethodDialog {
     })
     $radioOllama.Add_Click({
         $comboProvider.Enabled = $false; $textAPIKey.Enabled = $false
+        $textModel.Enabled = $false
         $numAPIWorkers.Enabled = $false; $checkBatch.Enabled = $false
         $checkRateLimit.Enabled = $false; $numRPM.Enabled = $false
         $numRPS.Enabled = $false; $numTPM.Enabled = $false
@@ -534,6 +560,7 @@ function Show-TranslationMethodDialog {
     })
     $radioSkip.Add_Click({
         $comboProvider.Enabled = $false; $textAPIKey.Enabled = $false
+        $textModel.Enabled = $false
         $numAPIWorkers.Enabled = $false; $checkBatch.Enabled = $false
         $checkRateLimit.Enabled = $false; $numRPM.Enabled = $false
         $numRPS.Enabled = $false; $numTPM.Enabled = $false
@@ -542,7 +569,7 @@ function Show-TranslationMethodDialog {
 
     # ======= 按钮 =======
     $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Location = New-Object System.Drawing.Point(310, 480)
+    $okButton.Location = New-Object System.Drawing.Point(310, 510)
     $okButton.Size = New-Object System.Drawing.Size(90, 30)
     $okButton.Text = "确定"
     $okButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
@@ -551,7 +578,7 @@ function Show-TranslationMethodDialog {
     $form.AcceptButton = $okButton
 
     $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(410, 480)
+    $cancelButton.Location = New-Object System.Drawing.Point(410, 510)
     $cancelButton.Size = New-Object System.Drawing.Size(90, 30)
     $cancelButton.Text = "取消"
     $cancelButton.Font = New-Object System.Drawing.Font("Microsoft YaHei UI", 9)
@@ -573,6 +600,7 @@ function Show-TranslationMethodDialog {
                 Method = "api"
                 Provider = $comboProvider.SelectedItem
                 APIKey = $apiKey
+                Model = $textModel.Text.Trim()
                 Workers = [int]$numAPIWorkers.Value
                 BatchMode = $checkBatch.Checked
                 RateLimit = $checkRateLimit.Checked
@@ -1181,6 +1209,12 @@ if (-not $skipTranslate) {
                 "--api-key", $translateConfig.APIKey,
                 "--workers", $translateConfig.Workers
             )
+            
+            # 自定义模型
+            if ($translateConfig.Model -and $translateConfig.Model -ne "") {
+                $apiArgs += "--model"
+                $apiArgs += $translateConfig.Model
+            }
             
             # 批量模式
             if ($translateConfig.BatchMode) {
