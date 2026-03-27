@@ -70,11 +70,18 @@ from font_patch import resolve_font, apply_font_patch
 logger = logging.getLogger("renpy_translator")
 
 
+class _FlushStreamHandler(logging.StreamHandler):
+    """每条日志后自动 flush，确保多线程下实时输出。"""
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+
 def setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = ""):
     """配置全局 logging。verbose=DEBUG, quiet=WARNING, 默认=INFO。"""
     level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
     fmt = "%(message)s"
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    handlers: list[logging.Handler] = [_FlushStreamHandler(sys.stdout)]
     if log_file:
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
     logging.basicConfig(level=level, format=fmt, handlers=handlers, force=True)
@@ -121,8 +128,16 @@ class ProgressTracker:
     def _save_unlocked(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
-        os.replace(str(tmp), str(self.path))
+        try:
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
+            os.replace(str(tmp), str(self.path))
+        except BaseException:
+            # 确保 os.replace 失败时不残留 .tmp 文件
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     def is_file_done(self, rel_path: str) -> bool:
         return rel_path in self.data["completed_files"]
@@ -469,8 +484,8 @@ def translate_file(
                 })
             if dropped_db_entries:
                 translation_db.add_entries(dropped_db_entries)
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError) as e:
+            logger.debug(f"记录 checker_dropped 到 translation_db 失败: {e}")
 
     # 写出翻译后的文件
     out_path = output_dir / rel_path
@@ -969,8 +984,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
             progress.save()
             try:
                 translation_db.save()
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug(f"中断时保存 translation_db 失败: {e}")
             logger.info("[中断] 进度已保存，可用 --resume 继续")
             sys.exit(1)
         except Exception as e:
@@ -987,7 +1002,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     glossary.save(str(glossary_path))
     try:
         translation_db.save()
-    except Exception as e:
+    except OSError as e:
         logger.warning(f"[WARN] 保存 translation_db.json 失败: {e}")
 
     # 复制非 .rpy 文件（可选）
@@ -1034,8 +1049,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
                   f"Expected: {cs_total_expected} | "
                   f"Returned: {cs_total_returned} ({ret_pct:.1f}%) | "
                   f"Dropped: {cs_total_dropped} ({drop_pct:.1f}%)")
-        except Exception:
-            pass
+        except (ZeroDivisionError, KeyError, TypeError) as e:
+            logger.debug(f"chunk 统计汇总计算失败: {e}")
 
     logger.info(f"警告: {len(total_warnings)}")
     logger.info(f"耗时: {elapsed / 60:.1f} 分钟")
@@ -1063,8 +1078,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 "total_dropped": sum(c["dropped"] for c in all_chunk_stats),
                 "per_chunk": all_chunk_stats,
             }
-        except Exception:
-            pass
+        except (KeyError, TypeError) as e:
+            logger.debug(f"chunk 统计写入 report 失败: {e}")
 
     # 保存翻译报告
     report = {
@@ -1389,8 +1404,8 @@ def retranslate_file(
         if not bak_path.exists():
             try:
                 shutil.copy2(out_path, bak_path)
-            except Exception:
-                pass
+            except OSError as e:
+                logger.warning(f"创建备份失败 {bak_path}: {e}")
 
     out_path.write_text(patched, encoding="utf-8")
 
@@ -1513,8 +1528,8 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
             progress.save()
             try:
                 translation_db.save()
-            except Exception:
-                pass
+            except OSError as e:
+                logger.debug(f"中断时保存 translation_db 失败: {e}")
             logger.info("[中断] 进度已保存，可用 --resume 继续")
             sys.exit(1)
         except Exception as e:
@@ -1529,7 +1544,7 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     glossary.save(str(glossary_path))
     try:
         translation_db.save()
-    except Exception as e:
+    except OSError as e:
         logger.warning(f"[WARN] 保存 translation_db 失败: {e}")
 
     elapsed = time.time() - start_time
@@ -1860,8 +1875,8 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             if not bak.exists():
                 try:
                     shutil.copy2(fpath, bak)
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.warning(f"创建备份失败 {bak}: {e}")
             modified = fill_translation(fpath, af_entries)
             Path(fpath).write_text(modified, encoding="utf-8")
 
@@ -1969,9 +1984,9 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                     total_warnings.extend(warnings)
                     _completed[0] += 1
                     n = _completed[0]
-                logger.debug(f"  [{n}/{len(all_chunk_tasks)}] {rp} "
-                      f"chunk {ci}/{total}: 保留 {len(kept_items)} 条"
-                      + (f", 丢弃 {dropped} 条" if dropped else ""))
+                logger.info(f"  [{n}/{len(all_chunk_tasks)}] {rp} "
+                     f"chunk {ci}/{total}: 保留 {len(kept_items)} 条"
+                     + (f", 丢弃 {dropped} 条" if dropped else ""))
                 progress.mark_chunk_done(rp, ci, [])
             except Exception as e:
                 with _lock:
@@ -2070,8 +2085,8 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             if not bak_path.exists():
                 try:
                     shutil.copy2(file_path, bak_path)
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.warning(f"创建备份失败 {bak_path}: {e}")
 
             modified_content = fill_translation(file_path, matched_entries)
             Path(file_path).write_text(modified_content, encoding="utf-8")
@@ -2152,7 +2167,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     glossary.save(str(glossary_path))
     try:
         translation_db.save()
-    except Exception as e:
+    except OSError as e:
         logger.warning(f"[WARN] 保存 translation_db 失败: {e}")
 
     elapsed = time.time() - start_time

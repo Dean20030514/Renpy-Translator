@@ -159,7 +159,7 @@ def count_untranslated_dialogues_in_file(path: Path) -> tuple[int, int]:
     untranslated = 0
     try:
         text = read_file(path)
-    except Exception:
+    except OSError:
         return 0, 0
 
     for line in text.splitlines():
@@ -192,7 +192,7 @@ def collect_untranslated_details(path: Path) -> list[tuple[int, str]]:
     result: list[tuple[int, str]] = []
     try:
         text = read_file(path)
-    except Exception:
+    except OSError:
         return []
     for i, line in enumerate(text.splitlines(), 1):
         if not _is_user_visible_string_line(line):
@@ -344,8 +344,9 @@ def evaluate_gate(original_root: Path, translated_root: Path) -> dict:
             no_trans_list = data.get("no_translate", [])
             glossary_locked = set(locked_list) if locked_list else None
             glossary_no_translate = set(no_trans_list) if no_trans_list else None
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError) as e:
         # 术语表缺失或解析失败不影响闸门主流程，仅跳过术语相关统计
+        logger.debug(f"闸门术语表加载失败: {e}")
         glossary_terms = None
         glossary_locked = None
         glossary_no_translate = None
@@ -464,7 +465,7 @@ def collect_strings_stats(root: Path) -> dict:
         rel = path.relative_to(root)
         try:
             text = read_file(path)
-        except Exception:
+        except OSError:
             continue
 
         in_strings = False
@@ -911,9 +912,9 @@ def main() -> None:
             dst_output_root.mkdir(parents=True, exist_ok=True)
             dst_path = dst_output_root / "system_ui_terms.json"
             shutil.copy2(system_terms_src, dst_path)
-        except Exception:
-            # 术语文件缺失不会影响流水线主流程，这里静默失败即可。
-            pass
+        except OSError as e:
+            # 术语文件复制失败不影响流水线主流程
+            logger.debug(f"复制系统术语表失败: {e}")
 
     if args.clean_output and project_out_root.exists():
         _print(f"[CLEAN] 删除项目输出目录: {project_out_root}")
@@ -985,8 +986,8 @@ def main() -> None:
             try:
                 tl_report_data = json.loads(tl_report_path.read_text(encoding="utf-8"))
                 report["stages"]["tl_mode"] = tl_report_data
-            except Exception:
-                report["stages"]["tl_mode"] = {"error": "无法读取 tl_mode_report.json"}
+            except (OSError, json.JSONDecodeError) as e:
+                report["stages"]["tl_mode"] = {"error": f"无法读取 tl_mode_report.json: {e}"}
         else:
             report["stages"]["tl_mode"] = {"note": "tl_mode_report.json 未生成"}
 
@@ -1117,7 +1118,7 @@ def main() -> None:
                 report["stages"]["full"]["chunk_stats"] = full_report.get("chunk_stats", {})
             else:
                 report["stages"]["full"]["checker_dropped"] = 0
-        except Exception:
+        except (OSError, json.JSONDecodeError, KeyError, ValueError):
             report["stages"]["full"]["checker_dropped"] = 0
         _print(
             "[GATE-FULL] "
@@ -1350,8 +1351,8 @@ def main() -> None:
     # 重新写入 pipeline_report.json（归因分析等后续数据已追加到 report dict）
     try:
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except OSError as e:
+        _print(f"[WARN ] 写入 pipeline_report.json 失败: {e}")
 
     _print(f"\n[REPORT] {report_path}")
     if ok:
