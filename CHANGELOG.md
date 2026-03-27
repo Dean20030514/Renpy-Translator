@@ -14,6 +14,7 @@
 | 第三轮 | 降低漏翻率 | 12.12% → 4.01%（占位符保护 + 密度自适应 + retranslate） |
 | 第四轮 | tl-mode | 独立 tl_parser 解析器 + 并发翻译 + 精确回填 |
 | 第五轮 | tl-mode 全量验证 | 引号剥离修复 + 后处理 + 99.97% 翻译成功率 |
+| 第六轮 | 代码优化与新功能 | chunk重试 + logging + 模块拆分 + 术语提取 + 退避优化 + show修复 |
 
 ---
 
@@ -187,6 +188,40 @@
 
 ---
 
+## 第六轮：代码优化与新功能
+
+### 新增功能
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 34 | `_translate_chunk_with_retry`: chunk 翻译自动重试，API 错误或丢弃率 > 30% 时重试 1 次 | `main.py` | 降低 API 瞬时故障导致的漏翻 |
+| 35 | `--verbose` / `--quiet` CLI 参数：控制日志级别（DEBUG/WARNING） | `main.py` | 新增 CLI 参数 |
+| 36 | `setup_logging()`: 全局 logging 配置，支持文件输出 | `main.py` | 替代 print |
+| 37 | `extract_terms_from_translations()`: 从翻译结果中自动提取高频专有名词（n-gram 共现分析）| `glossary.py` | 新增方法 |
+| 38 | `auto_add_terms()`: 将提取的术语自动加入 glossary.terms | `glossary.py` | 新增方法 |
+| 39 | Pipeline pilot 后自动术语提取：从 pilot 翻译结果提取人名/地名，供全量翻译使用 | `one_click_pipeline.py` | pipeline 增强 |
+| 40 | Pipeline `--tl-mode` / `--tl-lang`：一键流水线支持 tl-mode（跳过试跑/补翻，直接 tl 翻译） | `one_click_pipeline.py`, `start_launcher.py` | 新增模式 |
+| 41 | RENPY-020 规则：`show image:` 空 ATL 块修复（多行感知，仅删除无 ATL 块的冒号）| `renpy_upgrade_tool.py` | 新增升级规则 |
+| 42 | chunk 上文上下文：split_file 的第 2+ chunk 附带前一 chunk 末尾 5 行 | `file_processor/splitter.py` | 提升跨块翻译连贯性 |
+| 43 | `[MULTILINE]` 标记：tl-mode 中含 `\n` 的条目自动标记，提示 AI 保留换行 | `main.py`, `prompts.py` | 提升多行字符串翻译率 |
+
+### 增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 44 | 429/5xx 退避优化：jitter 防雪崩 + 60s 上限 + Retry-After header 优先 | `api_client.py` | 多线程稳定性提升 |
+| 45 | `file_processor.py` 拆分为 `file_processor/` 包（splitter/checker/patcher/validator + __init__.py re-export） | `file_processor/` | 可维护性，外部 import 不变 |
+| 46 | 全模块 print → logging 迁移（main/file_processor/api_client/one_click_pipeline/glossary/font_patch） | 6 个文件 | 支持 --verbose/--quiet/--log-file |
+
+### 修复
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 47 | validate_translation 中 `✓` Unicode 字符在 GBK 终端报错 → 改为 `OK` | `file_processor/validator.py` | 修复 Windows 终端编码错误 |
+| 48 | StringEntry fallback 注释从"三层"修正为"四层"（精确→strip→去占位符→转义规范化） | `main.py` | 注释修正 |
+
+---
+
 ## 已回滚
 
 | 描述 | 原因 |
@@ -209,6 +244,10 @@
 | `--tl-lang` | `main.py` | `chinese` | tl 语言子目录名 |
 | `--patch-font` | `main.py` | False | 启用自动字体补丁 |
 | `--font-file` | `main.py` | — | 指定字体文件路径 |
+| `--verbose` | `main.py` | False | 日志级别设为 DEBUG |
+| `--quiet` | `main.py` | False | 日志级别设为 WARNING |
+| `--tl-mode`（pipeline） | `one_click_pipeline.py` | False | 一键流水线使用 tl-mode 翻译 |
+| `--tl-lang`（pipeline） | `one_click_pipeline.py` | `chinese` | 一键流水线 tl 语言子目录名 |
 
 ### 模块级常量
 

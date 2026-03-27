@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import logging
 import os
 import re
 import shutil
@@ -60,6 +61,23 @@ from prompts import (
 )
 from translation_db import TranslationDB
 from font_patch import resolve_font, apply_font_patch
+
+
+# ============================================================
+# Logging 配置
+# ============================================================
+
+logger = logging.getLogger("renpy_translator")
+
+
+def setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = ""):
+    """配置全局 logging。verbose=DEBUG, quiet=WARNING, 默认=INFO。"""
+    level = logging.DEBUG if verbose else (logging.WARNING if quiet else logging.INFO)
+    fmt = "%(message)s"
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    logging.basicConfig(level=level, format=fmt, handlers=handlers, force=True)
 
 
 # ============================================================
@@ -184,22 +202,22 @@ def translate_file(
         content = read_file(rpy_path)
         out_path.write_text(content, encoding="utf-8")
         progress.mark_file_done(rel_path)
-        print(f"  [SKIP-CFG] {rel_path} (配置文件，跳过翻译)")
+        logger.debug(f"  [SKIP-CFG] {rel_path} (配置文件，跳过翻译)")
         return 0, [], 0, []
 
     # 断点续传：已完成则跳过
     if progress.is_file_done(rel_path):
-        print(f"  [SKIP] {rel_path} (已完成)")
+        logger.debug(f"  [SKIP] {rel_path} (已完成)")
         return 0, [], 0, []
 
     content = read_file(rpy_path)
     tokens = estimate_tokens(content)
-    print(f"  [FILE] {rel_path}  ({tokens:,} tokens)")
+    logger.debug(f"  [FILE] {rel_path}  ({tokens:,} tokens)")
 
     # 密度检测：低密度文件走定向翻译，避免 AI 注意力被代码行稀释
     density = calculate_dialogue_density(content)
     if density < min_dialogue_density:
-        print(f"    [DENSITY] 对话密度 {density * 100:.1f}% < {min_dialogue_density * 100:.0f}%，"
+        logger.debug(f"    [DENSITY] 对话密度 {density * 100:.1f}% < {min_dialogue_density * 100:.0f}%，"
               f"使用定向翻译模式")
         return _translate_file_targeted(
             rpy_path, game_dir, output_dir, content, rel_path,
@@ -211,7 +229,7 @@ def translate_file(
     # 拆分大文件
     chunks = split_file(str(rpy_path), max_tokens_per_chunk)
     if len(chunks) > 1:
-        print(f"    拆分为 {len(chunks)} 个块")
+        logger.debug(f"    拆分为 {len(chunks)} 个块")
 
     # 构建 prompt（按题材 + 项目名选择外部模板）
     project_name = game_dir.parent.name if game_dir.name.lower() == "game" else game_dir.name
@@ -231,7 +249,7 @@ def translate_file(
     pending_chunks = [c for c in chunks if not progress.is_chunk_done(rel_path, c["part"])]
     done_chunks = len(chunks) - len(pending_chunks)
     if done_chunks > 0:
-        print(f"    [SKIP] {done_chunks}/{len(chunks)} 个块已完成")
+        logger.debug(f"    [SKIP] {done_chunks}/{len(chunks)} 个块已完成")
 
     total_checker_dropped = 0
 
@@ -247,7 +265,7 @@ def translate_file(
         # 占位符保护 — 发 API 前将 [var]、{{#id}}、%(name)s 等替换为令牌
         protected_content, ph_mapping = protect_placeholders(chunk["content"])
         user_prompt = build_user_prompt(rel_path, protected_content, chunk_info)
-        print(f"    [API ] 块 {part}/{chunk['total']}  "
+        logger.debug(f"    [API ] 块 {part}/{chunk['total']}  "
               f"({estimate_tokens(chunk['content']):,} tokens)")
         try:
             translations = client.translate(system_prompt, user_prompt)
@@ -260,7 +278,7 @@ def translate_file(
         # Chunk 级检查（条数一致）
         chunk_warnings = check_response_chunk(protected_content, translations)
         for w in chunk_warnings:
-            print(f"    [CHECK] {w}")
+            logger.debug(f"    [CHECK] {w}")
         # 逐条检查 — 有警告则丢弃该条，不写入译文（宁可漏翻也不误翻）
         kept: list[dict] = []
         dropped_items: list[dict] = []
@@ -271,14 +289,14 @@ def translate_file(
                 dropped_count += 1
                 dropped_items.append(t)
                 for w in item_warnings:
-                    print(f"    [CHECK-DROPPED] {w}")
+                    logger.debug(f"    [CHECK-DROPPED] {w}")
                     all_warnings.append(f"[CHECK-DROPPED] {w}")
             else:
                 kept.append(t)
         if not translations:
-            print(f"    [INFO] 块 {part}: 无需翻译的内容")
+            logger.debug(f"    [INFO] 块 {part}: 无需翻译的内容")
         else:
-            print(f"    [OK  ] 块 {part}: 获得 {len(translations)} 条翻译"
+            logger.debug(f"    [OK  ] 块 {part}: 获得 {len(translations)} 条翻译"
                   + (f", 丢弃 {dropped_count} 条" if dropped_count else ""))
         return ChunkResult(
             part=part, kept=kept, chunk_warnings=chunk_warnings,
@@ -286,15 +304,34 @@ def translate_file(
             returned=len(translations), dropped_items=dropped_items,
         )
 
+    def _should_retry(cr: ChunkResult) -> bool:
+        """判断 chunk 是否需要重试：API 错误或丢弃率过高。"""
+        if cr.error:
+            return True
+        if cr.returned > 0 and cr.dropped_count >= 3 and cr.dropped_count / cr.returned > 0.3:
+            return True
+        return False
+
+    def _translate_chunk_with_retry(chunk, max_retries: int = 1) -> ChunkResult:
+        """带自动重试的 chunk 翻译。"""
+        cr = _translate_chunk(chunk)
+        for attempt in range(max_retries):
+            if not _should_retry(cr):
+                break
+            reason = cr.error or f"丢弃率过高 ({cr.dropped_count}/{cr.returned})"
+            logger.debug(f"    [RETRY] 块 {chunk['part']}: {reason}，第 {attempt + 1} 次重试")
+            cr = _translate_chunk(chunk)
+        return cr
+
     if workers > 1 and len(pending_chunks) > 1:
         # 并发翻译多个 chunk
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_translate_chunk, c): c for c in pending_chunks}
+            futures = {executor.submit(_translate_chunk_with_retry, c): c for c in pending_chunks}
             for future in concurrent.futures.as_completed(futures):
                 cr = future.result()
                 chunk_stats_list.append({"chunk_idx": cr.part, "expected": cr.expected, "returned": cr.returned, "dropped": cr.dropped_count})
                 if cr.error:
-                    print(f"    [ERROR] {cr.error}")
+                    logger.error(f"    [ERROR] {cr.error}")
                     all_warnings.append(cr.error)
                 else:
                     all_warnings.extend(cr.chunk_warnings)
@@ -305,10 +342,10 @@ def translate_file(
     else:
         # 顺序翻译
         for chunk in pending_chunks:
-            cr = _translate_chunk(chunk)
+            cr = _translate_chunk_with_retry(chunk)
             chunk_stats_list.append({"chunk_idx": cr.part, "expected": cr.expected, "returned": cr.returned, "dropped": cr.dropped_count})
             if cr.error:
-                print(f"    [ERROR] {cr.error}")
+                logger.error(f"    [ERROR] {cr.error}")
                 all_warnings.append(cr.error)
                 progress.save()
                 continue
@@ -496,7 +533,7 @@ def _translate_file_targeted(
         return 0, [], 0, []
 
     chunks = build_retranslate_chunks(all_lines, dialogue_indices, context=3, max_per_chunk=20)
-    print(f"    [TARGETED] {len(dialogue_indices)} 行对话，{len(chunks)} 个 chunk")
+    logger.debug(f"    [TARGETED] {len(dialogue_indices)} 行对话，{len(chunks)} 个 chunk")
 
     system_prompt = build_retranslate_system_prompt(
         glossary_text=glossary.to_prompt_text()
@@ -530,13 +567,13 @@ def _translate_file_targeted(
 
         user_prompt = build_retranslate_user_prompt(rel_path, protected)
         target_count = sum(1 for _, _, t in chunk_lines if t)
-        print(f"    [API ] 定向块 {ci}/{len(chunks)} ({target_count} 行)")
+        logger.debug(f"    [API ] 定向块 {ci}/{len(chunks)} ({target_count} 行)")
 
         try:
             translations = client.translate(system_prompt, user_prompt)
         except Exception as e:
             warn = f"定向块 {ci} API 调用失败: {e}"
-            print(f"    [ERROR] {warn}")
+            logger.error(f"    [ERROR] {warn}")
             all_warnings.append(warn)
             chunk_stats_list.append({"chunk_idx": ci, "expected": target_count,
                                      "returned": 0, "dropped": 0})
@@ -569,7 +606,7 @@ def _translate_file_targeted(
                                  "returned": len(translations), "dropped": dropped})
 
         if kept:
-            print(f"    [OK  ] 定向块 {ci}: 获得 {len(kept)} 条翻译")
+            logger.debug(f"    [OK  ] 定向块 {ci}: 获得 {len(kept)} 条翻译")
         all_translations.extend(kept)
 
     if not all_translations:
@@ -642,13 +679,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 60)
-    print("Ren'Py 整文件翻译工具")
-    print("=" * 60)
-    print(f"游戏目录: {game_dir}")
-    print(f"输出目录: {output_dir}")
-    print(f"API: {args.provider} / {args.model or '默认'}")
-    print()
+    logger.info("=" * 60)
+    logger.info("Ren'Py 整文件翻译工具")
+    logger.info("=" * 60)
+    logger.info(f"游戏目录: {game_dir}")
+    logger.info(f"输出目录: {output_dir}")
+    logger.info(f"API: {args.provider} / {args.model or '默认'}")
+    logger.info("")
 
     # 初始化 API 客户端
     config = APIConfig(
@@ -662,10 +699,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
         max_response_tokens=args.max_response_tokens,
     )
     client = APIClient(config)
-    print(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
-    print(f"[API ] 速率限制: RPM={args.rpm}, RPS={args.rps}")
+    logger.info(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
+    logger.info(f"[API ] 速率限制: RPM={args.rpm}, RPS={args.rps}")
     if args.workers > 1:
-        print(f"[API ] 并发线程: {args.workers}")
+        logger.info(f"[API ] 并发线程: {args.workers}")
 
     # 初始化术语表
     glossary = Glossary()
@@ -682,15 +719,15 @@ def run_pipeline(args: argparse.Namespace) -> None:
     system_terms_path = output_dir / "system_ui_terms.json"
     glossary.load_system_terms(str(system_terms_path))
 
-    print(f"[GLOSS] {len(glossary.characters)} 角色, "
+    logger.info(f"[GLOSS] {len(glossary.characters)} 角色, "
           f"{len(glossary.terms)} 术语, "
           f"{len(glossary.memory)} 翻译记忆")
 
     # 初始化进度追踪
     progress = ProgressTracker(output_dir / "progress.json")
     if not args.resume and progress.data.get("completed_files"):
-        print(f"[INFO] 发现旧进度（已完成 {len(progress.data['completed_files'])} 个文件）")
-        print("[INFO] 清除旧进度，从头开始（如需续传请加 --resume）")
+        logger.info(f"[INFO] 发现旧进度（已完成 {len(progress.data['completed_files'])} 个文件）")
+        logger.info("[INFO] 清除旧进度，从头开始（如需续传请加 --resume）")
         progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
         progress.save()
 
@@ -705,7 +742,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # 扫描 RPY 文件
     rpy_files = sorted(game_dir.rglob('*.rpy'))
     if not rpy_files:
-        print("[ERROR] 未找到 .rpy 文件")
+        logger.error("[ERROR] 未找到 .rpy 文件")
         return
 
     # 自动排除 Ren'Py 引擎自带文件（renpy/ 目录）
@@ -720,11 +757,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
             continue
         filtered.append(f)
     if engine_excluded:
-        print(f"[EXCL] 自动排除 {engine_excluded} 个引擎文件 (renpy/, lib/)")
+        logger.info(f"[EXCL] 自动排除 {engine_excluded} 个引擎文件 (renpy/, lib/)")
     rpy_files = filtered
 
     if not rpy_files:
-        print("[ERROR] 排除引擎文件后未找到 .rpy 文件")
+        logger.error("[ERROR] 排除引擎文件后未找到 .rpy 文件")
         return
 
     # 排除指定模式的文件
@@ -736,7 +773,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         ]
         excluded = before - len(rpy_files)
         if excluded:
-            print(f"[EXCL] 排除了 {excluded} 个匹配的文件")
+            logger.info(f"[EXCL] 排除了 {excluded} 个匹配的文件")
 
     # tl 优先模式：若启用且检测到 tl/ 目录中的 .rpy，则仅翻译 tl 下的脚本
     if args.tl_priority:
@@ -745,10 +782,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
             if f.relative_to(game_dir).parts and f.relative_to(game_dir).parts[0] == "tl"
         ]
         if tl_files:
-            print(f"[MODE] 启用 tl 优先模式：检测到 {game_dir / 'tl'}，仅翻译 tl 下的脚本，共 {len(tl_files)} 个文件")
+            logger.info(f"[MODE] 启用 tl 优先模式：检测到 {game_dir / 'tl'}，仅翻译 tl 下的脚本，共 {len(tl_files)} 个文件")
             rpy_files = tl_files
         else:
-            print(f"[WARN] 启用了 --tl-priority 但在 {game_dir / 'tl'} 下未找到 .rpy 文件，将回退为翻译所有非引擎脚本，请检查路径是否正确")
+            logger.warning(f"[WARN] 启用了 --tl-priority 但在 {game_dir / 'tl'} 下未找到 .rpy 文件，将回退为翻译所有非引擎脚本，请检查路径是否正确")
 
     # 按大小排序（小文件优先，便于快速积累翻译记忆）
     rpy_files.sort(key=lambda f: f.stat().st_size)
@@ -756,7 +793,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     total_files = len(rpy_files)
     done_files = sum(1 for f in rpy_files
                      if progress.is_file_done(str(f.relative_to(game_dir))))
-    print(f"\n[SCAN] 共 {total_files} 个 .rpy 文件, 已完成 {done_files} 个")
+    logger.info(f"\n[SCAN] 共 {total_files} 个 .rpy 文件, 已完成 {done_files} 个")
 
     # 延迟估算 token ―― 只统计未完成文件的 token
     remaining_files = [
@@ -765,16 +802,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
     ]
     if remaining_files:
         remaining_tokens = sum(estimate_tokens(read_file(f)) for f in remaining_files)
-        print(f"[SCAN] 剩余约 {remaining_tokens:,} tokens")
+        logger.info(f"[SCAN] 剩余约 {remaining_tokens:,} tokens")
     else:
         remaining_tokens = 0
 
     # --dry-run: 仅展示待翻译信息，不实际调用 API
     if args.dry_run:
         from api_client import get_pricing, is_reasoning_model
-        print("\n" + "=" * 60)
-        print("[DRY-RUN] 以下文件将被翻译:")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("[DRY-RUN] 以下文件将被翻译:")
+        logger.info("=" * 60)
         file_stats = []
         max_chunk = getattr(args, 'max_chunk_tokens', 4000) or 4000
         total_chunks = 0
@@ -784,7 +821,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             n_chunks = max(1, tok // max_chunk + (1 if tok % max_chunk else 0))
             total_chunks += n_chunks
             file_stats.append((rel, tok, f.stat().st_size, n_chunks))
-            print(f"  {rel}  ({tok:,} tokens, {f.stat().st_size / 1024:.0f} KB"
+            logger.info(f"  {rel}  ({tok:,} tokens, {f.stat().st_size / 1024:.0f} KB"
                   + (f", {n_chunks} chunks)" if n_chunks > 1 else ")"))
 
         # 统计分布
@@ -792,14 +829,14 @@ def run_pipeline(args: argparse.Namespace) -> None:
             small = sum(1 for _, t, _, _ in file_stats if t <= 10000)
             medium = sum(1 for _, t, _, _ in file_stats if 10000 < t <= 50000)
             large = sum(1 for _, t, _, _ in file_stats if t > 50000)
-            print(f"\n文件分布: 小(≤10K tokens): {small}, 中(10-50K): {medium}, 大(>50K): {large}")
-            print(f"预计 API 调用次数: {total_chunks}")
+            logger.info(f"\n文件分布: 小(≤10K tokens): {small}, 中(10-50K): {medium}, 大(>50K): {large}")
+            logger.info(f"预计 API 调用次数: {total_chunks}")
 
             # 显示最大的 5 个文件
             top5 = sorted(file_stats, key=lambda x: x[1], reverse=True)[:5]
-            print("\n最大文件:")
+            logger.info("\n最大文件:")
             for rel, tok, _, nc in top5:
-                print(f"  {rel}: {tok:,} tokens (约 {nc} 个 chunk)")
+                logger.info(f"  {rel}: {tok:,} tokens (约 {nc} 个 chunk)")
 
         # ---- 精确费用估算 ----
         price_in, price_out, price_exact = get_pricing(config.provider, config.model)
@@ -833,31 +870,31 @@ def run_pipeline(args: argparse.Namespace) -> None:
            hasattr(args, 'output_price') and args.output_price is not None:
             est_cost = (total_input * price_in + total_output * price_out) / 1_000_000
 
-        print(f"\n{'=' * 40}")
-        print(f"模型: {config.model}")
-        print(f"定价: ${price_in:.2f} / ${price_out:.2f} 每百万 tokens (input/output)")
+        logger.info(f"\n{'=' * 40}")
+        logger.info(f"模型: {config.model}")
+        logger.info(f"定价: ${price_in:.2f} / ${price_out:.2f} 每百万 tokens (input/output)")
         if not price_exact:
-            print(f"[!] 模型 '{config.model}' 未在定价表中精确匹配，使用提供商兜底价格")
-            print(f"   建议用 --input-price / --output-price 手动指定准确价格")
+            logger.info(f"[!] 模型 '{config.model}' 未在定价表中精确匹配，使用提供商兜底价格")
+            logger.info(f"   建议用 --input-price / --output-price 手动指定准确价格")
         if reasoning:
-            print(f"[*] 推理模型: thinking tokens 会显著增加输出费用")
-        print(f"{'=' * 40}")
-        print(f"剩余文件: {len(remaining_files)}")
-        print(f"API 调用次数: ~{total_chunks}")
-        print(f"估计输入 tokens: ~{total_input:,} (内容 {remaining_tokens:,} + 提示词开销 {total_chunks * sys_prompt_overhead:,})")
-        print(f"估计可见输出 tokens: ~{visible_output:,}")
+            logger.info(f"[*] 推理模型: thinking tokens 会显著增加输出费用")
+        logger.info(f"{'=' * 40}")
+        logger.info(f"剩余文件: {len(remaining_files)}")
+        logger.info(f"API 调用次数: ~{total_chunks}")
+        logger.info(f"估计输入 tokens: ~{total_input:,} (内容 {remaining_tokens:,} + 提示词开销 {total_chunks * sys_prompt_overhead:,})")
+        logger.info(f"估计可见输出 tokens: ~{visible_output:,}")
         if reasoning:
-            print(f"估计推理 tokens: ~{reasoning_tokens:,} (thinking)")
-            print(f"估计总输出 tokens: ~{total_output:,}")
-        print(f"\n>>> 估计费用: ${est_cost:.2f}")
+            logger.info(f"估计推理 tokens: ~{reasoning_tokens:,} (thinking)")
+            logger.info(f"估计总输出 tokens: ~{total_output:,}")
+        logger.info(f"\n>>> 估计费用: ${est_cost:.2f}")
         if reasoning:
             low = est_cost * 0.6
             high = est_cost * 1.5
-            print(f"   (推理 token 波动大，实际范围约 ${low:.2f} ~ ${high:.2f})")
-        print("\n去掉 --dry-run 参数开始实际翻译。")
+            logger.info(f"   (推理 token 波动大，实际范围约 ${low:.2f} ~ ${high:.2f})")
+        logger.info("\n去掉 --dry-run 参数开始实际翻译。")
         return
 
-    print()
+    logger.info("")
 
     # 设置日志文件
     log_file = None
@@ -899,7 +936,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             else:
                 eta_str = f" | ETA {eta_seconds:.0f}s"
 
-        print(f"\n[{i}/{total_files}] ({pct:.0f}%{eta_str}) {rel}")
+        logger.info(f"\n[{i}/{total_files}] ({pct:.0f}%{eta_str}) {rel}")
         log(f"[{i}/{total_files}] ({pct:.0f}%) {rel}")
 
         try:
@@ -927,18 +964,18 @@ def run_pipeline(args: argparse.Namespace) -> None:
             all_chunk_stats.extend(file_chunk_stats)
             files_done_this_run += 1
         except KeyboardInterrupt:
-            print("\n[中断] 保存进度...")
+            logger.info("\n[中断] 保存进度...")
             glossary.save(str(glossary_path))
             progress.save()
             try:
                 translation_db.save()
             except Exception:
                 pass
-            print("[中断] 进度已保存，可用 --resume 继续")
+            logger.info("[中断] 进度已保存，可用 --resume 继续")
             sys.exit(1)
         except Exception as e:
             msg = f"文件 {rel} 处理失败: {e}"
-            print(f"  [ERROR] {msg}")
+            logger.error(f"  [ERROR] {msg}")
             total_warnings.append(msg)
             continue
 
@@ -951,11 +988,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
     try:
         translation_db.save()
     except Exception as e:
-        print(f"[WARN] 保存 translation_db.json 失败: {e}")
+        logger.warning(f"[WARN] 保存 translation_db.json 失败: {e}")
 
     # 复制非 .rpy 文件（可选）
     if args.copy_assets:
-        print("\n[复制] 复制非 .rpy 文件...")
+        logger.info("\n[复制] 复制非 .rpy 文件...")
         asset_count = 0
         for src in game_dir.rglob('*'):
             if src.is_file() and src.suffix.lower() not in ('.rpy', '.rpyc', '.rpyb'):
@@ -966,7 +1003,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                     shutil.copy2(src, dst)
                     asset_count += 1
         if asset_count:
-            print(f"[复制] 复制了 {asset_count} 个资源文件")
+            logger.info(f"[复制] 复制了 {asset_count} 个资源文件")
 
     # 自动字体补丁（可选）
     if getattr(args, "patch_font", False):
@@ -978,12 +1015,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     # 总结
     elapsed = time.time() - start_time
-    print("\n" + "=" * 60)
-    print("翻译完成")
-    print("=" * 60)
-    print(f"文件数: {total_files}")
-    print(f"翻译条目: {total_translated}")
-    print(f"Checker 丢弃（未写入译文）: {total_checker_dropped}")
+    logger.info("\n" + "=" * 60)
+    logger.info("翻译完成")
+    logger.info("=" * 60)
+    logger.info(f"文件数: {total_files}")
+    logger.info(f"翻译条目: {total_translated}")
+    logger.info(f"Checker 丢弃（未写入译文）: {total_checker_dropped}")
 
     # per-chunk 指标摘要
     if all_chunk_stats:
@@ -993,28 +1030,28 @@ def run_pipeline(args: argparse.Namespace) -> None:
             cs_total_dropped = sum(c["dropped"] for c in all_chunk_stats)
             ret_pct = (cs_total_returned / cs_total_expected * 100) if cs_total_expected else 0
             drop_pct = (cs_total_dropped / cs_total_returned * 100) if cs_total_returned else 0
-            print(f"[STATS] Chunks: {len(all_chunk_stats)} | "
+            logger.info(f"[STATS] Chunks: {len(all_chunk_stats)} | "
                   f"Expected: {cs_total_expected} | "
                   f"Returned: {cs_total_returned} ({ret_pct:.1f}%) | "
                   f"Dropped: {cs_total_dropped} ({drop_pct:.1f}%)")
         except Exception:
             pass
 
-    print(f"警告: {len(total_warnings)}")
-    print(f"耗时: {elapsed / 60:.1f} 分钟")
-    print(f"API 用量: {client.usage.summary()}")
-    print(f"输出目录: {output_dir / 'game'}")
+    logger.info(f"警告: {len(total_warnings)}")
+    logger.info(f"耗时: {elapsed / 60:.1f} 分钟")
+    logger.info(f"API 用量: {client.usage.summary()}")
+    logger.info(f"输出目录: {output_dir / 'game'}")
 
     if total_warnings:
         warnings_path = output_dir / "warnings.txt"
         warnings_path.write_text('\n'.join(total_warnings), encoding='utf-8')
-        print(f"警告详情: {warnings_path}")
+        logger.info(f"警告详情: {warnings_path}")
 
     # 保存质量检查报告（按文件归档）
     if quality_report:
         quality_path = output_dir / "quality_report.json"
         quality_path.write_text(json.dumps(quality_report, ensure_ascii=False, indent=2), encoding='utf-8')
-        print(f"质量报告: {quality_path}")
+        logger.info(f"质量报告: {quality_path}")
 
     # 汇总 chunk_stats
     chunk_stats_summary = {}
@@ -1047,7 +1084,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     }
     report_path = output_dir / "report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(f"翻译报告: {report_path}")
+    logger.info(f"翻译报告: {report_path}")
 
 
 # ============================================================
@@ -1217,7 +1254,7 @@ def retranslate_file(
         progress.mark_file_done(rel_path)
         return 0, []
 
-    print(f"  [RETRANSLATE] {rel_path}: {len(untranslated)} 行待补翻")
+    logger.debug(f"  [RETRANSLATE] {rel_path}: {len(untranslated)} 行待补翻")
 
     indices = [idx for idx, _ in untranslated]
     chunks = build_retranslate_chunks(all_lines, indices, context_lines, max_per_chunk)
@@ -1253,13 +1290,13 @@ def retranslate_file(
         user_prompt = build_retranslate_user_prompt(rel_path, protected)
 
         target_count = sum(1 for _, _, t in chunk_lines if t)
-        print(f"    [API ] 补翻块 {ci}/{len(chunks)} ({target_count} 行)")
+        logger.debug(f"    [API ] 补翻块 {ci}/{len(chunks)} ({target_count} 行)")
 
         try:
             translations = client.translate(system_prompt, user_prompt)
         except Exception as e:
             warn = f"补翻块 {ci} API 调用失败: {e}"
-            print(f"    [ERROR] {warn}")
+            logger.error(f"    [ERROR] {warn}")
             all_warnings.append(warn)
             continue
 
@@ -1281,13 +1318,13 @@ def retranslate_file(
             item_warnings = check_response_item(t)
             if item_warnings:
                 for w in item_warnings:
-                    print(f"    [CHECK-DROPPED] {w}")
+                    logger.debug(f"    [CHECK-DROPPED] {w}")
                     all_warnings.append(f"[CHECK-DROPPED] {w}")
             else:
                 kept.append(t)
 
         if kept:
-            print(f"    [OK  ] 补翻块 {ci}: 获得 {len(kept)} 条翻译")
+            logger.debug(f"    [OK  ] 补翻块 {ci}: 获得 {len(kept)} 条翻译")
         all_translations.extend(kept)
 
     if not all_translations:
@@ -1373,15 +1410,15 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 60)
-    print("Ren'Py 漏翻补翻模式")
-    print("=" * 60)
-    print(f"扫描目录: {game_dir}")
-    print(f"输出目录: {output_dir}")
-    print(f"API: {args.provider} / {args.model or '默认'}")
+    logger.info("=" * 60)
+    logger.info("Ren'Py 漏翻补翻模式")
+    logger.info("=" * 60)
+    logger.info(f"扫描目录: {game_dir}")
+    logger.info(f"输出目录: {output_dir}")
+    logger.info(f"API: {args.provider} / {args.model or '默认'}")
     if game_dir.resolve() == output_dir.resolve():
-        print("[WARN] 输入输出目录相同，将原地覆写已翻译文件。如未备份请 Ctrl+C 中止。")
-    print()
+        logger.warning("[WARN] 输入输出目录相同，将原地覆写已翻译文件。如未备份请 Ctrl+C 中止。")
+    logger.info("")
 
     config = APIConfig(
         provider=args.provider,
@@ -1394,7 +1431,7 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
         max_response_tokens=args.max_response_tokens,
     )
     client = APIClient(config)
-    print(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
+    logger.info(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
 
     glossary = Glossary()
     glossary_path = output_dir / "glossary.json"
@@ -1425,11 +1462,11 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     rpy_files = filtered
 
     if not rpy_files:
-        print("[ERROR] 未找到 .rpy 文件")
+        logger.error("[ERROR] 未找到 .rpy 文件")
         return
 
     # 预扫描：统计各文件漏翻行数
-    print(f"[SCAN] 扫描 {len(rpy_files)} 个文件的漏翻行...")
+    logger.info(f"[SCAN] 扫描 {len(rpy_files)} 个文件的漏翻行...")
     files_with_untranslated: list[tuple[Path, int]] = []
     total_untranslated = 0
     for f in rpy_files:
@@ -1440,14 +1477,14 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
             total_untranslated += len(ut)
 
     if not files_with_untranslated:
-        print("[INFO] 未发现漏翻行，无需补翻")
+        logger.info("[INFO] 未发现漏翻行，无需补翻")
         return
 
     done_count = sum(
         1 for f, _ in files_with_untranslated
         if progress.is_file_done(str(f.relative_to(game_dir)))
     )
-    print(f"[SCAN] 发现 {total_untranslated} 行漏翻，分布在 "
+    logger.info(f"[SCAN] 发现 {total_untranslated} 行漏翻，分布在 "
           f"{len(files_with_untranslated)} 个文件中"
           f"（已完成 {done_count} 个）")
 
@@ -1458,7 +1495,7 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
 
     for i, (rpy_path, n_ut) in enumerate(files_with_untranslated, 1):
         rel = rpy_path.relative_to(game_dir)
-        print(f"\n[{i}/{len(files_with_untranslated)}] {rel} ({n_ut} 行)")
+        logger.info(f"\n[{i}/{len(files_with_untranslated)}] {rel} ({n_ut} 行)")
 
         try:
             count, warnings = retranslate_file(
@@ -1471,18 +1508,18 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
             total_translated += count
             total_warnings.extend(warnings)
         except KeyboardInterrupt:
-            print("\n[中断] 保存进度...")
+            logger.info("\n[中断] 保存进度...")
             glossary.save(str(glossary_path))
             progress.save()
             try:
                 translation_db.save()
             except Exception:
                 pass
-            print("[中断] 进度已保存，可用 --resume 继续")
+            logger.info("[中断] 进度已保存，可用 --resume 继续")
             sys.exit(1)
         except Exception as e:
             msg = f"文件 {rel} 补翻失败: {e}"
-            print(f"  [ERROR] {msg}")
+            logger.error(f"  [ERROR] {msg}")
             total_warnings.append(msg)
 
         if i % 5 == 0:
@@ -1493,16 +1530,16 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     try:
         translation_db.save()
     except Exception as e:
-        print(f"[WARN] 保存 translation_db 失败: {e}")
+        logger.warning(f"[WARN] 保存 translation_db 失败: {e}")
 
     elapsed = time.time() - start_time
-    print("\n" + "=" * 60)
-    print("补翻完成")
-    print("=" * 60)
-    print(f"补翻条目: {total_translated}")
-    print(f"警告: {len(total_warnings)}")
-    print(f"耗时: {elapsed / 60:.1f} 分钟")
-    print(f"API 用量: {client.usage.summary()}")
+    logger.info("\n" + "=" * 60)
+    logger.info("补翻完成")
+    logger.info("=" * 60)
+    logger.info(f"补翻条目: {total_translated}")
+    logger.info(f"警告: {len(total_warnings)}")
+    logger.info(f"耗时: {elapsed / 60:.1f} 分钟")
+    logger.info(f"API 用量: {client.usage.summary()}")
 
     report = {
         "mode": "retranslate",
@@ -1522,7 +1559,7 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"补翻报告: {report_path}")
+    logger.info(f"补翻报告: {report_path}")
 
 
 # ============================================================
@@ -1551,7 +1588,7 @@ def _clean_rpyc(game_dir: Path) -> None:
             rpyc.unlink()
             count += 1
     if count:
-        print(f"[TL-CLEAN] 删除 {count} 个 .rpyc 缓存文件")
+        logger.info(f"[TL-CLEAN] 删除 {count} 个 .rpyc 缓存文件")
 
 
 def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
@@ -1565,8 +1602,8 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
     resources_fonts = Path(__file__).parent / "resources" / "fonts"
     font_path = resolve_font(resources_fonts)
     if not font_path:
-        print("[TL-PATCH] 未找到中文字体，跳过字体补丁")
-        print("[TL-PATCH] 请将 .ttf/.otf 字体文件放入 resources/fonts/ 目录")
+        logger.info("[TL-PATCH] 未找到中文字体，跳过字体补丁")
+        logger.info("[TL-PATCH] 请将 .ttf/.otf 字体文件放入 resources/fonts/ 目录")
         return
 
     font_name = font_path.name
@@ -1575,9 +1612,9 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
     dst_font = game_dir / font_name
     if not dst_font.exists():
         shutil.copy2(font_path, dst_font)
-        print(f"[TL-PATCH] 复制字体: {font_name} -> game/")
+        logger.info(f"[TL-PATCH] 复制字体: {font_name} -> game/")
     else:
-        print(f"[TL-PATCH] 字体已存在: {font_name}")
+        logger.info(f"[TL-PATCH] 字体已存在: {font_name}")
 
     # 2. Patch all gui.rpy (define gui.*_font = "...")
     _font_re = re.compile(
@@ -1597,7 +1634,7 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
         )
         if count:
             gui_rpy.write_text(new_gui, encoding="utf-8")
-            print(f"[TL-PATCH] 更新 {gui_rpy.relative_to(game_dir.parent)}: "
+            logger.info(f"[TL-PATCH] 更新 {gui_rpy.relative_to(game_dir.parent)}: "
                   f"{count} 处 gui.*_font -> {font_name}")
 
     # 3. Write chinese_language_patch.rpy (default language + translate python font override)
@@ -1614,7 +1651,7 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
         f'    gui.interface_text_font = "{font_name}"\n'
     )
     patch_rpy.write_text(patch_content, encoding="utf-8")
-    print(f"[TL-PATCH] 写入语言补丁: {patch_rpy.relative_to(game_dir.parent)}")
+    logger.info(f"[TL-PATCH] 写入语言补丁: {patch_rpy.relative_to(game_dir.parent)}")
 
     # 4. Inject language buttons into screen preferences()
     _inject_language_buttons(game_dir, tl_lang)
@@ -1639,7 +1676,7 @@ def _inject_language_buttons(game_dir: Path, tl_lang: str) -> None:
         if "screen preferences()" not in text:
             continue
         if marker in text:
-            print(f"[TL-PATCH] 语言按钮已存在: {rpy.relative_to(game_dir.parent)}")
+            logger.info(f"[TL-PATCH] 语言按钮已存在: {rpy.relative_to(game_dir.parent)}")
             continue
 
         # Find the Skip section's closing line to insert after
@@ -1667,7 +1704,7 @@ def _inject_language_buttons(game_dir: Path, tl_lang: str) -> None:
                     break
 
         if insert_idx is None:
-            print(f"[TL-PATCH] 无法定位注入点: {rpy.relative_to(game_dir.parent)}")
+            logger.info(f"[TL-PATCH] 无法定位注入点: {rpy.relative_to(game_dir.parent)}")
             continue
 
         # Create backup
@@ -1677,7 +1714,7 @@ def _inject_language_buttons(game_dir: Path, tl_lang: str) -> None:
 
         lines.insert(insert_idx, snippet)
         rpy.write_text("".join(lines), encoding="utf-8")
-        print(f"[TL-PATCH] 注入语言按钮: {rpy.relative_to(game_dir.parent)}")
+        logger.info(f"[TL-PATCH] 注入语言按钮: {rpy.relative_to(game_dir.parent)}")
 
 
 def build_tl_chunks(
@@ -1733,33 +1770,33 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     tl_lang = getattr(args, "tl_lang", "chinese") or "chinese"
 
-    print("=" * 60)
-    print("Ren'Py tl-mode 翻译")
-    print("=" * 60)
-    print(f"游戏目录: {game_dir}")
-    print(f"tl 语言: {tl_lang}")
-    print(f"API: {args.provider} / {args.model or '默认'}")
-    print()
+    logger.info("=" * 60)
+    logger.info("Ren'Py tl-mode 翻译")
+    logger.info("=" * 60)
+    logger.info(f"游戏目录: {game_dir}")
+    logger.info(f"tl 语言: {tl_lang}")
+    logger.info(f"API: {args.provider} / {args.model or '默认'}")
+    logger.info("")
 
     # ── 0. 自动字体补丁 + 语言切换注入 ──
     _apply_tl_game_patches(game_dir, tl_lang)
-    print()
+    logger.info("")
 
     # ── 1. 扫描 ──
     tl_dir = str(game_dir / "tl")
     results = scan_tl_directory(tl_dir, tl_lang)
     if not results:
-        print("[TL-MODE] 未找到 tl 文件，请确认路径是否正确")
+        logger.info("[TL-MODE] 未找到 tl 文件，请确认路径是否正确")
         return
     print_tl_stats(results)
 
     untrans_dlg, untrans_str = get_untranslated_entries(results)
     total_untrans = len(untrans_dlg) + len(untrans_str)
     if total_untrans == 0:
-        print("\n[TL-MODE] 所有条目已翻译，无需操作")
+        logger.info("\n[TL-MODE] 所有条目已翻译，无需操作")
         return
 
-    print(f"\n[TL-MODE] 待翻译: {len(untrans_dlg)} 个对话, {len(untrans_str)} 个字符串")
+    logger.info(f"\n[TL-MODE] 待翻译: {len(untrans_dlg)} 个对话, {len(untrans_str)} 个字符串")
 
     # ── 初始化基础设施 ──
     config = APIConfig(
@@ -1773,7 +1810,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         max_response_tokens=args.max_response_tokens,
     )
     client = APIClient(config)
-    print(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
+    logger.info(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
 
     glossary = Glossary()
     glossary_path = output_dir / "glossary.json"
@@ -1814,7 +1851,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         else:
             remaining_str.append(e)
     if auto_filled:
-        print(f"[TL-MODE] 自动回填 {len(auto_filled)} 条纯空白条目")
+        logger.info(f"[TL-MODE] 自动回填 {len(auto_filled)} 条纯空白条目")
         af_by_file: dict[str, list] = {}
         for e in auto_filled:
             af_by_file.setdefault(e.tl_file, []).append(e)
@@ -1832,7 +1869,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     untrans_str = remaining_str
     total_untrans = len(untrans_dlg) + len(untrans_str)
     if total_untrans == 0:
-        print("\n[TL-MODE] 所有条目已翻译或自动回填，无需 AI 操作")
+        logger.info("\n[TL-MODE] 所有条目已翻译或自动回填，无需 AI 操作")
         postprocess_tl_directory(str(game_dir / "tl"), tl_lang)
         return
 
@@ -1866,7 +1903,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             pass
 
         if progress.is_file_done(rel_path):
-            print(f"  [SKIP] {rel_path} (已完成)")
+            logger.debug(f"  [SKIP] {rel_path} (已完成)")
             continue
 
         chunks = build_tl_chunks(entries)
@@ -1877,7 +1914,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                 continue
             all_chunk_tasks.append((rel_path, ci, chunk_text, chunk_entries))
 
-    print(f"\n[TL-MODE] {len(file_meta)} 个文件, "
+    logger.info(f"\n[TL-MODE] {len(file_meta)} 个文件, "
           f"{len(all_chunk_tasks)} 个 chunk 待处理, "
           f"{workers} 线程并发")
 
@@ -1932,7 +1969,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                     total_warnings.extend(warnings)
                     _completed[0] += 1
                     n = _completed[0]
-                print(f"  [{n}/{len(all_chunk_tasks)}] {rp} "
+                logger.debug(f"  [{n}/{len(all_chunk_tasks)}] {rp} "
                       f"chunk {ci}/{total}: 保留 {len(kept_items)} 条"
                       + (f", 丢弃 {dropped} 条" if dropped else ""))
                 progress.mark_chunk_done(rp, ci, [])
@@ -1941,7 +1978,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                     total_warnings.append(f"{rel_path} chunk {ci}: {e}")
                     _completed[0] += 1
                     n = _completed[0]
-                print(f"  [{n}/{len(all_chunk_tasks)}] [ERROR] "
+                logger.error(f"  [{n}/{len(all_chunk_tasks)}] [ERROR] "
                       f"{rel_path} chunk {ci}/{total}: {e}")
 
     # ── 3. 匹配 + 回填（串行，保证文件写入安全） ──
@@ -2005,7 +2042,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                 if zh:
                     if fb_level:
                         total_fallback_matched += 1
-                        print(f"  [TL-MATCH] fallback L{fb_level}: "
+                        logger.debug(f"  [TL-MATCH] fallback L{fb_level}: "
                               f"{entry.old[:40]!r}")
                     entry.new = zh
                     matched_entries.append(entry)
@@ -2039,7 +2076,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             modified_content = fill_translation(file_path, matched_entries)
             Path(file_path).write_text(modified_content, encoding="utf-8")
             total_filled += len(matched_entries)
-            print(f"  [FILL] 回填 {len(matched_entries)} 条到 {rel_path}")
+            logger.debug(f"  [FILL] 回填 {len(matched_entries)} 条到 {rel_path}")
 
         progress.mark_file_done(rel_path)
         files_processed += 1
@@ -2050,7 +2087,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     retry_all = [e for e in retry_dlg if e.original.strip()] + \
                 [e for e in retry_str if e.old.strip()]
     if retry_all:
-        print(f"\n[TL-RETRY] {len(retry_all)} 条未匹配，重试中（chunk=5）…")
+        logger.info(f"\n[TL-RETRY] {len(retry_all)} 条未匹配，重试中（chunk=5）…")
         retry_by_file: dict[str, list] = {}
         for e in retry_all:
             retry_by_file.setdefault(e.tl_file, []).append(e)
@@ -2101,7 +2138,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                 modified = fill_translation(fpath, r_matched)
                 Path(fpath).write_text(modified, encoding="utf-8")
                 total_filled += len(r_matched)
-                print(f"  [TL-RETRY] 回填 {len(r_matched)} 条到 "
+                logger.debug(f"  [TL-RETRY] 回填 {len(r_matched)} 条到 "
                       f"{Path(fpath).name}")
 
     # ── 4c. 后处理：修复 nvl clear 兼容性 + 空 translate 块 ──
@@ -2116,20 +2153,20 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     try:
         translation_db.save()
     except Exception as e:
-        print(f"[WARN] 保存 translation_db 失败: {e}")
+        logger.warning(f"[WARN] 保存 translation_db 失败: {e}")
 
     elapsed = time.time() - start_time
-    print("\n" + "=" * 60)
-    print("tl-mode 翻译完成")
-    print("=" * 60)
-    print(f"[TL-MODE] 扫描: {len(results)} 个文件")
-    print(f"[TL-MODE] 待翻译: {len(untrans_dlg)} 个对话, {len(untrans_str)} 个字符串")
-    print(f"[TL-MODE] 翻译成功: {total_translated} 条")
-    print(f"[TL-MODE] Checker 丢弃: {total_checker_dropped} 条")
-    print(f"[TL-MODE] Fallback 匹配: {total_fallback_matched} 条")
-    print(f"[TL-MODE] 回填成功: {total_filled} 条")
-    print(f"[TL-MODE] 耗时: {elapsed / 60:.1f} 分钟")
-    print(f"[TL-MODE] API 用量: {client.usage.summary()}")
+    logger.info("\n" + "=" * 60)
+    logger.info("tl-mode 翻译完成")
+    logger.info("=" * 60)
+    logger.info(f"[TL-MODE] 扫描: {len(results)} 个文件")
+    logger.info(f"[TL-MODE] 待翻译: {len(untrans_dlg)} 个对话, {len(untrans_str)} 个字符串")
+    logger.info(f"[TL-MODE] 翻译成功: {total_translated} 条")
+    logger.info(f"[TL-MODE] Checker 丢弃: {total_checker_dropped} 条")
+    logger.info(f"[TL-MODE] Fallback 匹配: {total_fallback_matched} 条")
+    logger.info(f"[TL-MODE] 回填成功: {total_filled} 条")
+    logger.info(f"[TL-MODE] 耗时: {elapsed / 60:.1f} 分钟")
+    logger.info(f"[TL-MODE] API 用量: {client.usage.summary()}")
 
     report = {
         "mode": "tl-mode",
@@ -2155,7 +2192,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"[TL-MODE] 报告: {report_path}")
+    logger.info(f"[TL-MODE] 报告: {report_path}")
 
 
 def main():
@@ -2216,12 +2253,22 @@ def main():
                              "需配合 --game-dir 指向包含 tl/ 目录的 game 目录")
     parser.add_argument("--tl-lang", default="chinese", metavar="LANG",
                         help="tl 目录的语言子目录名 (默认: chinese)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="输出详细调试信息（DEBUG 级别）")
+    parser.add_argument("--quiet", action="store_true",
+                        help="仅输出警告和错误（WARNING 级别）")
 
     args = parser.parse_args()
 
+    setup_logging(
+        verbose=args.verbose,
+        quiet=args.quiet,
+        log_file=args.log_file,
+    )
+
     # dry-run 模式不需要 API key
     if not args.dry_run and not args.api_key:
-        print("[ERROR] 非 dry-run 模式必须提供 --api-key")
+        logger.error("[ERROR] 非 dry-run 模式必须提供 --api-key")
         sys.exit(1)
 
     # 智能检测游戏目录
@@ -2234,18 +2281,18 @@ def main():
         root_rpys = [f for f in game_dir.glob('*.rpy')]
         if root_rpys:
             # 根目录也有 .rpy，扫描整个根目录
-            print(f"[INFO] 根目录和 game/ 都包含 .rpy 文件，扫描整个目录")
+            logger.info(f"[INFO] 根目录和 game/ 都包含 .rpy 文件，扫描整个目录")
         else:
             game_dir = game_dir / "game"
     args.game_dir = str(game_dir)
 
     if not game_dir.exists():
-        print(f"[ERROR] 游戏目录不存在: {game_dir}")
+        logger.error(f"[ERROR] 游戏目录不存在: {game_dir}")
         sys.exit(1)
 
     tl_mode = getattr(args, "tl_mode", False)
     if args.retranslate and tl_mode:
-        print("[ERROR] --retranslate 和 --tl-mode 互斥，不能同时使用")
+        logger.error("[ERROR] --retranslate 和 --tl-mode 互斥，不能同时使用")
         sys.exit(1)
 
     if tl_mode:

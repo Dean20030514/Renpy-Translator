@@ -10,7 +10,7 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `test_all.py` | 单元测试 | api_client / file_processor / glossary / prompts / main.ProgressTracker | 21 | 否 |
+| `test_all.py` | 单元测试 | api_client / file_processor / glossary / prompts / main.ProgressTracker | 36 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess | 56 | 否 |
 | `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
@@ -31,7 +31,7 @@
 
 ## 二、已覆盖的测试用例
 
-### test_all.py（21 个单元测试）
+### test_all.py（36 个单元测试）
 
 | # | 函数 | 覆盖模块 | 测试内容 |
 |---|------|----------|----------|
@@ -56,6 +56,21 @@
 | 19 | `test_glossary_thread_safety` | glossary | 4 线程 × 50 条并发写入 |
 | 20 | `test_progress_cleanup` | main.ProgressTracker | mark_file_done 后 results 被清理 |
 | 21 | `test_pricing_lookup` | api_client | 精确/前缀/兜底定价 + 推理模型检测 |
+| 22 | `test_protect_restore_roundtrip` | file_processor | protect→translate→restore 往返正确 |
+| 23 | `test_protect_dedup` | file_processor | 相同占位符去重（mapping 长度 1） |
+| 24 | `test_protect_empty_and_no_placeholders` | file_processor | 空文本/无占位符原样返回 |
+| 25 | `test_protect_mixed_types` | file_processor | 混合 [var]+{tag}+%(fmt)s 三种类型 |
+| 26 | `test_protect_menu_id` | file_processor | {#id} 菜单标识符保护 |
+| 27 | `test_check_response_item_normal` | file_processor | 正常条目通过 |
+| 28 | `test_check_response_item_empty_zh` | file_processor | 译文为空被拦截 |
+| 29 | `test_check_response_item_empty_original` | file_processor | 原文为空被拦截 |
+| 30 | `test_check_response_item_var_missing` | file_processor | 占位符缺失被拦截 |
+| 31 | `test_check_response_item_var_preserved` | file_processor | 占位符保留时通过 |
+| 32 | `test_check_response_item_line_offset` | file_processor | line_offset 正确叠加 |
+| 33 | `test_check_response_chunk_match` | file_processor | 条数一致无警告 |
+| 34 | `test_check_response_chunk_mismatch` | file_processor | 条数不一致有警告 |
+| 35 | `test_check_response_chunk_empty` | file_processor | 空 chunk 无警告 |
+| 36 | `test_check_response_chunk_skip_chinese` | file_processor | 已含中文行跳过 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -182,89 +197,17 @@
 
 以下函数尚无独立测试用例，是 .cursor_prompt 中标记的高优先级 TODO。
 
-#### T1. protect_placeholders / restore_placeholders
+#### T1. protect_placeholders / restore_placeholders — **已实现**
 
-| 用例 | 输入 | 期望 |
-|------|------|------|
-| 基本替换 | `"[name] says {color=#f00}hi{/color}"` | 3 个占位符被替换为 `__RENPY_PH_N__`，mapping 长度 3 |
-| 相同占位符去重 | `"[name] says hi to [name]"` | 两个 `[name]` 用同一个 token，mapping 长度 1 |
-| 空文本 | `""` | 原样返回，mapping 为空 |
-| 无占位符 | `"Hello world"` | 原样返回，mapping 为空 |
-| 还原正确 | protect 后 restore | 结果 == 原始输入 |
-| `%(name)s` 格式 | `"Hello %(user)s"` | 1 个占位符 |
-| 混合类型 | `"[a] {b} %(c)s"` | 3 个占位符，顺序 [a] → {b} → %(c)s |
+> 已在 test_all.py #22-36 中实现（#22-26 覆盖 protect/restore）。
 
-```python
-def test_protect_restore_roundtrip():
-    text = "[name] says {color=#f00}Hello{/color} to [name]"
-    protected, mapping = protect_placeholders(text)
-    assert "__RENPY_PH_" in protected
-    assert "[name]" not in protected
-    assert "{color=#f00}" not in protected
-    restored = restore_placeholders(protected.replace("Hello", "你好"), mapping)
-    assert restored == "[name] says {color=#f00}你好{/color} to [name]"
+#### T2. check_response_item — **已实现**
 
-def test_protect_dedup():
-    text = "[name] greets [name]"
-    _, mapping = protect_placeholders(text)
-    assert len(mapping) == 1  # 相同占位符只出现一次
+> 已在 test_all.py #22-36 中实现（#27-32 覆盖 check_response_item）。
 
-def test_protect_empty():
-    text = ""
-    result, mapping = protect_placeholders(text)
-    assert result == "" and mapping == []
+#### T3. check_response_chunk — **已实现**
 
-def test_protect_no_placeholders():
-    text = "Hello world"
-    result, mapping = protect_placeholders(text)
-    assert result == text and mapping == []
-```
-
-#### T2. check_response_item
-
-| 用例 | 输入 | 期望 |
-|------|------|------|
-| 正常条目 | `{"line":1, "original":"Hi", "zh":"你好"}` | 无警告 |
-| 译文为空 | `{"line":1, "original":"Hi", "zh":""}` | 有警告 |
-| 原文为空 | `{"line":1, "original":"", "zh":"你好"}` | 有警告 |
-| 占位符丢失 | `{"line":1, "original":"Hi [name]", "zh":"你好"}` | 有警告（变量缺失） |
-| 占位符保留 | `{"line":1, "original":"Hi [name]", "zh":"你好 [name]"}` | 无警告 |
-| 缺少字段 | `{"line":1}` | 有警告 |
-
-```python
-def test_check_response_item_normal():
-    warnings = check_response_item({"line":1, "original":"Hi", "zh":"你好"})
-    assert len(warnings) == 0
-
-def test_check_response_item_empty_zh():
-    warnings = check_response_item({"line":1, "original":"Hi", "zh":""})
-    assert len(warnings) > 0
-
-def test_check_response_item_var_missing():
-    warnings = check_response_item({"line":1, "original":"Hi [name]", "zh":"你好"})
-    assert any("name" in w for w in warnings)
-```
-
-#### T3. check_response_chunk
-
-| 用例 | chunk 内容 | 返回条数 | 期望 |
-|------|-----------|---------|------|
-| 条数一致 | 3 行含引号 | 3 条 | 无警告 |
-| 条数偏少 | 3 行含引号 | 1 条 | 有警告（差值 -2） |
-| 条数偏多 | 3 行含引号 | 5 条 | 有警告（差值 +2） |
-| 空 chunk | 无引号行 | 0 条 | 无警告 |
-
-```python
-def test_check_response_chunk_match():
-    chunk = 'e "A"\ne "B"\ne "C"'
-    warnings = check_response_chunk(chunk, [{"zh":"1"}, {"zh":"2"}, {"zh":"3"}])
-    assert len(warnings) == 0
-
-def test_check_response_chunk_mismatch():
-    chunk = 'e "A"\ne "B"\ne "C"'
-    warnings = check_response_chunk(chunk, [{"zh":"1"}])
-    assert len(warnings) > 0 and "不一致" in warnings[0]
-```
+> 已在 test_all.py #22-36 中实现（#33-36 覆盖 check_response_chunk）。
 
 #### T4. _sanitize_translation（tl_parser.py）
 
@@ -399,7 +342,7 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 1. 单元测试（21 个）
+# 1. 单元测试（36 个）
 python test_all.py
 
 # 2. 冒烟测试（13 个）
@@ -411,7 +354,7 @@ python tl_parser.py
 
 全部通过预期输出：
 ```
-ALL 21 TESTS PASSED          (test_all.py)
+ALL 36 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
 All 56 assertions passed.     (tl_parser.py)
 ```
@@ -447,6 +390,9 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 |------|----------|--------|
 | file_processor.validate_translation | 全部 12 个 E/W Code | 13（smoke_test） |
 | file_processor._check_translation_safety | 变量/标签/换行/ID/格式/长度 | 10（test_all） |
+| file_processor.protect_placeholders / restore_placeholders | 往返/去重/空文本/混合类型/{#id} | 5（test_all #22-26） |
+| file_processor.check_response_item | 正常/空译文/空原文/占位符缺失保留/line_offset | 6（test_all #27-32） |
+| file_processor.check_response_chunk | 条数匹配/不匹配/空chunk/跳过中文 | 4（test_all #33-36） |
 | api_client | APIConfig / UsageStats / RateLimiter / JSON 解析 / 定价 | 5（test_all） |
 | glossary | prompt_text / 过滤 / 去重 / 线程安全 | 4（test_all） |
 | tl_parser | 状态机 / 回填 / 清理 / 后处理 | 56（内建） |
@@ -455,9 +401,9 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 
 | 优先级 | 模块/函数 | 当前状态 | 补充建议 |
 |--------|----------|----------|----------|
-| **高** | `protect_placeholders` / `restore_placeholders` | 无独立测试 | T1：7 个用例 |
-| **高** | `check_response_item` | 无独立测试 | T2：6 个用例 |
-| **高** | `check_response_chunk` | 无独立测试 | T3：4 个用例 |
+| ~~高~~ | ~~`protect_placeholders` / `restore_placeholders`~~ | **已覆盖** | ~~T1~~ → test_all #22-26 |
+| ~~高~~ | ~~`check_response_item`~~ | **已覆盖** | ~~T2~~ → test_all #27-32 |
+| ~~高~~ | ~~`check_response_chunk`~~ | **已覆盖** | ~~T3~~ → test_all #33-36 |
 | **高** | `_sanitize_translation` | 仅内建测试 | T4：8 个用例（含边界） |
 | 中 | `calculate_dialogue_density` | 无测试 | T6：3 个用例 |
 | 中 | `find_untranslated_lines` 过滤 | 无测试 | T8：6 个用例 |
@@ -467,7 +413,7 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 
 ### 下一步行动
 
-1. 将 T1-T3 的代码示例加入 `test_all.py` 或新建 `test_core.py`（高优先级，无需 API）
+1. ~~将 T1-T3 的代码示例加入 `test_all.py` 或新建 `test_core.py`~~ — **已完成**（test_all.py #22-36）
 2. 将 T4-T5 的边界场景加入 `tl_parser.py` 内建测试
 3. T6-T10 作为集成级测试，可在 smoke_test 中补充
 4. T11-T14 的端到端测试需 API key，建议作为 CI 中的可选步骤

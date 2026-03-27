@@ -308,6 +308,65 @@ rule(
 
 
 # ---------------------------------------------------------------------------
+# Special multi-line rule: RENPY-020
+# show image_name: with trailing colon but NO ATL block following.
+# Ren'Py 7 tolerates this; Ren'Py 8 / Generate Translations raises
+# "show statement expects a non-empty block".
+# Fix: remove the trailing colon.
+# This cannot be a single-line regex rule because we must look ahead to
+# determine whether an ATL block (indented xpos/ypos/etc.) follows.
+# ---------------------------------------------------------------------------
+
+_RE_SHOW_WITH_COLON = re.compile(r'^(\s*show\s+\S+(?:\s+\S+)*):\s*$')
+_SHOW_ATL_KEYWORDS = re.compile(r'\b(at|behind|as|with|onlayer|zorder|screen)\b')
+
+_RENPY020_RULE_INFO = {
+    "id": "RENPY-020",
+    "description": 'show with empty ATL block: "show image:" → "show image" (remove trailing colon)',
+    "pattern": _RE_SHOW_WITH_COLON,
+    "replacement": "special",
+    "severity": "error",
+}
+
+
+def _scan_show_empty_atl(lines: list[str], filepath: str) -> list:
+    """Multi-line scan for RENPY-020: show statements with colon but no ATL block."""
+    results = []
+    for i, line in enumerate(lines):
+        m = _RE_SHOW_WITH_COLON.match(line)
+        if not m:
+            continue
+        # Skip if line contains ATL sub-clause keywords (at/behind/as/with etc.)
+        body = m.group(1).split(None, 1)
+        after_show = body[1] if len(body) > 1 else ''
+        if _SHOW_ATL_KEYWORDS.search(after_show):
+            continue
+        # Look ahead: if next non-blank line is MORE indented, it's an ATL block → colon is needed
+        show_indent = len(line) - len(line.lstrip())
+        has_atl_block = False
+        for j in range(i + 1, min(i + 5, len(lines))):
+            next_stripped = lines[j].strip()
+            if not next_stripped:
+                continue
+            next_indent = len(lines[j]) - len(lines[j].lstrip())
+            if next_indent > show_indent:
+                has_atl_block = True
+            break  # only check first non-blank line
+        if has_atl_block:
+            continue  # colon is correct, ATL block follows
+        # No ATL block → remove trailing colon
+        fixed = m.group(1)
+        results.append(ScanResult(
+            filepath=filepath,
+            line_number=i + 1,
+            line_content=line.rstrip(),
+            rule_info=_RENPY020_RULE_INFO,
+            fixed_line=fixed,
+        ))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Scanner
 # ---------------------------------------------------------------------------
 
@@ -353,6 +412,9 @@ def scan_file(filepath):
     except (UnicodeDecodeError, IOError) as e:
         print(f"  [!] Cannot read {filepath}: {e}")
         return results
+
+    # Multi-line rule: RENPY-020 (show empty ATL block)
+    results.extend(_scan_show_empty_atl(lines, filepath))
 
     for line_idx, line in enumerate(lines):
         stripped = line.strip()

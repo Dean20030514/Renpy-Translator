@@ -13,8 +13,11 @@
 - **占位符保护**：`[var]`、`{tag}`、`%(name)s` 等 Ren'Py 语法标记在翻译前替换为安全令牌，翻译后精确还原
 - **密度自适应**：低对话密度文件自动切换定向翻译模式，避免 AI 注意力被代码稀释
 - **术语一致性**：自动提取角色名、支持外部词典、翻译记忆自动学习、锁定术语 + 禁翻片段
-- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 50+ 项结构校验
+- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 50+ 项结构校验 → chunk 自动重试
 - **漏翻归因分析**：每条未翻译行自动归因（AI 未返回 / Checker 丢弃 / 回写失败）
+- **日志分级控制**：`--verbose` 输出 DEBUG 详情，`--quiet` 仅输出 WARNING 及以上
+- **AI 自动术语抽取**：试跑阶段后 AI 自动从译文中提取高频术语补充词典
+- **Ren'Py 7→8 show 修复**：自动为空 ATL 块的 `show` 语句补加冒号（RENPY-020 规则）
 
 ---
 
@@ -95,6 +98,8 @@ python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
 
 **适用场景**：已通过 Ren'Py SDK（`renpy.sh launcher` → 「Generate Translations」）在 `tl/<lang>/` 下生成翻译框架的项目。
 
+**注意**：含 `\n` 换行的多行条目会标注 `[MULTILINE]` 标签，提示 AI 保留换行结构。
+
 **优势**：
 - 翻译行精确定位到行号，不存在"回写失败"问题
 - 回填精度远高于 direct-mode（行号定位 vs 文本匹配）
@@ -126,6 +131,7 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" \
 | 阶段 | 说明 |
 |------|------|
 | **Stage 1: 试跑批次** | 按风险评分自动挑选高风险文件先跑小批量，验证 API 连通性和翻译质量 |
+| **Stage 1.5: 自动术语抽取** | 试跑完成后 AI 自动从译文中提取高频术语，补充到 glossary |
 | **Stage 2: 闸门评估** | 结构错误阻断，漏翻比例超阈值仅告警（不中断） |
 | **Stage 3: 全量批处理** | 翻译全项目；低密度文件（< 20%）自动走定向翻译模式 |
 | **Stage 4: 补翻轮** | 扫描残留英文行，精准补翻，原地回写 |
@@ -153,13 +159,17 @@ output/projects/<project_name>/
 | `--min-dialogue-density` | 0.20 | 低密度阈值（低于此值走定向翻译） |
 | `--package-name` | CN_patch_game | 输出 zip 包名 |
 
+| `--tl-mode` | 否 | 流水线中使用 tl-mode 翻译 |
+
 其余参数（`--dict` / `--exclude` / `--copy-assets` / `--target-lang` 等）透传到 `main.py`。
 
 ---
 
 ## Ren'Py 7→8 升级扫描
 
-独立工具，扫描 `.rpy` 中的 Python 2 → 3 兼容性问题（19 条规则），支持自动修复。
+独立工具，扫描 `.rpy` 中的 Python 2 → 3 兼容性问题（20 条规则），支持自动修复。
+
+包含 RENPY-020 规则：自动为空 ATL 块的 `show` 语句补加冒号（Ren'Py 8 要求 `show` 后跟 ATL 块时必须带冒号）。
 
 ```bash
 # 仅扫描报告
@@ -199,6 +209,8 @@ python renpy_upgrade_tool.py ./game --fix --backup
 
 支持 `--input-price` / `--output-price` 自定义价格覆盖。
 
+**重试策略**：指数退避 + 随机 jitter，优先使用 `Retry-After` 响应头，等待时间上限 60 秒。
+
 ---
 
 ## 项目架构
@@ -211,7 +223,11 @@ python renpy_upgrade_tool.py ./game --fix --backup
 │  one_click_pipeline.py             四阶段流水线 CLI            │
 ├──────────────────────────────────────────────────────────────┤
 │  核心层                                                       │
-│  file_processor.py    拆分 / 回写 / 校验 / 占位符保护         │
+│  file_processor/          拆分/回写/校验/占位符保护（4 子模块）│
+│    splitter.py            文件读取与拆分                       │
+│    checker.py             占位符保护 + ResponseChecker         │
+│    patcher.py             翻译回写                             │
+│    validator.py           翻译后 50+ 项校验                    │
 │  tl_parser.py         tl/ 框架状态机解析器（独立模块）        │
 │  api_client.py        多提供商 API 客户端 + 限流 + 计费      │
 │  prompts.py           Prompt 模板工厂（支持外部覆写）         │
@@ -238,7 +254,7 @@ python renpy_upgrade_tool.py ./game --fix --backup
 start_launcher.py
   ├─ main.py（模式 1-3, 5-6）
   │    ├── api_client.py        API 调用 + 限流 + 用量统计
-  │    ├── file_processor.py    拆分 + 回写 + 校验 + 占位符保护
+  │    ├── file_processor/      拆分 + 回写 + 校验 + 占位符保护（包）
   │    ├── tl_parser.py         tl-mode 解析 + 精确回填
   │    ├── prompts.py           Prompt 模板构建
   │    ├── glossary.py          术语表管理
@@ -247,7 +263,7 @@ start_launcher.py
   │
   ├─ one_click_pipeline.py（模式 4）
   │    ├── 调用 main.py（subprocess，分阶段执行）
-  │    ├── file_processor.py    闸门校验
+  │    ├── file_processor/      闸门校验
   │    ├── translation_db.py    漏翻归因分析
   │    ├── font_patch.py        打包前字体补丁
   │    └── main.py imports      retranslate_file（补翻阶段）
@@ -276,6 +292,7 @@ start_launcher.py
 - `check_response_item()`：占位符集合一致性 + 原文/译文非空
 - `check_response_chunk()`：返回条数与期望条数一致性
 - 不通过 → 丢弃该条，保留原文（宁可漏翻也不误翻）
+- **chunk 自动重试**：API 错误或高丢弃率（drop rate 超阈值）时自动重试 1 次
 
 ### validate_translation（回写后校验，50+ 项）
 
@@ -422,6 +439,8 @@ output/projects/<project_name>/
 | `--log-file` | — | 日志输出文件 |
 | `--input-price` | 自动 | 自定义输入价格 ($/M tokens) |
 | `--output-price` | 自动 | 自定义输出价格 ($/M tokens) |
+| `--verbose` | — | 输出 DEBUG 级别详细日志 |
+| `--quiet` | — | 仅输出 WARNING 及以上日志 |
 | `--stage` | `single` | 阶段标记（流水线内部使用） |
 
 ---
@@ -434,6 +453,7 @@ output/projects/<project_name>/
 - 超大单块在空行处自动强制拆分
 - 每块 < 4K tokens（可配置 `--max-chunk-tokens`）
 - 行偏移量追踪，确保多块翻译结果精确重组
+- chunk 间传递 `prev_context`（前一 chunk 末尾 5 行），保证跨块翻译连贯性
 - 低密度文件（对话占比 < 20%）自动提取对话行 + 上下文，定向翻译
 - 纯配置文件（`define.rpy` / `variables.rpy` / `screens.rpy` / `options.rpy` / `earlyoptions.rpy`）自动跳过
 

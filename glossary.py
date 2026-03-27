@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import re
 import threading
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Glossary:
@@ -32,7 +35,7 @@ class Glossary:
         """扫描游戏目录，提取角色定义和关键信息"""
         game_path = Path(game_dir)
         if not game_path.exists():
-            print(f"[WARN] 游戏目录不存在: {game_dir}")
+            logger.warning(f"游戏目录不存在: {game_dir}")
             return
 
         # 匹配 define xxx = Character("Name", ...) 和 DynamicCharacter
@@ -78,7 +81,7 @@ class Glossary:
                 self.terms['__game_version__'] = m.group(1)
 
         if self.characters:
-            print(f"[INFO] 扫描到 {len(self.characters)} 个角色定义")
+            logger.info(f"扫描到 {len(self.characters)} 个角色定义")
             # 将角色显示名也加入术语表，避免不同翻译
             for var, name in self.characters.items():
                 if name and len(name) > 1 and name not in self.terms:
@@ -93,7 +96,7 @@ class Glossary:
         """
         path = Path(filepath)
         if not path.exists():
-            print(f"[WARN] 词典文件不存在: {filepath}")
+            logger.warning(f"词典文件不存在: {filepath}")
             return
 
         count = 0
@@ -124,10 +127,10 @@ class Glossary:
                     self.terms[row[0].strip()] = row[1].strip()
                     count += 1
         else:
-            print(f"[WARN] 不支持的词典格式: {suffix}")
+            logger.warning(f"不支持的词典格式: {suffix}")
             return
 
-        print(f"[INFO] 加载词典 {path.name}: {count} 条术语")
+        logger.info(f"加载词典 {path.name}: {count} 条术语")
 
     def load_system_terms(self, filepath: str) -> None:
         """加载项目级系统 UI 术语（JSON 格式：{英文: 中文}）
@@ -141,7 +144,7 @@ class Glossary:
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
         except Exception:
-            print(f"[WARN] 系统 UI 术语表解析失败: {filepath}")
+            logger.warning(f"系统 UI 术语表解析失败: {filepath}")
             return
 
         added = 0
@@ -152,7 +155,7 @@ class Glossary:
                     added += 1
 
         if added:
-            print(f"[INFO] 加载系统 UI 术语: {added} 条")
+            logger.info(f"加载系统 UI 术语: {added} 条")
 
     def load(self, filepath: str) -> None:
         """加载术语表（JSON 格式）"""
@@ -166,9 +169,9 @@ class Glossary:
         # 新字段向下兼容：旧版本 glossary.json 没有这些字段时，默认空集合
         self.locked_terms = set(data.get('locked_terms', []))
         self.no_translate = set(data.get('no_translate', []))
-        print(f"[INFO] 加载术语表: {len(self.characters)} 角色, "
-              f"{len(self.terms)} 术语, {len(self.memory)} 翻译记忆, "
-              f"{len(self.locked_terms)} 锁定术语, {len(self.no_translate)} 禁翻片段")
+        logger.info(f"加载术语表: {len(self.characters)} 角色, "
+                    f"{len(self.terms)} 术语, {len(self.memory)} 翻译记忆, "
+                    f"{len(self.locked_terms)} 锁定术语, {len(self.no_translate)} 禁翻片段")
 
     def save(self, filepath: str) -> None:
         """保存术语表"""
@@ -207,6 +210,102 @@ class Glossary:
                 if original in self.terms:
                     continue
                 self.memory[original] = zh
+
+    def extract_terms_from_translations(self, translations: list[dict], min_freq: int = 3) -> dict[str, str]:
+        """从翻译结果中自动提取高频专有名词（人名/地名），返回 {en: zh} 词典。
+
+        策略：
+        1. 从原文中提取首字母大写的英文单词（≥2 字母，排除句首/Ren'Py 关键字）
+        2. 在对应译文中查找该词的翻译（通过位置对应或高频共现）
+        3. 同一英文词 → 同一中文翻译出现 ≥ min_freq 次 → 加入术语
+        """
+        from collections import Counter
+
+        # Ren'Py 关键字和常见英文词不应提取为术语
+        _STOP_WORDS = {
+            "The", "This", "That", "What", "When", "Where", "Which", "Who", "How",
+            "And", "But", "For", "Not", "You", "Your", "Her", "His", "She", "Are",
+            "Was", "Were", "Has", "Have", "Had", "Can", "Could", "Would", "Should",
+            "Will", "Did", "Does", "May", "Just", "Then", "Than", "Very", "Only",
+            "Also", "Some", "Any", "All", "Both", "Each", "Every", "Such", "Much",
+            "Well", "Now", "Here", "There", "Why", "Yes", "Yeah", "Okay",
+            "True", "False", "None", "Character", "DynamicCharacter",
+            "Jump", "Call", "Show", "Hide", "Scene", "Menu", "Return",
+            "Good", "Bad", "New", "Old", "Big", "Little", "Great",
+        }
+        _stop_lower = {w.lower() for w in _STOP_WORDS}
+
+        _word_re = re.compile(r'\b([A-Z][a-z]{1,15})\b')
+
+        def _zh_ngrams(text: str, min_len: int = 2, max_len: int = 5) -> list[str]:
+            """从中文文本中提取所有 2~5 字的连续中文子串。"""
+            runs = re.findall(r'[\u4e00-\u9fff]+', text)
+            ngrams = []
+            for run in runs:
+                for n in range(min_len, min(max_len + 1, len(run) + 1)):
+                    for i in range(len(run) - n + 1):
+                        ngrams.append(run[i:i + n])
+            return ngrams
+
+        # 1. 收集：每个大写词出现时，对应译文中有哪些中文 n-gram
+        word_zh_segments: dict[str, Counter] = {}
+
+        for item in translations:
+            original = item.get('original', '')
+            zh = item.get('zh', '')
+            if not original or not zh:
+                continue
+            words = set(_word_re.findall(original))
+            ngrams = _zh_ngrams(zh)
+            if not ngrams:
+                continue
+            for w in words:
+                if w.lower() in _stop_lower:
+                    continue
+                if w in self.characters or w in self.terms:
+                    continue
+                if w not in word_zh_segments:
+                    word_zh_segments[w] = Counter()
+                for seg in ngrams:
+                    word_zh_segments[w][seg] += 1
+
+        # 2. 统计每个英文词出现了多少次（句子级频次）
+        word_freq: Counter = Counter()
+        for item in translations:
+            original = item.get('original', '')
+            if not original:
+                continue
+            for w in set(_word_re.findall(original)):
+                if w.lower() not in _stop_lower and w not in self.characters and w not in self.terms:
+                    word_freq[w] += 1
+
+        # 3. 筛选：词频 ≥ min_freq，且最频繁的中文 n-gram 出现在 ≥ 50% 的句子中
+        new_terms: dict[str, str] = {}
+        for en, seg_counts in word_zh_segments.items():
+            freq = word_freq.get(en, 0)
+            if freq < min_freq:
+                continue
+            best_zh, best_count = seg_counts.most_common(1)[0]
+            # best_count 是 n-gram 出现次数，freq 是句子数；best_count 应 ≥ freq*0.5
+            if best_count < freq * 0.5:
+                continue
+            if len(best_zh) < 2:
+                continue
+            new_terms[en] = best_zh
+
+        return new_terms
+
+    def auto_add_terms(self, new_terms: dict[str, str]) -> int:
+        """将自动提取的术语加入 terms（跳过已有的）。返回新增条数。"""
+        added = 0
+        with self._lock:
+            for en, zh in new_terms.items():
+                if en not in self.terms and en not in self.characters:
+                    self.terms[en] = zh
+                    added += 1
+        if added:
+            logger.info(f"[GLOSS] 自动提取 {added} 条术语")
+        return added
 
     def to_prompt_text(self) -> str:
         """生成用于 prompt 的术语表文本"""

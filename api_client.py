@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import threading
@@ -13,6 +14,8 @@ from typing import Optional, Any
 from urllib import request as urlreq
 from urllib import error as urlerr
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 _USER_AGENT = "RenpyFileTranslator/1.0"
 
@@ -236,20 +239,22 @@ class APIClient:
 
         # 如果原始响应非空但解析失败，重试一次（附加格式强调）
         if not result and len(raw.strip()) > 20:
-            print("  [WARN] JSON 解析失败，重试中...")
+            logger.warning("JSON 解析失败，重试中...")
             if self._limiter:
                 self._limiter.acquire()
             retry_suffix = "\n\n⚠️ 你必须只返回纯 JSON 数组，不要包含任何其他文字、解释或 markdown 标记。"
             raw = self._call_api(system_prompt, user_prompt + retry_suffix)
             result = self._parse_json_response(raw)
             if not result:
-                print("  [WARN] 重试后仍无法解析，跳过该块")
+                logger.warning("重试后仍无法解析，跳过该块")
 
         return result
 
     def _call_api(self, system_prompt: str, user_prompt: str) -> str:
         """调用 API，返回原始响应文本"""
         provider = self.config.provider.lower()
+
+        import random
 
         for attempt in range(1, self.config.max_retries + 1):
             try:
@@ -260,27 +265,41 @@ class APIClient:
             except urlerr.HTTPError as e:
                 status = e.code
                 body = ""
+                retry_after = 0
+                try:
+                    # 优先使用服务端返回的 Retry-After header
+                    ra = e.headers.get("Retry-After", "") if e.headers else ""
+                    if ra and ra.isdigit():
+                        retry_after = int(ra)
+                except Exception:
+                    pass
                 try:
                     body = e.read().decode('utf-8', errors='replace')[:500]
                 except Exception:
                     pass
 
                 if status == 429:
-                    wait = 2 ** attempt * 10
-                    print(f"  [WARN] 429 限速，等待 {wait}s 后重试 ({attempt}/{self.config.max_retries})")
+                    base = retry_after if retry_after > 0 else min(2 ** attempt * 5, 60)
+                    jitter = random.uniform(0, min(base * 0.3, 5))
+                    wait = base + jitter
+                    logger.warning(f"429 限速，等待 {wait:.1f}s 后重试 ({attempt}/{self.config.max_retries})")
                     time.sleep(wait)
                     continue
                 elif status >= 500:
-                    wait = 2 ** attempt * 5
-                    print(f"  [WARN] {status} 服务端错误，等待 {wait}s 后重试")
+                    base = min(2 ** attempt * 3, 60)
+                    jitter = random.uniform(0, min(base * 0.3, 5))
+                    wait = base + jitter
+                    logger.warning(f"{status} 服务端错误，等待 {wait:.1f}s 后重试 ({attempt}/{self.config.max_retries})")
                     time.sleep(wait)
                     continue
                 else:
                     raise RuntimeError(f"API {status} 错误: {body}")
             except (urlerr.URLError, OSError, TimeoutError) as e:
                 if attempt < self.config.max_retries:
-                    wait = min(2 ** attempt * 3, 60)
-                    print(f"  [WARN] 网络错误: {e}, 等待 {wait}s 后重试 ({attempt}/{self.config.max_retries})")
+                    base = min(2 ** attempt * 3, 60)
+                    jitter = random.uniform(0, min(base * 0.3, 5))
+                    wait = base + jitter
+                    logger.warning(f"网络错误: {e}, 等待 {wait:.1f}s 后重试 ({attempt}/{self.config.max_retries})")
                     time.sleep(wait)
                     continue
                 raise
@@ -445,5 +464,5 @@ class APIClient:
             if results:
                 return results
 
-        print(f"  [ERROR] 无法解析 AI 响应为 JSON 数组，响应前200字符: {text[:200]}")
+        logger.error(f"无法解析 AI 响应为 JSON 数组，响应前200字符: {text[:200]}")
         return []

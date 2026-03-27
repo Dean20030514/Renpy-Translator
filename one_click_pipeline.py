@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,8 @@ from typing import Iterable
 from file_processor import read_file, validate_translation, SKIP_FILES_FOR_TRANSLATION
 from translation_db import TranslationDB
 from font_patch import resolve_font, apply_font_patch
+
+logger = logging.getLogger(__name__)
 
 
 RISK_KEYWORDS = [
@@ -36,7 +39,7 @@ class StageError(RuntimeError):
 
 
 def _print(msg: str) -> None:
-    print(msg, flush=True)
+    logger.info(msg)
 
 
 def resolve_scan_root(game_dir: Path) -> Path:
@@ -1049,6 +1052,33 @@ def main() -> None:
         report["stages"]["pilot"]["ratio_exceeded"] = pilot_ratio_exceeded
         if pilot_ratio_exceeded:
             _print("[WARN ] 试跑漏翻占比超阈值，继续执行全量与增量轮再做最终判定")
+
+        # 试跑后自动术语表提取：从 pilot 翻译结果中提取高频专有名词
+        try:
+            from glossary import Glossary as _Glossary
+            pilot_glossary = _Glossary()
+            pilot_glossary_path = pilot_output / "glossary.json"
+            pilot_glossary.load(str(pilot_glossary_path))
+
+            pilot_db_path = pilot_output / "translation_db.json"
+            if pilot_db_path.exists():
+                pilot_db = TranslationDB(pilot_db_path)
+                pilot_db.load()
+                new_terms = pilot_glossary.extract_terms_from_translations(pilot_db.entries)
+                if new_terms:
+                    added = pilot_glossary.auto_add_terms(new_terms)
+                    pilot_glossary.save(str(pilot_glossary_path))
+                    # 同步到全量阶段的输出目录
+                    stage2_glossary_path = stage2_translated / "glossary.json"
+                    stage2_glossary_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(pilot_glossary_path), str(stage2_glossary_path))
+                    report["stages"]["pilot"]["auto_terms_extracted"] = len(new_terms)
+                    report["stages"]["pilot"]["auto_terms_added"] = added
+                    _print(f"[GLOSS] 从试跑结果自动提取 {len(new_terms)} 条术语，新增 {added} 条")
+                else:
+                    _print("[GLOSS] 试跑结果中未发现可自动提取的术语")
+        except Exception as e:
+            _print(f"[WARN ] 自动术语提取失败（不影响后续流程）: {e}")
 
         # Stage 2: full batch
         _print("\n=== Stage 2/4: 全量批处理 ===")
