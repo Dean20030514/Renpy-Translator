@@ -50,7 +50,7 @@
 | **main.py** | ~2,100 | 翻译引擎入口。direct-mode（`translate_file` 密度路由 / `_translate_file_targeted` 定向翻译）、tl-mode（`run_tl_pipeline` 并发 chunk 翻译 + 精确回填 + `[MULTILINE]` 标记）、retranslate（`retranslate_file` 残留英文补翻）、`ChunkResult` dataclass、`_translate_chunk_with_retry` chunk 级自动重试、`logging` 结构化日志（`--verbose`/`--quiet`）、CLI 参数解析、进度管理 |
 | **one_click_pipeline.py** | ~1,350 | 四阶段编排器。pilot 试跑 → 闸门评估 → 全量翻译 → retranslate 补翻；漏翻归因分析（`attribute_untranslated`）；`evaluate_gate` 结构化闸门；`write_report_summary_md` 报告生成；tl-mode 分支（`--tl-mode` 走 tl 流水线）；pilot 后 AI 自动术语表提取 |
 | **file_processor/** | ~1,337 (4 sub-modules) | .rpy 文件处理核心 **包**。`splitter.py`（`split_file` 按块拆分）、`patcher.py`（`apply_translations` 行级回写、占位符保护还原 `protect_placeholders`/`restore_placeholders`）、`checker.py`（`ResponseChecker`：`check_response_item`/`check_response_chunk`）、`validator.py`（`validate_translation` 50+ 项校验）、`__init__.py` re-exports 全部公共 API、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
-| **tl_parser.py** | ~750 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、56 个内建测试 |
+| **tl_parser.py** | ~750 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、75 个内建测试 |
 | **api_client.py** | ~451 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After 退避优化）、精确定价表 |
 | **prompts.py** | ~360 | Prompt 模板工厂。direct-mode（`SYSTEM_PROMPT_TEMPLATE` + `build_user_prompt`）、retranslate（`build_retranslate_system_prompt` + `build_retranslate_user_prompt`）、tl-mode（`TLMODE_SYSTEM_PROMPT` + `build_tl_system_prompt` + `build_tl_user_prompt`）；支持外部 style.txt / culture.txt 覆写 |
 | **glossary.py** | ~265 | 术语表管理。`Glossary` 类：`scan_game_directory` 角色提取、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取 |
@@ -110,7 +110,7 @@ run_pipeline(args) 入口
                     ├─ check_response_item() + check_response_chunk()（ResponseChecker）
                     └─ 不通过 → 丢弃保留原文，status="checker_dropped"
                     → ChunkResult dataclass 封装返回值
-      apply_translations()（行级回写）
+      apply_translations()（行级回写，四遍匹配策略；第四遍全文扫描时跳过已被前面 pass 修改的行（`modified_lines` + `full_scan` 参数），防止同一原文多次出现时误替换）
       validate_translation()（50+ 项校验）
       glossary.update_from_translations()（翻译记忆学习）
 ```
@@ -362,6 +362,7 @@ check_response_chunk():
 | `RISK_KEYWORDS` | one_click_pipeline.py | 14 个关键词 | 试跑文件风险评分 |
 | `_QUOTE_STRIP_PAIRS` | tl_parser.py | ASCII "" / 弯引号 "" / 全角 ＂＂ | fill_translation 引号剥离对 |
 | `_MODEL_PRICING` | api_client.py | ~20 个模型 | 精确定价表 |
+| 截断匹配阈值 | file_processor/patcher.py line 414 | 0.7 | AI 截断文本匹配阈值（阶段 3e），低于此值不替换 |
 
 ---
 
@@ -517,6 +518,11 @@ score = min(file_size / 1024, 200)
 38. AI 自动术语表提取（`extract_terms_from_translations`，pilot 后自动生成术语表）
 39. 429 退避优化（jitter 随机抖动 + Retry-After 响应头读取 + 60s 上限）
 
+### 第七轮：精度提升 & 测试覆盖
+40. 全文扫描安全性（第四遍跳过已修改行，防止同一原文多次出现时误替换）
+41. tl_parser 内建测试新增 19 个断言（56→75），覆盖 `_sanitize_translation` 12 个边界 + `fill_translation` 7 个边界
+42. 截断匹配阈值从 0.5 提高到 0.7（`_replace_string_in_line` 阶段 3e）
+
 ### 已回滚
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
 
@@ -526,12 +532,10 @@ score = min(file_size / 1024, 200)
 
 ### 高优先级
 - **回写失败 609 条根因分析**：抽样 20 条看 `apply_translations` 哪个阶段匹配失败
-- **全文扫描安全性**：同一原文出现多次时不做第四遍全文扫描
 - **核心函数单元测试**：`_replace_string_in_line`、`protect/restore_placeholders`、`_check_translation_safety`、`check_response_item`
 
 ### 中优先级
 - progress.json 原子写入（临时文件 + `os.replace`）
-- 截断匹配阈值 0.5 → 0.7（`_replace_string_in_line` 阶段 3e）
 - 纳入 git + CI（GitHub Actions）
 
 ### 低优先级

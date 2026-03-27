@@ -14,7 +14,7 @@
 | 第三轮 | 降低漏翻率 | 12.12% → 4.01%（占位符保护 + 密度自适应 + retranslate） |
 | 第四轮 | tl-mode | 独立 tl_parser 解析器 + 并发翻译 + 精确回填 |
 | 第五轮 | tl-mode 全量验证 | 引号剥离修复 + 后处理 + 99.97% 翻译成功率 |
-| 第六轮 | 代码优化与新功能 | chunk重试 + logging + 模块拆分 + 术语提取 + 退避优化 + show修复 |
+| 第六轮 | 代码优化与新功能 | chunk重试 + logging + 模块拆分 + 术语提取 + 退避优化 + show修复 + 全文扫描安全性 + 截断阈值提升 + tl_parser 测试扩充 |
 
 ---
 
@@ -121,7 +121,7 @@
 
 | # | 描述 | 涉及文件 | 影响 |
 |---|------|----------|------|
-| 36 | `tl_parser.py` 独立解析模块：状态机（IDLE / DIALOGUE / STRINGS / SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、UTF-8 BOM 处理、56 个内建测试 | `tl_parser.py` | 新增模块 |
+| 36 | `tl_parser.py` 独立解析模块：状态机（IDLE / DIALOGUE / STRINGS / SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、UTF-8 BOM 处理、75 个内建测试 | `tl_parser.py` | 新增模块 |
 | 37 | `--tl-mode` + `--tl-lang` CLI 参数：扫描 `tl/<lang>/` 空槽位，AI 翻译后精确回填 | `main.py` | 新增模式，与 `--retranslate` 互斥 |
 | 38 | tl-mode 专用 Prompt：`TLMODE_SYSTEM_PROMPT` + `build_tl_system_prompt` + `build_tl_user_prompt` | `prompts.py` | 新增模板 |
 | 39 | `run_tl_pipeline`：`build_tl_chunks`（每 chunk ≤ 30 条）→ ThreadPoolExecutor 并发翻译 → 串行回填 | `main.py` | 新增功能（`--workers` 控制线程数） |
@@ -219,6 +219,14 @@
 |---|------|----------|------|
 | 47 | validate_translation 中 `✓` Unicode 字符在 GBK 终端报错 → 改为 `OK` | `file_processor/validator.py` | 修复 Windows 终端编码错误 |
 | 48 | StringEntry fallback 注释从"三层"修正为"四层"（精确→strip→去占位符→转义规范化） | `main.py` | 注释修正 |
+| 49 | 全文扫描安全性：第四遍 `apply_translations` 跳过已被前面 pass 修改的行（`modified_lines` + `full_scan`），防止同一原文多次出现时误替换 | `file_processor/patcher.py` | 降低回写错误 |
+| 50 | 截断匹配阈值从 0.5 提高到 0.7（阶段 3e），减少 AI 截断文本误匹配 | `file_processor/patcher.py` | 提升匹配精度 |
+
+### 测试
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 51 | tl_parser 内建自测新增 19 个断言（56→75）：`_sanitize_translation` 12 个边界 + `fill_translation` 7 个边界 | `tl_parser.py` | 测试覆盖 |
 
 ---
 

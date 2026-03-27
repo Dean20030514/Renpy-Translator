@@ -12,7 +12,7 @@
 |------|------|----------|--------|--------|
 | `test_all.py` | 单元测试 | api_client / file_processor / glossary / prompts / main.ProgressTracker | 36 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
-| `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess | 56 | 否 |
+| `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
 
 ### 测试数据文件
@@ -90,7 +90,7 @@
 | 12 | `test_w430_boundary_at_upper` | W430 边界：比例 > 2.5 触发 |
 | 13 | `test_w251_order_vs_set_same_order_no_w251` | W251 顺序相同时不触发 |
 
-### tl_parser.py 内建自测（56 个断言）
+### tl_parser.py 内建自测（75 个断言）
 
 通过 `python tl_parser.py` 直接运行 `_run_self_tests()`，覆盖：
 - 状态机解析（IDLE / DIALOGUE / STRINGS / SKIP 状态切换）
@@ -209,7 +209,9 @@
 
 > 已在 test_all.py #22-36 中实现（#33-36 覆盖 check_response_chunk）。
 
-#### T4. _sanitize_translation（tl_parser.py）
+#### T4. _sanitize_translation（tl_parser.py） — **已实现**
+
+> 已在 tl_parser.py 内建自测 #11-#12 中实现（19 个断言）
 
 | 用例 | 输入 | 期望输出 |
 |------|------|----------|
@@ -222,7 +224,9 @@
 | 内嵌 ASCII 引号 | `他说"你好"` | `他说\\"你好\\"` |
 | 单侧残存 | `你好世界"` | `你好世界` |
 
-#### T5. fill_translation（tl_parser.py）
+#### T5. fill_translation（tl_parser.py） — **已实现**
+
+> 已在 tl_parser.py 内建自测 #11-#12 中实现（19 个断言）
 
 | 用例 | 场景 | 期望 |
 |------|------|------|
@@ -348,7 +352,7 @@ python test_all.py
 # 2. 冒烟测试（13 个）
 python tests/smoke_test.py
 
-# 3. tl_parser 自测（56 个断言）
+# 3. tl_parser 自测（75 个断言）
 python tl_parser.py
 ```
 
@@ -356,7 +360,7 @@ python tl_parser.py
 ```
 ALL 36 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
-All 56 assertions passed.     (tl_parser.py)
+All 75 assertions passed.     (tl_parser.py)
 ```
 
 ### 需 API 测试
@@ -395,7 +399,7 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | file_processor.check_response_chunk | 条数匹配/不匹配/空chunk/跳过中文 | 4（test_all #33-36） |
 | api_client | APIConfig / UsageStats / RateLimiter / JSON 解析 / 定价 | 5（test_all） |
 | glossary | prompt_text / 过滤 / 去重 / 线程安全 | 4（test_all） |
-| tl_parser | 状态机 / 回填 / 清理 / 后处理 | 56（内建） |
+| tl_parser | 状态机 / 回填 / 清理 / 后处理 / _sanitize_translation 边界 / fill_translation 边界 | 75（内建） |
 
 ### 覆盖不足（需补充）
 
@@ -404,16 +408,16 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | ~~高~~ | ~~`protect_placeholders` / `restore_placeholders`~~ | **已覆盖** | ~~T1~~ → test_all #22-26 |
 | ~~高~~ | ~~`check_response_item`~~ | **已覆盖** | ~~T2~~ → test_all #27-32 |
 | ~~高~~ | ~~`check_response_chunk`~~ | **已覆盖** | ~~T3~~ → test_all #33-36 |
-| **高** | `_sanitize_translation` | 仅内建测试 | T4：8 个用例（含边界） |
+| ~~高~~ | ~~`_sanitize_translation`~~ | **已覆盖** | ~~T4~~ → tl_parser.py 内建自测 #11-#12（12 个断言） |
 | 中 | `calculate_dialogue_density` | 无测试 | T6：3 个用例 |
 | 中 | `find_untranslated_lines` 过滤 | 无测试 | T8：6 个用例 |
-| 中 | `fill_translation` 边界 | 仅内建测试 | T5：6 个用例 |
+| ~~中~~ | ~~`fill_translation` 边界~~ | **已覆盖** | ~~T5~~ → tl_parser.py 内建自测 #11-#12（7 个断言） |
 | 低 | 端到端 tl-mode | 无自动化 | T12：需 API |
 | 低 | 端到端 retranslate | 无自动化 | T13：需 API |
 
 ### 下一步行动
 
 1. ~~将 T1-T3 的代码示例加入 `test_all.py` 或新建 `test_core.py`~~ — **已完成**（test_all.py #22-36）
-2. 将 T4-T5 的边界场景加入 `tl_parser.py` 内建测试
+2. ~~将 T4-T5 的边界场景加入 `tl_parser.py` 内建测试~~ — **已完成**（tl_parser.py 内建自测 #11-#12，19 个断言）
 3. T6-T10 作为集成级测试，可在 smoke_test 中补充
 4. T11-T14 的端到端测试需 API key，建议作为 CI 中的可选步骤
