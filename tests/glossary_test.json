@@ -1,0 +1,13 @@
+{
+  "characters": {},
+  "terms": {
+    "Save": "保存",
+    "Load": "读取",
+    "Settings": "设置",
+    "MyGame": "我的游戏",
+    "PROJECT_X": "项目X"
+  },
+  "memory": {},
+  "locked_terms": ["MyGame", "PROJECT_X"],
+  "no_translate": ["DONT_TRANSLATE_ME", "v1.0"]
+}

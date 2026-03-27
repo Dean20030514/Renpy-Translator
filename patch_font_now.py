@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""One-off font patch: apply font to existing translation output without re-running the pipeline.
+
+Run from project root. After running, copy stage2_translated/game contents into the game's game folder.
+"""
+
+from pathlib import Path
+
+from font_patch import resolve_font, apply_font_patch
+
+# Already-translated output (stage2_translated/game)
+OUTPUT_GAME = Path(
+    r"output\projects\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\stage2_translated\game"
+)
+# Original game directory (game subdir)
+SOURCE_GAME = Path(
+    r"E:\浏览器下载\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\game"
+)
+
+if __name__ == "__main__":
+    resources_fonts = Path(__file__).parent / "resources" / "fonts"
+    font = resolve_font(resources_fonts, None)
+    if font:
+        apply_font_patch(OUTPUT_GAME, SOURCE_GAME, font)
+        print("字体补丁完成")
+    else:
+        print("未找到字体，请将 .ttf 或 .otf 放入 resources/fonts/ 后重试")

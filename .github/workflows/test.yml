@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run unit tests (test_all.py)
+        run: python test_all.py
+
+      - name: Run smoke tests (tests/smoke_test.py)
+        run: python tests/smoke_test.py
+
+      - name: Run tl_parser self-tests
+        run: python -c "import tl_parser; tl_parser._run_self_tests()"

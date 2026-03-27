@@ -1,0 +1,572 @@
+# Ren'Py 汉化工具 — AI 编程助手全局上下文
+
+你是本项目的核心开发者。每次对话前请通读本文档，掌握项目全貌后再动手。
+
+---
+
+## 1. 项目定位
+
+一个**纯 Python（零第三方依赖）** 的 Ren'Py 游戏自动汉化工具，通过 LLM API 将 .rpy 脚本翻译为简体中文。
+
+**核心能力**：
+- 五大 LLM 提供商统一接口（xAI / OpenAI / DeepSeek / Claude / Gemini）
+- 三种翻译模式：direct-mode / tl-mode / retranslate 补翻
+- 50+ 项结构化翻译校验
+- 断点续传 + 并发翻译
+- 四阶段一键流水线（试跑→闸门→全量→补翻）
+- 占位符保护/还原 + 术语锁定 + 翻译记忆
+
+**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib），~8,500 行。
+
+---
+
+## 2. 项目位置与参考资源
+
+**本项目**：`C:\Users\16097\Desktop\Renpy翻译\Renpy汉化（我的）`
+
+**参考项目**（位于 `C:\Users\16097\Desktop\Renpy翻译\` 下）：
+| 项目 | 参考价值 |
+|------|----------|
+| AiNiee-main | 插件化检查链、CoT 翻译、多后端适配（⭐5.3k） |
+| LinguaGacha-main | TextProcessor 占位符保护、自动术语表、Force Thinking |
+| projz_renpy_translation-devp | AST 级定位+回写、条目 ID 驱动、I18N 插件 |
+| renpy-translator-main | 特殊符号保护、Runtime Hook 提取、Translation Mod 打包 |
+| renpy-chinese-tl-main | 最佳实践文档、renpy-ttk 工作流、tl/none 技巧 |
+| CN_Patch.Being_A_DIK-main | 成品补丁工程参考 |
+| cross-channel_chinese-localization_project-master | 深度 UI 定制、全平台移植 |
+
+> 借鉴参考项目时，先完整阅读其源码再给方案。
+
+---
+
+## 3. 文件职责总览
+
+### 3.1 核心模块
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| **main.py** | ~1,970 | 翻译引擎入口。direct-mode（`translate_file` 密度路由 / `_translate_file_targeted` 定向翻译）、tl-mode（`run_tl_pipeline` 并发 chunk 翻译 + 精确回填）、retranslate（`retranslate_file` 残留英文补翻）、CLI 参数解析、进度管理 |
+| **one_click_pipeline.py** | ~1,273 | 四阶段编排器。pilot 试跑 → 闸门评估 → 全量翻译 → retranslate 补翻；漏翻归因分析（`attribute_untranslated`）；`evaluate_gate` 结构化闸门；`write_report_summary_md` 报告生成 |
+| **file_processor.py** | ~1,233 | .rpy 文件处理核心。`split_file` 按块拆分、`apply_translations` 行级回写、`validate_translation` 50+ 项校验、占位符保护还原（`protect_placeholders` / `restore_placeholders`）、`ResponseChecker`（`check_response_item` / `check_response_chunk`）、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
+| **tl_parser.py** | ~750 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、56 个内建测试 |
+| **api_client.py** | ~451 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试、精确定价表 |
+| **prompts.py** | ~360 | Prompt 模板工厂。direct-mode（`SYSTEM_PROMPT_TEMPLATE` + `build_user_prompt`）、retranslate（`build_retranslate_system_prompt` + `build_retranslate_user_prompt`）、tl-mode（`TLMODE_SYSTEM_PROMPT` + `build_tl_system_prompt` + `build_tl_user_prompt`）；支持外部 style.txt / culture.txt 覆写 |
+| **glossary.py** | ~265 | 术语表管理。`Glossary` 类：`scan_game_directory` 角色提取、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆、`to_prompt_text` 格式化输出 |
+| **translation_db.py** | ~120 | `TranslationDB` 类。逐行翻译元数据存储（file/line/original/translation/status/error_codes/warning_codes/provider/model/run_id）、upsert 去重、按 status/file/stage 筛选 |
+
+### 3.2 辅助工具
+
+| 文件 | 职责 |
+|------|------|
+| **font_patch.py** (~94行) | `resolve_font` 字体查找 + `apply_font_patch` 修改 gui.rpy 字体变量 |
+| **renpy_upgrade_tool.py** (~17K) | Ren'Py 7→8 升级扫描器。19 条规则（Python 2→3 + 废弃 API）、`--fix` 自动修复、`--backup` 备份、rpyc 清理 |
+| **start_launcher.py** (~146行) | 中文交互启动器（7 种模式菜单），`START.bat` 调用 |
+| **verify_alignment.py** (~171行) | 零 API 验证工具，测试新校验策略 |
+| **revalidate.py** (~54行) | 对已翻译输出重跑闸门检查（不调 API） |
+| **patch_font_now.py** (~40行) | 翻译完成后独立运行字体补丁 |
+
+### 3.3 测试
+
+| 文件 | 职责 |
+|------|------|
+| **test_all.py** | 综合模块测试 |
+| **test_single.py** | 单文件端到端测试（需 API key） |
+| **tests/smoke_test.py** | 校验逻辑冒烟测试 |
+| **tests/fixtures/** | 测试用的 .rpy 样本文件 |
+
+### 3.4 配置与输出
+
+| 文件/目录 | 说明 |
+|-----------|------|
+| **requirements.txt** | 空（纯标准库，无依赖） |
+| **START.bat** | Windows 入口脚本 |
+| **output/** | 翻译结果、glossary.json、translation_db.json、tl_progress.json、tl_mode_report.json |
+| **resources/fonts/** | 内置中文字体（NotoSansSC / SourceHanSansSC） |
+
+---
+
+## 4. 翻译模式详解
+
+### 4.1 Direct-mode（默认）
+
+```
+run_pipeline(args) 入口
+  ├─ 初始化：APIClient / Glossary / ProgressTracker / TranslationDB
+  ├─ 扫描 .rpy → 排除引擎(renpy/lib/) → 排除 --exclude → tl-priority 过滤
+  ├─ 按文件大小升序排列（小文件优先积累翻译记忆）
+  └─ 逐文件翻译：
+      translate_file() 入口（main.py:130）
+        ├─ 文件名 ∈ SKIP_FILES_FOR_TRANSLATION → [SKIP-CFG] 直接复制
+        ├─ calculate_dialogue_density() < 阈值 → _translate_file_targeted()（定向翻译）
+        └─ 密度 ≥ 阈值 → split_file() → 逐 chunk 翻译：
+            _translate_chunk()（main.py:216）
+              ├─ protect_placeholders() → __RENPY_PH_N__ 令牌
+              ├─ client.translate()（API 调用）
+              ├─ restore_placeholders()
+              ├─ check_response_item() + check_response_chunk()（ResponseChecker）
+              └─ 不通过 → 丢弃保留原文，status="checker_dropped"
+      apply_translations()（行级回写）
+      validate_translation()（50+ 项校验）
+      glossary.update_from_translations()（翻译记忆学习）
+```
+
+**密度自适应路由**：
+- 阈值：`--min-dialogue-density`，默认 0.20
+- 低密度文件（多代码少对话）→ 提取对话行 + ±3 行上下文 → 小 chunk 定向翻译
+- 高密度文件 → 整文件按块拆分 → 全量翻译
+
+### 4.2 tl-mode（`--tl-mode --tl-lang chinese`）
+
+```
+run_tl_pipeline(args) 入口（main.py:1691）
+  ├─ scan_tl_directory() 扫描 tl/<lang>/*.rpy（排除 common.rpy）
+  ├─ get_untranslated_entries() 筛选空槽位
+  │   ├─ DialogueEntry: translation == ""
+  │   └─ StringEntry: new == ""
+  ├─ build_tl_chunks()：按文件分组，每 chunk ≤ 30 条
+  ├─ ThreadPoolExecutor 并发翻译（--workers 控制线程数）
+  │   └─ per-chunk: protect_placeholders → API → restore_placeholders(id/original/zh) → check_response_item
+  ├─ 匹配阶段：
+  │   ├─ DialogueEntry: identifier hash 精确匹配
+  │   └─ StringEntry: 四层 fallback（精确 → strip → 去占位符令牌 → 转义规范化）
+  └─ fill_translation() 行级精确回填
+      └─ str.replace 只替换第一个 "" → "译文"（保留缩进/character 前缀）
+      └─ 引号剥离保护：ASCII ""、弯引号 ""、全角 ＂＂
+```
+
+**关键设计**：
+- tl_parser.py 独立模块，状态机解析（IDLE/DIALOGUE/STRINGS/SKIP），UTF-8 BOM 处理
+- 回填精度远高于 direct-mode（行号精确定位 vs 文本匹配回写），可消除"回写失败"类漏翻
+- .bak 备份（首次回填前创建，不覆盖已有备份）
+- 独立进度文件 tl_progress.json，chunk 级断点续传
+- 并发安全：RateLimiter / UsageStats / ProgressTracker 均自带 threading.Lock
+
+### 4.3 Retranslate 补翻模式（`--retranslate`）
+
+```
+retranslate_file()（main.py:1160）
+  ├─ find_untranslated_lines()：检测残留英文行
+  │   └─ 排除 auto/hover/idle 定义行、image 路径行、screen 布局属性行
+  ├─ build_retranslate_chunks()：每 chunk ≤ 20 行漏翻行 + ±3 行上下文，合并重叠区间
+  ├─ 专用 retranslate prompt（标记 >>> 行必须翻译，上下文行仅供参考）
+  ├─ 原地补翻，.bak 自动备份（不覆盖已有备份）
+  └─ 独立进度文件 retranslate_progress.json
+```
+
+---
+
+## 5. 四阶段一键流水线（one_click_pipeline.py）
+
+```
+main() 入口
+  │
+  ├─ Stage 1/4: 试跑批次
+  │   pick_pilot_files(): 按风险评分选 20 个文件
+  │   score = min(size/1KB, 200) + [80 if risk_keyword] + [30 if sazmod]
+  │   → run_main() 翻译 → evaluate_gate() 闸门评估
+  │   → errors > 0 则中止；ratio 超阈值则警告继续
+  │
+  ├─ Stage 2/4: 全量批处理
+  │   run_main() 翻译全部文件 → evaluate_gate()
+  │   → errors > 0 则中止
+  │
+  ├─ Stage 3/4: 漏翻补翻轮
+  │   collect_files_with_untranslated() → retranslate_file() × N
+  │   → 原地补翻残留英文行
+  │
+  └─ Stage 4/4: 统计报告 + 打包
+      evaluate_gate() 最终评估
+      attribute_untranslated() 漏翻归因
+      write_report_summary_md() 生成报告
+      package_output() → zip 打包
+
+目录结构：
+  output/projects/<project_name>/
+    ├─ stage0_raw/          (预留)
+    ├─ stage1_normalized/   (预留)
+    ├─ stage2_translated/   (全量翻译结果)
+    ├─ stage3_polished/     (预留)
+    └─ _pipeline/
+        ├─ pilot_input/     (试跑输入)
+        ├─ pilot_output/    (试跑输出)
+        └─ *.log
+```
+
+---
+
+## 6. 翻译质量保障链
+
+### 6.1 发送前保护
+
+```
+protect_placeholders()
+  [name] → __RENPY_PH_0__
+  {color=#f00} → __RENPY_PH_1__
+  %(var)s → __RENPY_PH_2__
+  → 按出现顺序全局去重，生成映射 list[(index, original)]
+```
+
+### 6.2 返回后校验（ResponseChecker）
+
+```
+check_response_item():
+  ├─ 占位符集合一致性（原文 vs 译文）
+  ├─ 原文非空 + 译文非空
+  └─ 不通过 → status="checker_dropped"，保留原文
+
+check_response_chunk():
+  └─ 条数一致性（启发式 _count_translatable_lines_in_chunk）
+```
+
+### 6.3 回写后校验（validate_translation，50+ 项）
+
+| 类别 | 检查项 | Code |
+|------|--------|------|
+| 结构 | 行数一致性 | — |
+| 结构 | 缩进保留 | — |
+| 结构 | 关键字保留（label/screen/jump/call 等） | — |
+| 变量 | `[var]` 缺失 | E210_VAR_MISSING |
+| 变量 | `[var]` 多余 | W211_VAR_EXTRA |
+| 标签 | `{tag}` 配对不一致 | E220_TEXT_TAG_MISMATCH |
+| 菜单 | `{#id}` 标识符不一致 | E230_MENU_ID_MISMATCH |
+| 格式化 | `%(name)s` 占位符不一致 | E240_FMT_PLACEHOLDER_MISMATCH |
+| 顺序 | 占位符顺序偏差（仅 warning，仍 apply） | W251_PLACEHOLDER_ORDER |
+| 术语 | 锁定术语未使用规定译名 | E411_GLOSSARY_LOCK_MISS |
+| 术语 | 禁翻片段被修改 | E420_NO_TRANSLATE_CHANGED |
+| 长度 | 译文长度比例异常（<0.15 或 >2.5） | W430_LEN_RATIO_SUSPECT |
+| 风格 | 模型自我描述片段 | W440_MODEL_SPEAKING |
+| 风格 | 中英标点连续混用 | W441_PUNCT_MIX |
+| 风格 | 中文字符占比极低 | W442_SUSPECT_ENGLISH_OUTPUT |
+
+### 6.4 数据采集与归因
+
+- **per-chunk 指标**：report.json → chunk_stats（expected / returned / dropped 三元组）
+- **漏翻归因**：`attribute_untranslated()` → 四分类：
+  - AI 未返回（最大占比 ~71%）
+  - 回写失败（~28%）
+  - Checker 丢弃（~1%）
+  - 未知
+- **translation_db** 记录每条翻译的完整元数据，支持增量归因查询
+
+---
+
+## 7. API 集成
+
+### 7.1 支持的提供商与定价
+
+| 提供商 | 端点 | 默认模型 | 输入/输出 ($/M tokens) |
+|--------|------|----------|----------------------|
+| xAI | api.x.ai/v1 | grok-4-1-fast-reasoning | 0.20 / 0.50 |
+| OpenAI | api.openai.com/v1 | gpt-4o-mini | 0.15 / 0.60 |
+| DeepSeek | api.deepseek.com/v1 | deepseek-chat | 0.14 / 0.28 |
+| Claude | api.anthropic.com/v1 | claude-sonnet-4 | 3.00 / 15.00 |
+| Gemini | generativelanguage.googleapis.com | gemini-2.5-flash | 0.15 / 0.60 |
+
+### 7.2 JSON 解析容错链（6 级降级）
+
+1. 直接 `json.loads()`
+2. 从 Markdown 代码块提取 ` ```json...``` `
+3. 搜索第一个 `[` 到最后一个 `]`
+4. 修复尾部逗号
+5. 正则逐项提取 JSON 对象
+6. 字段顺序容错
+
+### 7.3 速率控制
+
+- `RateLimiter`：线程安全的 RPM + RPS 双重限制
+- 指数退避重试：429/5xx 错误自动重试
+- `UsageStats`：线程安全的 token 用量 + 费用实时统计
+- 推理模型检测：reasoning model 的 thinking tokens 按 3-5× 计费
+
+---
+
+## 8. CLI 参数速查
+
+### 8.1 main.py
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--game-dir` | (必填) | 游戏根目录 |
+| `--output-dir` | `output` | 输出目录 |
+| `--provider` | (必填) | xai/openai/deepseek/claude/gemini |
+| `--api-key` | `""` | API 密钥（dry-run 可不填） |
+| `--model` | `""` | 模型名（留空用默认） |
+| `--genre` | `adult` | 风格：adult/visual_novel/rpg/general |
+| `--rpm` | `60` | 每分钟请求数 |
+| `--rps` | `5` | 每秒请求数 |
+| `--timeout` | `180.0` | API 超时秒数 |
+| `--temperature` | `0.1` | 生成温度 |
+| `--max-chunk-tokens` | `4000` | 每 chunk 最大 token 数 |
+| `--max-response-tokens` | `32768` | 最大响应 token 数 |
+| `--workers` | `1` | 并发线程数 |
+| `--resume` | `false` | 断点续传 |
+| `--dry-run` | `false` | 仅扫描估费 |
+| `--retranslate` | `false` | 补翻模式 |
+| `--tl-mode` | `false` | tl 翻译模式 |
+| `--tl-lang` | `chinese` | tl 语言子目录名 |
+| `--tl-priority` | `false` | 仅翻译 tl/ 下的脚本 |
+| `--min-dialogue-density` | `0.20` | 低密度阈值 |
+| `--dict` | `[]` | 外部词典路径 |
+| `--exclude` | `[]` | 排除文件 glob 模式 |
+| `--copy-assets` | `false` | 复制非 .rpy 资源 |
+| `--patch-font` | `false` | 自动字体补丁 |
+| `--font-file` | `""` | 指定字体文件 |
+| `--target-lang` | `zh` | 目标语言 |
+| `--stage` | `single` | 阶段标记（pipeline 内部用） |
+| `--log-file` | `""` | 日志文件路径 |
+| `--input-price` | `None` | 自定义输入价格 |
+| `--output-price` | `None` | 自定义输出价格 |
+
+### 8.2 one_click_pipeline.py
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--pilot-count` | `20` | 试跑文件数 |
+| `--gate-max-untranslated-ratio` | `0.08` | 闸门最大漏翻比 |
+| `--clean-output` | `false` | 开始前清理输出 |
+| `--package-name` | `CN_patch_game` | zip 包名 |
+| 其余参数同 main.py（透传） | | |
+
+### 8.3 start_launcher.py 模式菜单
+
+| 模式 | 说明 | 调用 |
+|------|------|------|
+| 1 | 主流程翻译（从头） | `main.py` |
+| 2 | 主流程翻译（断点续跑） | `main.py --resume` |
+| 3 | 仅扫描估费（Dry-run） | `main.py --dry-run` |
+| 4 | 一键流水线 | `one_click_pipeline.py` |
+| 5 | tl-mode 翻译（从头） | `main.py --tl-mode` |
+| 6 | tl-mode 翻译（断点续跑） | `main.py --tl-mode --resume` |
+| 7 | Ren'Py 7→8 升级扫描 | `renpy_upgrade_tool.py` |
+
+---
+
+## 9. 可配置常量速查
+
+| 常量/参数 | 位置 | 默认值 | 说明 |
+|-----------|------|--------|------|
+| `SKIP_FILES_FOR_TRANSLATION` | file_processor.py | `{define, variables, screens, earlyoptions, options}.rpy` | 跳过翻译的配置文件 |
+| `MODEL_SPEAKING_PATTERNS` | file_processor.py | 7 条模式 | W440 模型自述检测关键词 |
+| `PLACEHOLDER_ORDER_PATTERNS` | file_processor.py | 4 组 (regex, name) | W251 占位符顺序提取 |
+| `LEN_RATIO_LOWER / UPPER` | one_click_pipeline.py | 0.15 / 2.5 | W430 长度异常阈值 |
+| `RISK_KEYWORDS` | one_click_pipeline.py | 14 个关键词 | 试跑文件风险评分 |
+| `_QUOTE_STRIP_PAIRS` | tl_parser.py | ASCII "" / 弯引号 "" / 全角 ＂＂ | fill_translation 引号剥离对 |
+| `_MODEL_PRICING` | api_client.py | ~20 个模型 | 精确定价表 |
+
+---
+
+## 10. Warning / Error Code 索引
+
+| Code | 级别 | 含义 | 处理 |
+|------|------|------|------|
+| E210_VAR_MISSING | error | 译文缺少原文中的 `[var]` 变量 | 丢弃翻译 |
+| W211_VAR_EXTRA | warning | 译文含原文没有的 `[var]` 变量 | 保留但告警 |
+| E220_TEXT_TAG_MISMATCH | error | `{tag}` 配对不一致 | 丢弃翻译 |
+| E230_MENU_ID_MISMATCH | error | `{#id}` 菜单标识符不一致 | 丢弃翻译 |
+| E240_FMT_PLACEHOLDER_MISMATCH | error | `%(name)s` 格式化占位符不一致 | 丢弃翻译 |
+| W251_PLACEHOLDER_ORDER | warning | 占位符顺序与原文不一致（集合相同） | 仅告警，仍 apply |
+| W410_GLOSSARY_MISS | warning | 术语表未命中 | 告警 |
+| E411_GLOSSARY_LOCK_MISS | error | 锁定术语未使用规定译名 | 标记错误 |
+| E420_NO_TRANSLATE_CHANGED | error | 禁翻片段被修改 | 标记错误 |
+| W430_LEN_RATIO_SUSPECT | warning | 译文长度比例异常 | 告警 |
+| W440_MODEL_SPEAKING | warning | 模型自我描述/多余解释 | 告警 |
+| W441_PUNCT_MIX | warning | 中英标点连续混用 | 告警 |
+| W442_SUSPECT_ENGLISH_OUTPUT | warning | 中文占比极低，疑似未翻译 | 告警 |
+
+---
+
+## 11. 核心算法
+
+### Token 估算
+```python
+token_count = ascii_chars // 4 + non_ascii_chars // 2 + 1
+```
+
+### 占位符保护
+```
+"[name] says: {color=#f00}Hello{/color}"
+→ "__RENPY_PH_0__ says: __RENPY_PH_1__Hello__RENPY_PH_2__"
+映射: [(0, "[name]"), (1, "{color=#f00}"), (2, "{/color}")]
+```
+
+### 文件拆分策略（split_file）
+1. 识别顶层 Ren'Py 块边界（label / screen / define / init / translate / menu 等）
+2. 按块累积 token，超过 `max_chunk_tokens`（默认 4000）时断开
+3. 单块超限 → 按行数拆分，优先空行处断开
+4. 每个 chunk 携带行偏移量（base_line_offset），确保多块重组
+
+### 密度计算
+```python
+dialogue_density = dialogue_lines / non_empty_lines
+if density < 0.20:  # 走定向翻译
+```
+
+### 风险评分（试跑文件选择）
+```python
+score = min(file_size / 1024, 200)
+      + 80 * (any keyword in filename)
+      + 30 * ("sazmod" in filename)
+```
+
+### tl-mode StringEntry 四层 fallback 匹配
+1. 精确匹配 `entry.old == api_returned_id`
+2. strip 空白后匹配
+3. 去占位符令牌后匹配
+4. 转义规范化（`\"` → `"`, `\n` → 换行）后匹配
+
+---
+
+## 12. 验证数据（The Tyrant, ~140 文件）
+
+### direct-mode 最终结果（密度自适应 + retranslate）
+- **总漏翻率：4.01%**（2,165/54,045）
+  - 主游戏：0.66%（104/15,681）
+  - SAZMOD mod：5.37%（2,061/38,364）
+
+### direct-mode 漏翻归因
+| 归因 | 条数 | 占比 |
+|------|------|------|
+| AI 未返回 | 1,539 | 71.1% |
+| 回写失败 | 609 | 28.1% |
+| Checker 丢弃 | 17 | 0.8% |
+
+### tl-mode 全量结果（107 文件, 10 线程）
+- 总槽位：76,169（75,993 对话 + 176 字符串）
+- 待翻译：74,044
+- **翻译成功：74,019（99.97%）**
+- 未翻译：25 条
+- Checker 丢弃：4 条
+- 费用：$2.73（grok-4-1-fast-reasoning，2,541 请求，73.1 分钟）
+- 引号 bug：AI 约 14%（10,402/74,002）返回带引号译文，修复后 0 格式错误
+
+### 历史漏翻率演进
+| 阶段 | 漏翻率 | 关键改动 |
+|------|--------|----------|
+| 基线 | 12.12% | 无 |
+| +占位符保护+checker | 10.40% | 挽回校验拦住的条目 |
+| +密度自适应+retranslate | **4.01%** | 低密度文件定向翻译 |
+
+### 关键发现
+- 对话密度是漏翻率最强相关因子：<10% 密度文件漏翻中位数 57.69%，≥40% 仅 4.54%
+- prompt 强化（CRITICAL RULE）无效甚至有害：降低返回率 5pp，已撤回
+- tl-mode 回填精度远高于 direct-mode（行号精确定位 vs 文本匹配回写）
+- AI 约 14% 概率返回带外层引号译文，fill_translation 需剥离
+
+---
+
+## 13. 已完成改进清单
+
+### 第一轮：质量校验体系
+1. W430 长度/密度异常告警
+2. E411/E420 术语锁定与禁翻
+3. W440/W441/W442 翻译风格规则检查
+4. W251 占位符顺序校验
+5. tl 优先模式（`--tl-priority`）
+6. strings 统计视图（`collect_strings_stats`）
+7. 闸门统计完整性补丁
+8. prompts.py 花括号转义修复
+
+### 第二轮：功能增强
+9. README 组合式工作流推荐
+10. 结构化报告 `report_summary.md`（三级判定绿/黄/红）
+11. `translation_db.json` 增量翻译接口
+12. 自动字体补丁（`--patch-font`）
+
+### 第三轮：降低漏翻率（12.12% → 4.01%）
+13. translate strings 专用回写路径
+14. original 对齐（两层匹配：完全相等 + 前缀后缀≥0.8）
+15. 占位符保护/还原（`__RENPY_PH_N__` 令牌）
+16. ResponseChecker（`check_response_item` + `check_response_chunk`）
+17. Checker 丢弃逻辑 + translation_db 记录
+18. 数据采集框架（per-chunk 指标 + 漏翻归因）
+19. 密度自适应翻译策略
+20. 文件级排除名单（SKIP_FILES_FOR_TRANSLATION）
+21. `find_untranslated_lines` 行级过滤
+22. `--retranslate` 补翻模式
+23. 原地补翻 .bak 备份
+
+### 第四轮：tl-mode 翻译模式
+24. tl_parser.py 独立解析模块
+25. `--tl-mode` + `--tl-lang` CLI 参数
+26. tl-mode 专用 Prompt 模板
+27. `build_tl_chunks` + `run_tl_pipeline`（含占位符保护/还原/checker 复用）
+28. `fill_translation` 行级精确回填
+29. id 字段占位符还原修复
+30. StringEntry 四层 fallback 匹配
+31. `run_tl_pipeline` 并发化（ThreadPoolExecutor）
+32. start_launcher.py 新增模式 5/6
+
+### 第五轮：tl-mode 全量验证 & 修复
+33. `fill_translation` 引号剥离修复（三对引号自动剥离）
+
+### 已回滚
+- prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
+
+---
+
+## 14. 已知限制 & TODO 队列
+
+### 高优先级
+- **回写失败 609 条根因分析**：抽样 20 条看 `apply_translations` 哪个阶段匹配失败
+- **chunk 级自动重试**：条数偏离/丢弃过多时重发 chunk（需 per-chunk 丢弃率数据校准阈值）
+- **全文扫描安全性**：同一原文出现多次时不做第四遍全文扫描
+- **核心函数单元测试**：`_replace_string_in_line`、`protect/restore_placeholders`、`_check_translation_safety`、`check_response_item`
+
+### 中优先级
+- one_click_pipeline.py 集成 tl-mode（可选 `--tl-mode` 走 tl 流水线替代 direct-mode）
+- chunk 添加上文上下文（split_file 返回的 chunk 附带前一 chunk 末尾 N 行）
+- AI 自动术语表提取（pilot 阶段后分析高频人名/地名）
+- file_processor.py 拆分为 splitter / patcher / checker / validator 四个子模块
+- `_translate_chunk` 8-tuple → dataclass ChunkResult
+- logging 模块替代 print（支持 `--verbose` / `--quiet`）
+- progress.json 原子写入（临时文件 + `os.replace`）
+- 截断匹配阈值 0.5 → 0.7（`_replace_string_in_line` 阶段 3e）
+- 纳入 git + CI（GitHub Actions）
+- tl-mode 含 `\n` 多行字符串条目的特殊处理
+
+### 低优先级
+- 可选 CoT 思维链翻译模式（直译→校正→意译）
+- Ren'Py 控制标签（`{w}/{p}/{nw}/{fast}/{cps=N}`）加入占位符模式
+- chunk 失败自动拆分重试
+- Rich TUI 进度展示
+- tl/none 覆盖模板（避免直接修改 gui.rpy）
+- 429 退避策略优化（jitter + 上限 60s）
+- font_patch.py 字号/布局参数可配置（font_config.json）
+
+---
+
+## 15. 模块间调用关系
+
+```
+start_launcher.py ─────────────────────────────── renpy_upgrade_tool.py
+       │                                                (独立工具)
+       ├─ main.py (模式 1-3, 5-6)
+       │    ├── api_client.py    (APIClient, RateLimiter, UsageStats)
+       │    ├── file_processor.py (split/patch/validate/protect/check)
+       │    ├── prompts.py       (prompt 模板工厂)
+       │    ├── glossary.py      (术语表管理)
+       │    ├── translation_db.py(翻译元数据)
+       │    ├── tl_parser.py     (tl-mode 解析+回填)
+       │    └── font_patch.py    (可选字体补丁)
+       │
+       └─ one_click_pipeline.py (模式 4)
+            ├── 调用 main.py (subprocess)
+            ├── file_processor.py (validate/read/count)
+            ├── translation_db.py (归因分析)
+            ├── font_patch.py    (打包前字体补丁)
+            └── main.py imports  (retranslate_file, find_untranslated_lines)
+```
+
+---
+
+## 16. 开发原则
+
+1. **宁可漏翻也不误翻** — 不确定的条目保留原文
+2. **数据驱动** — 改动前收集数据，改动后验证数据，不拍脑袋定阈值
+3. **隔离变量** — 每次只改一个东西，验证独立效果
+4. **不破坏已有功能** — 新功能用开关控制（CLI 参数），默认行为不变
+5. **安全优先** — checker 不通过就丢弃、回写前校验、原地操作前备份
+6. **先读再写** — 涉及参考项目借鉴时，先完整阅读其源码和文档再给方案
+7. **方案先行** — 给出改动方案和受影响函数列表，等用户确认后再写代码
+8. **最小改动** — 不做不必要的重构、不加不需要的注释、不改不相关的代码
+9. **零依赖** — 坚持纯标准库，不引入第三方包

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Output
+output/
+test_output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp
+*.tmp
+*.bak
+
+# Large binary files (fonts shipped separately)
+resources/fonts/*.ttf
+resources/fonts/*.otf
+
+# Large test artifacts
+tests/artifacts/tyrant_untranslated.json
