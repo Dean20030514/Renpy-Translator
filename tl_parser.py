@@ -851,6 +851,99 @@ def _run_self_tests() -> None:
         os.unlink(p)
     print()
 
+    # ── 11. _sanitize_translation 边界测试 ──
+    print("[11] _sanitize_translation 边界")
+    # 无引号 → 原样
+    _assert(_sanitize_translation("你好世界") == "你好世界", "plain text unchanged")
+    # ASCII 双引号包裹 → 剥离
+    _assert(_sanitize_translation('"你好世界"') == "你好世界", "strip ASCII quotes")
+    # 弯引号包裹 → 剥离
+    _assert(_sanitize_translation("\u201c你好世界\u201d") == "你好世界", "strip curly quotes")
+    # 全角引号包裹 → 剥离
+    _assert(_sanitize_translation("\uff02你好世界\uff02") == "你好世界", "strip fullwidth quotes")
+    # 双层引号 → 循环剥离
+    _assert(_sanitize_translation('""你好世界""') == "你好世界", "strip double-layer quotes")
+    # 元数据 [ID: xxx] → 清除
+    _assert(_sanitize_translation("[ID: abc123] 你好世界") == "你好世界", "strip metadata ID")
+    # 元数据 [Char: mc] → 清除
+    _assert(_sanitize_translation("[Char: mc] 你好世界") == "你好世界", "strip metadata Char")
+    # 内嵌 ASCII 引号 → 转义
+    r = _sanitize_translation('他说"你好"')
+    _assert('\\"' in r and '他说' in r, f"escape inner quotes: got {r!r}")
+    # 单侧残存引号
+    _assert(_sanitize_translation('你好世界"') == "你好世界", "strip trailing lone quote")
+    _assert(_sanitize_translation('"你好世界') == "你好世界", "strip leading lone quote")
+    # 空字符串
+    _assert(_sanitize_translation("") == "", "empty string")
+    # 纯引号
+    _assert(_sanitize_translation('""') == "", "only quotes")
+    print()
+
+    # ── 12. fill_translation 边界测试 ──
+    print("[12] fill_translation 边界")
+    # 正常回填
+    ft_text = '    e ""\n'
+    p = _write_tmp(ft_text)
+    try:
+        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
+                              character="e", source_file="", source_line=0,
+                              tl_file=p, tl_line=1, block_start_line=0)
+        result = fill_translation(p, [entry])
+        _assert('"你好"' in result, f"normal fill: got {result!r}")
+    finally:
+        os.unlink(p)
+
+    # 多个 "" 只替换第一个
+    ft_text2 = '    e "" id "test_id"\n'
+    p = _write_tmp(ft_text2)
+    try:
+        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
+                              character="e", source_file="", source_line=0,
+                              tl_file=p, tl_line=1, block_start_line=0)
+        result = fill_translation(p, [entry])
+        _assert(result.count('"你好"') == 1, f"only first empty replaced: {result!r}")
+        _assert('"test_id"' in result, f"second quoted preserved: {result!r}")
+    finally:
+        os.unlink(p)
+
+    # 行号越界 → 跳过（不崩溃）
+    ft_text3 = '    e ""\n'
+    p = _write_tmp(ft_text3)
+    try:
+        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
+                              character="e", source_file="", source_line=0,
+                              tl_file=p, tl_line=999, block_start_line=0)
+        result = fill_translation(p, [entry])
+        _assert('""' in result, f"out-of-range skipped: {result!r}")
+    finally:
+        os.unlink(p)
+
+    # 已有翻译（不含 ""）→ 跳过
+    ft_text4 = '    e "已翻译"\n'
+    p = _write_tmp(ft_text4)
+    try:
+        entry = DialogueEntry(identifier="test", original="Hello", translation="新翻译",
+                              character="e", source_file="", source_line=0,
+                              tl_file=p, tl_line=1, block_start_line=0)
+        result = fill_translation(p, [entry])
+        _assert('"已翻译"' in result, f"already filled skipped: {result!r}")
+        _assert('"新翻译"' not in result, f"should not overwrite: {result!r}")
+    finally:
+        os.unlink(p)
+
+    # 含缩进和 character 前缀 → 保留
+    ft_text5 = '    mc ""\n'
+    p = _write_tmp(ft_text5)
+    try:
+        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
+                              character="mc", source_file="", source_line=0,
+                              tl_file=p, tl_line=1, block_start_line=0)
+        result = fill_translation(p, [entry])
+        _assert(result.startswith('    mc "你好"'), f"indent+character preserved: {result!r}")
+    finally:
+        os.unlink(p)
+    print()
+
     # ── 汇总 ──
     total = passed + failed
     print(f"\n{'='*40}")

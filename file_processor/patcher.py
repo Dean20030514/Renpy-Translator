@@ -226,17 +226,22 @@ def apply_translations(
 
     # 记录已应用的 (行号, 原文) 对 -- 允许同行多次翻译不同文本
     applied_pairs = set()
+    # 记录已被修改的行号集合 -- 第四遍全文扫描时跳过已修改行，防止同一原文多次出现时误替换
+    modified_lines: set[int] = set()
 
-    def _try_apply(try_idx: int, original: str, zh: str) -> bool:
-        """尝试在指定行应用翻译"""
+    def _try_apply(try_idx: int, original: str, zh: str, full_scan: bool = False) -> bool:
+        """尝试在指定行应用翻译。full_scan=True 时跳过已修改行。"""
         if try_idx < 0 or try_idx >= len(lines):
             return False
         if (try_idx, original) in applied_pairs:
+            return False
+        if full_scan and try_idx in modified_lines:
             return False
         new_line = _replace_string_in_line(lines[try_idx], original, zh)
         if new_line is not None:
             lines[try_idx] = new_line
             applied_pairs.add((try_idx, original))
+            modified_lines.add(try_idx)
             return True
         return False
 
@@ -289,6 +294,7 @@ def apply_translations(
             far_remaining.append(item)
 
     # 第四遍：全文扫描（针对仍未匹配的项）
+    # full_scan=True：跳过已被前面 pass 修改过的行，防止同一原文多次出现时误替换到错误位置
     for item in far_remaining:
         line_num = item.get('line', 0)
         original = item.get('original', '')
@@ -296,7 +302,7 @@ def apply_translations(
         found = False
 
         for try_idx in range(len(lines)):
-            if _try_apply(try_idx, original, zh):
+            if _try_apply(try_idx, original, zh, full_scan=True):
                 found = True
                 applied += 1
                 break
@@ -405,7 +411,7 @@ def _replace_string_in_line(line: str, original: str, replacement: str) -> Optio
                 # 如果有标签且 AI 覆盖了足够多的原文，视为有效的截断匹配
                 has_tags = (line_text != stripped_text)
                 ratio = len(original) / len(stripped_text) if stripped_text else 0
-                if has_tags and ratio >= 0.5:
+                if has_tags and ratio >= 0.7:
                     prefix_m = re.match(r'((?:\{[^}]+\})+)', line_text)
                     prefix_tags = prefix_m.group(0) if prefix_m else ''
                     suffix_m = re.search(r'((?:\{/[^}]+\})+)$', line_text)
