@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+回写失败根因分析工具
+
+输入：translation_db.json（含 status="writeback_failed" 的条目）
+输出：按失败类型分类的统计报告 + 典型样本
+
+用法：
+    python analyze_writeback_failures.py output/translation_db.json
+    python analyze_writeback_failures.py output/projects/MyGame/translation_db.json
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+
+FAILURE_TYPES = {
+    "WF-01": "行号偏移过大",
+    "WF-02": "原文被截断",
+    "WF-03": "原文被修改",
+    "WF-04": "引号嵌套冲突",
+    "WF-05": "跨行文本",
+    "WF-06": "重复原文冲突",
+    "WF-07": "编码不一致",
+    "WF-08": "其他",
+}
+
+
+def analyze(db_path: Path) -> dict:
+    """分析 translation_db.json 中的回写失败条目。"""
+    data = json.loads(db_path.read_text(encoding="utf-8"))
+    entries = data.get("entries", []) if isinstance(data, dict) else []
+
+    # 筛选回写失败条目
+    failures = [e for e in entries if e.get("status") == "writeback_failed"]
+
+    if not failures:
+        return {"total": 0, "by_type": {}, "samples": {}}
+
+    # 按类型统计
+    type_counter: Counter = Counter()
+    samples: dict[str, list[dict]] = {}
+
+    for entry in failures:
+        diag = entry.get("diagnostic", {})
+        ft = diag.get("failure_type", "WF-08")
+        type_counter[ft] += 1
+        if ft not in samples:
+            samples[ft] = []
+        if len(samples[ft]) < 3:  # 每种类型保留前 3 个样本
+            samples[ft].append({
+                "file": entry.get("file", ""),
+                "line": entry.get("line", 0),
+                "original": entry.get("original", "")[:80],
+                "detail": diag.get("detail", ""),
+            })
+
+    # 按占比排序
+    total = len(failures)
+    by_type = {}
+    for ft, count in type_counter.most_common():
+        by_type[ft] = {
+            "count": count,
+            "ratio": round(count / total, 4),
+            "description": FAILURE_TYPES.get(ft, "未知"),
+        }
+
+    return {"total": total, "by_type": by_type, "samples": samples}
+
+
+def print_report(result: dict) -> None:
+    """打印分析报告。"""
+    total = result["total"]
+    if total == 0:
+        print("未发现回写失败条目（status='writeback_failed'）。")
+        print("提示：需要先用最新代码跑一次 direct-mode 翻译来采集诊断数据。")
+        return
+
+    print("=" * 60)
+    print(f"回写失败根因分析报告")
+    print("=" * 60)
+    print(f"\n总失败数: {total}")
+    print(f"\n按类型分布:")
+
+    for ft, info in result["by_type"].items():
+        desc = info["description"]
+        count = info["count"]
+        ratio = info["ratio"]
+        print(f"  {ft} {desc:12s}: {count:5d} ({ratio:.1%})")
+
+    print(f"\n{'=' * 60}")
+    print("各类型典型样本（前 3 条）")
+    print("=" * 60)
+
+    for ft, samples in result["samples"].items():
+        desc = FAILURE_TYPES.get(ft, "未知")
+        print(f"\n--- {ft} {desc} ---")
+        for s in samples:
+            print(f"  文件: {s['file']}")
+            print(f"    行号: {s['line']}")
+            print(f"    原文: \"{s['original']}\"")
+            if s["detail"]:
+                print(f"    详情: {s['detail']}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("用法: python analyze_writeback_failures.py <translation_db.json>")
+        sys.exit(1)
+
+    db_path = Path(sys.argv[1])
+    if not db_path.exists():
+        print(f"文件不存在: {db_path}")
+        sys.exit(1)
+
+    result = analyze(db_path)
+    print_report(result)
+
+    # 同时输出 JSON 格式（供程序化分析）
+    json_out = db_path.parent / "writeback_analysis.json"
+    json_out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"\nJSON 报告已保存: {json_out}")
+
+
+if __name__ == "__main__":
+    main()

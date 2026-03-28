@@ -19,6 +19,13 @@
 | 第八轮 | 代码质量八阶段优化 | 消除重复 + 大函数拆分 + validator 结构化 + Magic Number 收敛 + except 精细化 + 测试 36→42 + LICENSE/pyproject.toml + CI 增强 |
 | 第九轮 | 深度优化六阶段 | 线程安全修复 + 深层重复消除(`_filter_checked`/`_deduplicate`) + 性能O(1)fallback + API 404/401/推理timeout + 测试 42→50 + `has_entry`封装 |
 | 第十轮 | 功能加固与生态完善 | 控制标签覆盖确认 + CI零依赖+dry-run + 跨平台路径 + Glossary连字符+信心度 + getpass安全输入 + README故障排查/调优/示例 + 测试 50→53 |
+| 第十一轮 阶段一 | main.py 模块拆分 | main.py 2400→233 行，拆分为 direct_translator / retranslator / tl_translator / translation_utils 四个独立模块 + TranslationContext 闭包重构 |
+| 第十一轮 阶段二+三 | 回写失败分析与修复 | diagnostic 记录 + analyze 工具 + 前缀剥离 + 转义引号正则 + 回写失败 609→28→~0 + 测试 53→55 |
+| 第十一轮 阶段四 | config.json 配置文件 | Config 类（三层合并）+ resolve_api_key + renpy_translate.example.json + argparse default=None + 测试 55→58 |
+| 第十一轮 阶段五 | Review HTML + 进度条 | ProgressBar（GBK/ASCII 自适应）+ review_generator.py（HTML 校对报告）+ direct_translator 集成 + 测试 58→60 |
+| 第十一轮 阶段六 | 类型注解 | 全部公共 API 返回/参数注解 + py.typed PEP 561 + CI mypy informational |
+| 第十一轮 阶段七 | 目标语言参数化 | LanguageConfig dataclass + 4 预置语言 + 文字检测 + resolve_translation_field + 测试 60→63 |
+| 第十一轮 阶段八 | Prompt + Validator 多语言 | 中文/英文 prompt 分支 + W442 参数化 + 中文零变更验证 + 测试 63→66 |
 
 ---
 
@@ -547,6 +554,117 @@
 | # | 描述 | 涉及文件 | 影响 |
 |---|------|----------|------|
 | 96 | subprocess 调用 main.py 改用 `Path(__file__).parent / "main.py"` 绝对路径 | `one_click_pipeline.py` | Linux/Mac 兼容 |
+
+---
+
+## 第十一轮阶段一：main.py 模块拆分
+
+### 结构变更
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 97 | 新建 `translation_utils.py`（263 行）：从 main.py 提取 ChunkResult / ProgressTracker / 所有公共辅助函数和常量 | `translation_utils.py`（新增）`main.py` | 公共基础设施独立 |
+| 98 | 新建 `direct_translator.py`（943 行）：从 main.py 迁移 translate_file / _translate_file_targeted / run_pipeline | `direct_translator.py`（新增）`main.py` | direct-mode 引擎独立 |
+| 99 | 新建 `retranslator.py`（487 行）：从 main.py 迁移 retranslate_file / find_untranslated_lines / build_retranslate_chunks / calculate_dialogue_density / run_retranslate_pipeline | `retranslator.py`（新增）`main.py` | 补翻引擎独立 |
+| 100 | 新建 `tl_translator.py`（638 行）：从 main.py 迁移 run_tl_pipeline / build_tl_chunks / _apply_tl_game_patches / _inject_language_buttons / _clean_rpyc | `tl_translator.py`（新增）`main.py` | tl-mode 引擎独立 |
+| 101 | main.py 瘦身为 233 行 CLI 入口 + 向后兼容 re-export（确保 `from main import ...` 不断裂） | `main.py` | 降幅 89% |
+| 102 | CI 增加 4 个新模块的 py_compile 语法检查 | `.github/workflows/test.yml` | CI 覆盖 |
+| 103 | 清理未使用 import（tl_translator.py 中 `apply_font_patch` 未使用已移除） | `tl_translator.py` | 代码卫生 |
+| 104 | 新增 `TranslationContext` dataclass，替代嵌套函数的闭包变量捕获（`client` / `system_prompt` / `rel_path`） | `translation_utils.py` | 闭包重构 |
+| 105 | `_translate_chunk` / `_should_retry` / `_translate_chunk_with_retry` 从 translate_file 内嵌套函数提升为模块级函数（接收 ctx 参数） | `direct_translator.py` | 闭包重构 |
+| 106 | `_translate_one_tl_chunk` 从 run_tl_pipeline 内嵌套函数提升为模块级函数 | `tl_translator.py` | 闭包重构 |
+
+---
+
+## 第十一轮阶段二+三：回写失败分析与修复
+
+### 阶段二：数据采集与分析
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 107 | `_diagnose_writeback_failure()` 诊断函数：分析每条回写失败的根因（WF-01~08 分类） | `file_processor/patcher.py` | 新增 ~80 行 |
+| 108 | `apply_translations` 失败路径记录 `status="writeback_failed"` + diagnostic 字段到 translation_db | `direct_translator.py` | 数据采集 |
+| 109 | `analyze_writeback_failures.py` 独立分析脚本（分类统计 + 典型样本 + JSON 报告） | 新增 | ~120 行 |
+
+### 分析结果（The Tyrant, 140 文件, direct-mode）
+
+| 指标 | 第三轮基线 | 第十一轮 |
+|------|-----------|---------|
+| 回写失败总数 | 609 | **28**（降 95%） |
+| 主要失败类型 | 未分类 | WF-08（82%）：`_replace_string_in_line` 不支持含前缀的 original |
+
+### 阶段三：基于数据的修复
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 110 | `_replace_string_in_line` 阶段 1b：剥离 AI 返回的行前缀（`text _("` / `textbutton "` / `text "`） | `file_processor/patcher.py` | 修复 WF-08 主因 |
+| 111 | 阶段 3 正则升级：`"([^"]+)"` → `"((?:[^"\\]|\\.)+)"` 支持转义引号 | `file_processor/patcher.py` | 修复 WF-04 |
+| 112 | 阶段 3f：用剥离后 original 在 quoted_parts 中 fallback 匹配 | `file_processor/patcher.py` | 兜底修复 |
+| 113 | 新增 2 个测试：`test_replace_string_prefix_strip` + `test_replace_string_escaped_quotes` | `test_all.py` | 测试 53→55 |
+
+---
+
+## 第十一轮阶段四：config.json 配置文件支持
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 114 | `config.py` 新增（~140行）：Config 类 + DEFAULTS 字典 + 三层合并（CLI>配置文件>DEFAULTS）+ `resolve_api_key()`（api_key_env/api_key_file） | `config.py`（新增） | 配置管理 |
+| 115 | `renpy_translate.example.json` 示例配置文件 | 新增 | 用户模板 |
+| 116 | main.py argparse 18 个参数改 `default=None` + 新增 `--config` 参数 + Config 集成填充 args | `main.py` | CLI 行为变更（向后兼容） |
+| 117 | `.gitignore` 新增 `renpy_translate.json` 排除 | `.gitignore` | 防误提交 |
+| 118 | CI 新增 `config.py` + `analyze_writeback_failures.py` py_compile | `.github/workflows/test.yml` | CI 覆盖 |
+| 119 | 新增 3 个测试（55→58）：config 默认值 / CLI 覆盖 / 配置文件加载 | `test_all.py` | 测试覆盖 |
+| 120 | README 新增"配置文件（可选）"章节 | `README.md` | 用户文档 |
+
+---
+
+## 第十一轮阶段五：Review HTML + 进度增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 121 | `ProgressBar` 类加入 translation_utils.py（~60行）：Unicode/ASCII 自适应 + `_detect_unicode_support()` GBK 安全 | `translation_utils.py` | 进度显示 |
+| 122 | `review_generator.py` 新增（~150行）：HTML 翻译校对报告（side-by-side + 深色主题 + 按文件折叠 + error/warning/fail 颜色高亮 + 统计摘要） | `review_generator.py`（新增） | 校对工具 |
+| 123 | `direct_translator.py` run_pipeline 集成 ProgressBar（非 quiet/dry-run 模式） | `direct_translator.py` | 用户体验 |
+| 124 | main.py re-export ProgressBar + CI 新增 review_generator.py py_compile | `main.py` `.github/workflows/test.yml` | 兼容+CI |
+| 125 | 新增 2 个测试（58→60）：ProgressBar 渲染 + review HTML 生成 | `test_all.py` | 测试覆盖 |
+
+---
+
+## 第十一轮阶段六：类型注解
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 126 | 全部公共 API 补齐返回类型注解（ProgressTracker 6 个方法 + APIConfig.__post_init__） | `translation_utils.py` `api_client.py` | 类型安全 |
+| 127 | `read_file(path)` → `read_file(path: object)` 参数注解 | `file_processor/splitter.py` | 参数注解 |
+| 128 | `update_stats(value)` → `update_stats(value: object)` 参数注解 | `translation_utils.py` | 参数注解 |
+| 129 | `py.typed` PEP 561 marker 文件 | `py.typed`（新增） | 类型包标记 |
+| 130 | CI 新增 mypy 步骤（`continue-on-error: true`，informational） | `.github/workflows/test.yml` | CI 类型检查 |
+
+---
+
+## 第十一轮阶段七：目标语言参数化抽象层
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 131 | `lang_config.py` 新增（~130行）：LanguageConfig dataclass（code/name/native_name/detector/min_ratio/instruction/style_notes/glossary_field/field_aliases） | `lang_config.py`（新增） | 多语言基础设施 |
+| 132 | 预置 4 种语言配置：zh（简体中文）/ zh-tw（繁体中文）/ ja（日语）/ ko（韩语） | `lang_config.py` | 开箱即用 |
+| 133 | `detect_chinese/japanese/korean_ratio()` 文字检测函数 | `lang_config.py` | W442 参数化基础 |
+| 134 | `get_language_config()` 查找 + 不存在回退 zh；`resolve_translation_field()` 兼容别名读取 | `lang_config.py` | 容错 + 兼容 |
+| 135 | main.py 集成：`args.lang_config = get_language_config(args.target_lang)` | `main.py` | 全局挂载 |
+| 136 | 中文 prompt 基线 `tests/zh_prompt_baseline.txt` + 零变更回归验证 | `tests/`（新增） | 安全网 |
+| 137 | 新增 3 个测试（60→63）：语言检测 / 配置查找与回退 / 兼容字段读取 | `test_all.py` | 测试覆盖 |
+| 138 | CI 新增 `lang_config.py` py_compile | `.github/workflows/test.yml` | CI |
+
+---
+
+## 第十一轮阶段八：Prompt + Validator 多语言适配
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 139 | `build_system_prompt` 新增 `lang_config` 参数：zh/zh-tw 走 `_build_chinese_system_prompt`（现有逻辑零变更），其他走 `_build_generic_system_prompt` | `prompts.py` | Prompt 多语言 |
+| 140 | `_GENERIC_SYSTEM_PROMPT_TEMPLATE` 英文通用模板（含动态 `{field}` JSON 字段名 + 语言指令 + 风格注释） | `prompts.py` | ja/ko 支持 |
+| 141 | `validate_translation` + `_check_quality_heuristics` 新增 `lang_config` 参数：W442 使用 `target_script_detector` + `min_target_ratio` 参数化 | `file_processor/validator.py` | W442 多语言 |
+| 142 | 新增 3 个测试（63→66）：中文 prompt 零变更回归 / 日语通用模板内容验证 / validator lang_config 参数化 | `test_all.py` | 测试覆盖 |
 
 ---
 

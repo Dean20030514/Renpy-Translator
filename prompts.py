@@ -151,6 +151,7 @@ def build_system_prompt(
     genre: str = "adult",
     glossary_text: str = "",
     project_name: Optional[str] = None,
+    lang_config: object = None,
 ) -> str:
     """构建系统提示词
 
@@ -159,7 +160,23 @@ def build_system_prompt(
     - prompt_presets/<project_name>/<genre>/culture.txt
     - 若未提供 project_name，则回退到 prompt_presets/<genre>/...
     - 若找不到外部模板，则使用内置 STYLE_* 与空的文化块。
+
+    lang_config: 目标语言配置（LanguageConfig 实例）。
+      - None 或 code in ("zh", "zh-tw") → 使用现有中文模板（零变更保证）
+      - 其他语言 → 使用英文通用模板
     """
+    # 判断是否走中文路径（默认 + zh + zh-tw）
+    lang_code = getattr(lang_config, 'code', 'zh') if lang_config else 'zh'
+    if lang_code in ("zh", "zh-tw"):
+        return _build_chinese_system_prompt(genre, glossary_text, project_name, lang_config)
+    else:
+        return _build_generic_system_prompt(genre, glossary_text, project_name, lang_config)
+
+
+def _build_chinese_system_prompt(
+    genre: str, glossary_text: str, project_name: Optional[str], lang_config: object,
+) -> str:
+    """中文目标：保持现有中文 prompt 逻辑不变（经过验证的 prompt，不可轻易改动）。"""
     # 1. 解析外部模板目录搜索顺序
     base_dir = Path(__file__).parent / "prompt_presets"
     search_dirs = []
@@ -191,6 +208,63 @@ def build_system_prompt(
     return SYSTEM_PROMPT_TEMPLATE.format(
         style_block=style,
         culture_block=culture_block,
+        glossary_block=glossary_block,
+    )
+
+
+# 英文通用模板（用于 ja/ko 等非中文目标语言）
+_GENERIC_SYSTEM_PROMPT_TEMPLATE = """\
+You are a professional game translator specializing in Ren'Py visual novel scripts.
+Target language: {target_language} ({native_name})
+
+{translation_instruction}
+
+## Rules
+- You will receive a .rpy file. Identify all user-visible text (dialogue, narration, menu choices, UI text) and translate them.
+- Return ONLY a JSON array: [{{"line": N, "original": "...", "{field}": "..."}}]
+- Do NOT translate: variable names like [var], code keywords (label/screen/jump/call), image paths, action parameters
+- DO translate: dialogue strings, narration, menu choice text, textbutton display text, _("text") content
+- Preserve all placeholders: [variable], {{tag}}, %(name)s, {{#identifier}}
+- Preserve control tags: {{w}}, {{p}}, {{nw}}, {{fast}}, {{cps=N}} in same positions
+- Preserve escaped newlines \\n count and position
+- Maintain original tone, emotion, and style
+- Translation length should be natural for the target language
+
+{style_notes}
+
+{glossary_block}
+
+## Output Format
+Return a JSON array, each element:
+- `line`: line number (matching file, starting from 1)
+- `original`: original English text (must match exactly)
+- `{field}`: translated text in {target_language}
+
+Do not output any text other than the JSON array.
+"""
+
+
+def _build_generic_system_prompt(
+    genre: str, glossary_text: str, project_name: Optional[str], lang_config: object,
+) -> str:
+    """非中文目标：使用英文通用模板。"""
+    native_name = getattr(lang_config, 'native_name', 'Unknown')
+    target_language = getattr(lang_config, 'name', 'Unknown')
+    field = getattr(lang_config, 'glossary_field', 'translation')
+    style_notes = getattr(lang_config, 'style_notes', '')
+    instruction = getattr(lang_config, 'translation_instruction', '')
+
+    if glossary_text:
+        glossary_block = f"## Glossary (maintain consistency)\n{glossary_text}"
+    else:
+        glossary_block = ""
+
+    return _GENERIC_SYSTEM_PROMPT_TEMPLATE.format(
+        target_language=target_language,
+        native_name=native_name,
+        translation_instruction=instruction,
+        field=field,
+        style_notes=style_notes,
         glossary_block=glossary_block,
     )
 

@@ -219,15 +219,17 @@ python renpy_upgrade_tool.py ./game --fix --backup
 ┌──────────────────────────────────────────────────────────────┐
 │  入口层                                                       │
 │  START.bat → start_launcher.py     中文交互启动器（7 种模式） │
-│  main.py                           翻译引擎 CLI               │
+│  main.py                           CLI 入口 + 路由（233 行） │
 │  one_click_pipeline.py             四阶段流水线 CLI            │
 ├──────────────────────────────────────────────────────────────┤
-│  核心层                                                       │
+│  翻译引擎层                                                   │
+│  direct_translator.py   direct-mode 整文件翻译引擎            │
+│  retranslator.py        补翻引擎（残留英文检测 + 精准补翻）   │
+│  tl_translator.py       tl-mode 翻译框架槽位引擎              │
+│  translation_utils.py   公共辅助（ChunkResult/ProgressTracker）│
+├──────────────────────────────────────────────────────────────┤
+│  基础设施层                                                   │
 │  file_processor/          拆分/回写/校验/占位符保护（4 子模块）│
-│    splitter.py            文件读取与拆分                       │
-│    checker.py             占位符保护 + ResponseChecker         │
-│    patcher.py             翻译回写                             │
-│    validator.py           翻译后 50+ 项校验                    │
 │  tl_parser.py         tl/ 框架状态机解析器（独立模块）        │
 │  api_client.py        多提供商 API 客户端 + 限流 + 计费      │
 │  prompts.py           Prompt 模板工厂（支持外部覆写）         │
@@ -242,7 +244,7 @@ python renpy_upgrade_tool.py ./game --fix --backup
 │  patch_font_now.py      独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
 │  测试层                                                       │
-│  test_all.py            综合模块测试（53 用例）               │
+│  test_all.py            综合模块测试（66 用例）               │
 │  tests/smoke_test.py    冒烟测试（13 用例）                   │
 │  test_single.py         单文件端到端测试                      │
 └──────────────────────────────────────────────────────────────┘
@@ -546,14 +548,42 @@ MIT License — 详见 [LICENSE](LICENSE)。
 
 ```bash
 # 快速验证（< 5 秒，无需 API）
-python test_all.py           # 53 个单元+集成测试
+python test_all.py           # 66 个单元+集成测试
 python tests/smoke_test.py   # 13 个校验规则冒烟测试
 python tl_parser.py --test   # 75 个解析器断言
 ```
 
 ### CI
 
-GitHub Actions 自动在 Python 3.9 / 3.12 / 3.13 上运行全部测试 + `py_compile` 语法检查 + 零依赖验证 + dry-run 集成测试。
+GitHub Actions 自动在 Python 3.9 / 3.12 / 3.13 上运行全部测试 + `py_compile` 语法检查 + 零依赖验证 + mypy 类型检查 + dry-run 集成测试。
+
+### 配置文件（可选）
+
+在游戏目录下放置 `renpy_translate.json` 可省去大量 CLI 参数：
+
+```bash
+# 复制示例配置
+cp renpy_translate.example.json /path/to/game/renpy_translate.json
+# 编辑后只需指定 game-dir 和 api-key
+python main.py --game-dir /path/to/game --api-key YOUR_KEY
+```
+
+配置文件示例（完整参数见 `renpy_translate.example.json`）：
+
+```json
+{
+    "provider": "xai",
+    "api_key_env": "XAI_API_KEY",
+    "model": "grok-4-1-fast-reasoning",
+    "workers": 5,
+    "rpm": 600,
+    "rps": 10
+}
+```
+
+**优先级**：CLI 参数 > 配置文件 > 默认值。API Key 通过 `api_key_env`（环境变量名）或 `api_key_file`（密钥文件路径）安全配置，不直接写入 JSON。
+
+查找顺序：`--config path` > `<game-dir>/renpy_translate.json` > `<game-dir>/../renpy_translate.json`。
 
 ---
 

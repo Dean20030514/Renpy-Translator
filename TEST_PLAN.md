@@ -10,7 +10,7 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main（ProgressTracker / calculate_dialogue_density / find_untranslated_lines / _restore_placeholders / _filter_checked / _deduplicate / _match_string_entry_fallback / CLI校验） / one_click_pipeline._is_untranslated_dialogue / translation_db.TranslationDB | 53 | 否 |
+| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator | 66 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
@@ -88,6 +88,19 @@
 | 51 | `test_glossary_hyphenated_names` | glossary | 连字符人名提取（Mary-Jane） |
 | 52 | `test_glossary_memory_confidence` | glossary | 翻译记忆信心度过滤（count>=2才输出） |
 | 53 | `test_protect_control_tags` | file_processor | 控制标签{w}/{p}/{nw}/{fast}/{cps=N}被保护 |
+| 54 | `test_replace_string_prefix_strip` | file_processor.patcher | WF-08 修复：AI 返回含行前缀的 original 剥离 |
+| 55 | `test_replace_string_escaped_quotes` | file_processor.patcher | WF-04 修复：含转义引号字符串匹配 |
+| 56 | `test_config_load_and_defaults` | config | 无配置文件时使用 DEFAULTS |
+| 57 | `test_config_cli_override` | config | CLI 参数覆盖配置文件和默认值 |
+| 58 | `test_config_file_load` | config | 配置文件正常加载并合并 |
+| 59 | `test_progress_bar_render` | translation_utils.ProgressBar | 渲染不崩溃 + 计数/费用正确 |
+| 60 | `test_review_generator_html` | review_generator | HTML 生成 + 内容验证 |
+| 61 | `test_lang_config_detect` | lang_config | 中日韩文字检测函数准确性 |
+| 62 | `test_lang_config_lookup` | lang_config | get_language_config 查找与回退 |
+| 63 | `test_resolve_translation_field` | lang_config | 兼容别名读取（zh/chinese/cn/translation） |
+| 64 | `test_prompt_zh_unchanged` | prompts | 中文 prompt 零变更回归（基线对比） |
+| 65 | `test_prompt_ja_generic` | prompts | 日语通用英文模板内容验证 |
+| 66 | `test_validator_lang_config` | validator | W442 使用 lang_config 参数化检测 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -375,7 +388,7 @@ python tl_parser.py
 
 全部通过预期输出：
 ```
-ALL 53 TESTS PASSED          (test_all.py)
+ALL 66 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
 All 75 assertions passed.     (tl_parser.py)
 ```

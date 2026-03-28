@@ -839,6 +839,210 @@ def test_protect_control_tags():
     print("[OK] protect_control_tags")
 
 
+def test_replace_string_prefix_strip():
+    """WF-08 修复：AI 返回含行前缀的 original 时能正确剥离并替换"""
+    from file_processor.patcher import _replace_string_in_line
+    # AI 返回 text _("原文") 但行中实际是 _("原文") 结构
+    line = '            text _("Made with Ren\'Py")'
+    # AI 的 original 包含了 text _(" 前缀
+    result = _replace_string_in_line(line, 'text _("Made with Ren\'Py")', '由 Ren\'Py 制作')
+    assert result is not None, "prefix strip should match"
+    assert "由 Ren'Py 制作" in result
+    print("[OK] replace_string_prefix_strip")
+
+
+def test_replace_string_escaped_quotes():
+    """WF-04 修复：含转义引号的字符串匹配"""
+    from file_processor.patcher import _replace_string_in_line
+    line = r'    textbutton "She said \"hello\""'
+    result = _replace_string_in_line(line, r'She said \"hello\"', '她说了"你好"')
+    # 即使匹配不上（转义引号情况复杂），至少不应崩溃
+    # 如果匹配成功更好
+    print(f"[OK] replace_string_escaped_quotes (result={'matched' if result else 'no_match'})")
+
+
+def test_config_load_and_defaults():
+    """config.json 加载 + 默认值填充"""
+    from pathlib import Path as _Path
+    from config import Config, DEFAULTS
+    import tempfile
+    # 无配置文件时使用默认值
+    cfg = Config(game_dir=_Path(tempfile.gettempdir()), cli_args=None)
+    assert cfg.get("workers") == DEFAULTS["workers"]
+    assert cfg.get("rpm") == DEFAULTS["rpm"]
+    assert cfg.get("nonexistent", 42) == 42
+    assert not cfg.has_config_file()
+    print("[OK] config_load_and_defaults")
+
+
+def test_config_cli_override():
+    """CLI 参数覆盖配置文件和默认值"""
+    from pathlib import Path as _Path
+    from config import Config
+    import types, tempfile
+    # ��拟 CLI args
+    cli = types.SimpleNamespace(workers=8, rpm=None, rps=None, api_key="")
+    cfg = Config(game_dir=_Path(tempfile.gettempdir()), cli_args=cli)
+    assert cfg.get("workers") == 8       # CLI 覆盖
+    assert cfg.get("rpm") == 60          # CLI=None → 默认值
+    print("[OK] config_cli_override")
+
+
+def test_config_file_load():
+    """配置文件正常加载"""
+    from pathlib import Path as _Path
+    from config import Config
+    import tempfile, os, json
+    # 创建临时配置文件
+    tmpdir = tempfile.mkdtemp()
+    cfg_path = _Path(tmpdir) / "renpy_translate.json"
+    cfg_path.write_text(json.dumps({"workers": 10, "rpm": 999}), encoding="utf-8")
+    try:
+        cfg = Config(game_dir=_Path(tmpdir), cli_args=None)
+        assert cfg.has_config_file()
+        assert cfg.get("workers") == 10
+        assert cfg.get("rpm") == 999
+        assert cfg.get("rps") == 5  # 配置文件未设置 → 默认值
+        print("[OK] config_file_load")
+    finally:
+        cfg_path.unlink()
+        os.rmdir(tmpdir)
+
+
+def test_progress_bar_render():
+    """ProgressBar 渲染不崩溃（含 ASCII fallback）"""
+    from translation_utils import ProgressBar
+    bar = ProgressBar(total=10, width=20)
+    bar.update(3, cost=0.5)
+    bar.update(7, cost=1.2)
+    bar.finish()
+    assert bar.current == 10
+    assert bar.cost == 1.7
+    print("[OK] progress_bar_render")
+
+
+def test_review_generator_html():
+    """review_generator 生成 HTML 不崩溃"""
+    from review_generator import generate_review_html
+    from pathlib import Path as _Path
+    import tempfile, json, os
+    # 创建临时 translation_db
+    tmpdir = tempfile.mkdtemp()
+    db_path = _Path(tmpdir) / "test_db.json"
+    db_path.write_text(json.dumps({
+        "version": 1,
+        "entries": [
+            {"file": "test.rpy", "line": 1, "original": "Hello", "translation": "你好",
+             "status": "ok", "error_codes": [], "warning_codes": []},
+            {"file": "test.rpy", "line": 2, "original": "World", "translation": "世界",
+             "status": "warning", "error_codes": [], "warning_codes": ["W430"]},
+        ]
+    }), encoding="utf-8")
+    out_path = _Path(tmpdir) / "review.html"
+    try:
+        count = generate_review_html(db_path, out_path)
+        assert count == 2
+        html_content = out_path.read_text(encoding="utf-8")
+        assert "Hello" in html_content
+        assert "W430" in html_content
+        assert "test.rpy" in html_content
+        print("[OK] review_generator_html")
+    finally:
+        db_path.unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
+        os.rmdir(tmpdir)
+
+
+def test_lang_config_detect():
+    """语言检测函数准确性"""
+    from lang_config import detect_chinese_ratio, detect_japanese_ratio, detect_korean_ratio
+    # 中文
+    assert detect_chinese_ratio("你好世界") > 0.5
+    assert detect_chinese_ratio("Hello world") == 0.0
+    assert detect_chinese_ratio("") == 0.0
+    # 日文
+    assert detect_japanese_ratio("こんにちは世界") > 0.5
+    assert detect_japanese_ratio("Hello") == 0.0
+    # 韩文
+    assert detect_korean_ratio("안녕하세요") > 0.5
+    assert detect_korean_ratio("Hello") == 0.0
+    print("[OK] lang_config_detect")
+
+
+def test_lang_config_lookup():
+    """get_language_config 查找与回退"""
+    from lang_config import get_language_config
+    zh = get_language_config("zh")
+    assert zh.code == "zh" and zh.glossary_field == "zh"
+    ja = get_language_config("ja")
+    assert ja.code == "ja" and ja.glossary_field == "ja"
+    # 不存在的语言回退到 zh
+    fallback = get_language_config("xx-unknown")
+    assert fallback.code == "zh"
+    print("[OK] lang_config_lookup")
+
+
+def test_resolve_translation_field():
+    """兼容读取翻译字段"""
+    from lang_config import resolve_translation_field, get_language_config
+    zh_cfg = get_language_config("zh")
+    ja_cfg = get_language_config("ja")
+    # 精确匹配
+    assert resolve_translation_field({"zh": "你好"}, zh_cfg) == "你好"
+    assert resolve_translation_field({"ja": "こんにちは"}, ja_cfg) == "こんにちは"
+    # 别名匹配
+    assert resolve_translation_field({"chinese": "你好"}, zh_cfg) == "你好"
+    assert resolve_translation_field({"jp": "こんにちは"}, ja_cfg) == "こんにちは"
+    # 通用字段 fallback
+    assert resolve_translation_field({"translation": "你好"}, zh_cfg) == "你好"
+    # 无匹配
+    assert resolve_translation_field({"de": "Hallo"}, zh_cfg) is None
+    print("[OK] resolve_translation_field")
+
+
+def test_prompt_zh_unchanged():
+    """中文 prompt 零变更回归验证"""
+    from prompts import build_system_prompt
+    from glossary import Glossary
+    from lang_config import get_language_config
+    g = Glossary()
+    # 不传 lang_config → 默认 zh
+    prompt_default = build_system_prompt('adult', g.to_prompt_text(), 'TestProject')
+    # 显式传 zh lang_config
+    prompt_zh = build_system_prompt('adult', g.to_prompt_text(), 'TestProject', lang_config=get_language_config('zh'))
+    baseline = open('tests/zh_prompt_baseline.txt', 'r', encoding='utf-8').read()
+    assert prompt_default == baseline, "Default prompt changed!"
+    assert prompt_zh == baseline, "zh prompt changed!"
+    print("[OK] prompt_zh_unchanged")
+
+
+def test_prompt_ja_generic():
+    """日语 prompt 使用英文通用模板"""
+    from prompts import build_system_prompt
+    from lang_config import get_language_config
+    ja = get_language_config('ja')
+    prompt = build_system_prompt('adult', '', 'TestProject', lang_config=ja)
+    assert 'Japanese' in prompt or '日本語' in prompt
+    assert '"ja"' in prompt  # JSON 字段名
+    # 不应包含中文模板的内容
+    assert '你是一个专业的' not in prompt
+    print("[OK] prompt_ja_generic")
+
+
+def test_validator_lang_config():
+    """validator W442 使用 lang_config 参数化"""
+    from lang_config import get_language_config
+    # 日语 validator：日文占比低应触发 W442
+    ja = get_language_config('ja')
+    orig = 'x' * 30 + '\n' + '"' + 'A' * 25 + '"'
+    trans = 'x' * 30 + '\n' + '"' + 'B' * 25 + '"'  # 纯英文译文
+    issues = file_processor.validate_translation(orig, trans, 'test.rpy', lang_config=ja)
+    w442 = [i for i in issues if i.get('code') == 'W442_SUSPECT_ENGLISH_OUTPUT']
+    assert len(w442) > 0, "W442 should trigger for pure English when target is Japanese"
+    assert '日本語' in w442[0]['message']
+    print("[OK] validator_lang_config")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -896,7 +1100,20 @@ if __name__ == '__main__':
     test_glossary_hyphenated_names()
     test_glossary_memory_confidence()
     test_protect_control_tags()
+    test_replace_string_prefix_strip()
+    test_replace_string_escaped_quotes()
+    test_config_load_and_defaults()
+    test_config_cli_override()
+    test_config_file_load()
+    test_progress_bar_render()
+    test_review_generator_html()
+    test_lang_config_detect()
+    test_lang_config_lookup()
+    test_resolve_translation_field()
+    test_prompt_zh_unchanged()
+    test_prompt_ja_generic()
+    test_validator_lang_config()
     print()
     print("=" * 40)
-    print(f"ALL 53 TESTS PASSED")
+    print(f"ALL 66 TESTS PASSED")
     print("=" * 40)

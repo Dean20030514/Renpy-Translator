@@ -140,6 +140,112 @@ def _apply_strings_translations(
     return applied, warnings
 
 
+def _diagnose_writeback_failure(
+    lines: list[str], item: dict, modified_lines: set[int],
+) -> dict:
+    """分析单条回写失败的根因，返回诊断信息。
+
+    失败类型：
+      WF-01: 行号偏移过大（原文存在但不在 ±50 行内）
+      WF-02: 原文被截断（AI 返回的 original 是文件中文本的子串）
+      WF-03: 原文被修改（AI 返回的 original 与文件中任何行都不匹配）
+      WF-04: 引号嵌套冲突（原文含转义引号）
+      WF-05: 跨行文本（原文含换行符）
+      WF-06: 重复原文冲突（同一原文已被其他匹配消费）
+      WF-07: 编码不一致（Unicode 规范化差异）
+    """
+    import unicodedata
+
+    line_num = item.get("line", 0)
+    original = item.get("original", "")
+    zh = item.get("zh", "")
+    idx = line_num - 1
+
+    diag: dict = {
+        "line": line_num,
+        "original": original[:100],
+        "zh": zh[:100],
+        "failure_type": "WF-08",  # 默认：其他
+        "detail": "",
+    }
+
+    if not original:
+        diag["failure_type"] = "WF-03"
+        diag["detail"] = "original 为空"
+        return diag
+
+    # WF-05: 跨行文本
+    if "\n" in original or '"""' in original:
+        diag["failure_type"] = "WF-05"
+        diag["detail"] = "原文含换行符或三引号"
+        return diag
+
+    # WF-04: 引号嵌套冲突
+    if '\\"' in original or "\\'" in original:
+        diag["failure_type"] = "WF-04"
+        diag["detail"] = "原文含转义引号"
+        # 不 return，可能还有更具体的原因，继续检查
+
+    # 在全文中搜索原文
+    norm_original = unicodedata.normalize("NFKC", original)
+    found_at: list[int] = []
+    for i, line in enumerate(lines):
+        if original in line:
+            found_at.append(i)
+        elif norm_original in unicodedata.normalize("NFKC", line):
+            found_at.append(i)
+
+    if not found_at:
+        # 全文都找不到 → 检查是否为截断
+        for i, line in enumerate(lines):
+            # 提取行中引号内文本
+            quoted = _extract_first_quoted_text(line)
+            if not quoted:
+                continue
+            # 前缀/后缀截断检测
+            if len(original) >= 10 and (quoted.startswith(original) or quoted.endswith(original)):
+                diag["failure_type"] = "WF-02"
+                diag["detail"] = f"原文是行 {i+1} 引号文本的截断（完整: {quoted[:60]}）"
+                return diag
+            # 包含关系
+            if len(original) >= 10 and original in quoted and len(original) / len(quoted) >= 0.4:
+                diag["failure_type"] = "WF-02"
+                diag["detail"] = f"原文是行 {i+1} 引号文本的子串"
+                return diag
+
+        # 完全不匹配
+        if diag["failure_type"] == "WF-04":
+            return diag  # 已标记为引号冲突
+        diag["failure_type"] = "WF-03"
+        diag["detail"] = "原文与文件中任何行都不匹配"
+        return diag
+
+    # 原文存在于文件中
+    # WF-06: 检查是否被 modified_lines 消费
+    if all(i in modified_lines for i in found_at):
+        diag["failure_type"] = "WF-06"
+        diag["detail"] = f"原文在 {len(found_at)} 处出现，全部已被其他翻译占用"
+        return diag
+
+    # WF-01: 行号偏移过大
+    if found_at:
+        nearest = min(found_at, key=lambda i: abs(i - idx))
+        offset = abs(nearest - idx)
+        if offset > 50:
+            diag["failure_type"] = "WF-01"
+            diag["detail"] = f"最近匹配在行 {nearest+1}（偏移 {offset}）"
+            return diag
+        # 在 ±50 范围内但 _replace_string_in_line 失败
+        # 可能是引号格式问题
+        if diag["failure_type"] == "WF-04":
+            return diag
+        diag["failure_type"] = "WF-08"
+        diag["detail"] = f"原文在行 {nearest+1} 存在但 _replace_string_in_line 返回 None"
+        return diag
+
+    return diag
+
+
 def apply_translations(
     original_content: str, translations: list[dict]
 ) -> tuple[str, list[str], dict]:
@@ -245,6 +351,9 @@ def apply_translations(
             return True
         return False
 
+    # 回写失败诊断：记录四遍匹配全部失败的条目及失败类型
+    writeback_failures: list[dict] = []
+
     # 第一遍：精确行号匹配（仅 normal 条目）
     remaining = []
     for item in normal_items:
@@ -310,6 +419,9 @@ def apply_translations(
         if not found:
             warnings.append(f"行 {line_num}: 未找到原文 \"{original[:50]}\"")
             skipped += 1
+            # 诊断：分析失败原因
+            diag = _diagnose_writeback_failure(lines, item, modified_lines)
+            writeback_failures.append(diag)
 
     parts = [f"应用 {applied}"]
     if skipped:
@@ -319,7 +431,11 @@ def apply_translations(
     if applied > 0 or skipped > 0:
         logger.debug(f"[PATCH] {', '.join(parts)} 条翻译")
 
-    stats = {"alignment_count": alignment_count, "strings_applied_count": strings_applied_count}
+    stats = {
+        "alignment_count": alignment_count,
+        "strings_applied_count": strings_applied_count,
+        "writeback_failures": writeback_failures,
+    }
     return '\n'.join(lines), warnings, stats
 
 
@@ -354,6 +470,29 @@ def _replace_string_in_line(line: str, original: str, replacement: str) -> Optio
     if f'_("{original}")' in line:
         return line.replace(f'_("{original}")', f'_("{safe_replacement_dq}")', 1)
 
+    # === 阶段 1b：AI 返回了含 Ren'Py 行前缀的 original（如 'text _("...'），剥离后重试 ===
+    stripped_original = original
+    for prefix_pattern in (
+        r'^(?:text\s+)?_\(\s*"',   # text _(" 或 _("
+        r'^\s*text\s+"',            # text "
+        r'^\s*textbutton\s+"',      # textbutton "
+    ):
+        m = re.match(prefix_pattern, stripped_original)
+        if m:
+            stripped_original = stripped_original[m.end():]
+            # 去掉可能的尾部引号/括号
+            stripped_original = stripped_original.rstrip('"').rstrip(')').rstrip('"')
+            break
+    if stripped_original != original and stripped_original:
+        # 用剥离后的原文重试阶段1
+        for quote in ('"', "'"):
+            pattern = f'{quote}{stripped_original}{quote}'
+            if pattern in line:
+                safe_replacement = safe_replacement_dq if quote == '"' else safe_replacement_sq
+                return line.replace(pattern, f'{quote}{safe_replacement}{quote}', 1)
+        if f'_("{stripped_original}")' in line:
+            return line.replace(f'_("{stripped_original}")', f'_("{safe_replacement_dq}")', 1)
+
     # === 阶段 2：标准化空白匹配 ===
     norm_original = ' '.join(original.split())
     if norm_original != original:
@@ -364,8 +503,8 @@ def _replace_string_in_line(line: str, original: str, replacement: str) -> Optio
                 return line.replace(pattern, f'{quote}{safe_replacement}{quote}', 1)
 
     # === 阶段 3：从行中提取引号内文本，尝试高级匹配 ===
-    # 找到行中所有引号内的文本段
-    quoted_parts = re.findall(r'"([^"]+)"', line)
+    # 找到行中所有引号内的文本段（支持转义引号 \"）
+    quoted_parts = re.findall(r'"((?:[^"\\]|\\.)+)"', line)
     if not quoted_parts:
         return None
 
@@ -426,6 +565,24 @@ def _replace_string_in_line(line: str, original: str, replacement: str) -> Optio
                 continue
             # AI 截断了文本末尾（警告中显示50字符截断）
             if len(original) >= 45 and stripped_text.startswith(original[:40]):
+                prefix_m = re.match(r'((?:\{[^}]+\})+)', line_text)
+                prefix_tags = prefix_m.group(0) if prefix_m else ''
+                suffix_m = re.search(r'((?:\{/[^}]+\})+)$', line_text)
+                suffix_tags = suffix_m.group(0) if suffix_m else ''
+                new_text = prefix_tags + safe_replacement_dq + suffix_tags
+                return line.replace(f'"{line_text}"', f'"{new_text}"', 1)
+
+    # === 阶段 3f：用剥离前缀后的 original 在 quoted_parts 中再找一次 ===
+    if stripped_original != original and stripped_original and quoted_parts:
+        norm_stripped_orig = ' '.join(stripped_original.split())
+        for line_text in quoted_parts:
+            if line_text == stripped_original:
+                return line.replace(f'"{line_text}"', f'"{safe_replacement_dq}"', 1)
+            if ' '.join(line_text.split()) == norm_stripped_orig:
+                return line.replace(f'"{line_text}"', f'"{safe_replacement_dq}"', 1)
+            # 去标签后比较
+            stripped_lt = re.sub(r'\{/?[^}]+\}', '', line_text)
+            if stripped_lt == stripped_original or ' '.join(stripped_lt.split()) == norm_stripped_orig:
                 prefix_m = re.match(r'((?:\{[^}]+\})+)', line_text)
                 prefix_tags = prefix_m.group(0) if prefix_m else ''
                 suffix_m = re.search(r'((?:\{/[^}]+\})+)$', line_text)

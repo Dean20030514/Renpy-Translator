@@ -36,6 +36,14 @@ jobs:
           python -m py_compile file_processor/patcher.py
           python -m py_compile file_processor/checker.py
           python -m py_compile file_processor/validator.py
+          python -m py_compile direct_translator.py
+          python -m py_compile retranslator.py
+          python -m py_compile tl_translator.py
+          python -m py_compile translation_utils.py
+          python -m py_compile config.py
+          python -m py_compile analyze_writeback_failures.py
+          python -m py_compile review_generator.py
+          python -m py_compile lang_config.py
 
       - name: Run unit tests (test_all.py)
         run: python test_all.py
@@ -80,6 +88,12 @@ jobs:
               sys.exit(1)
           print('Zero-dependency check passed')
           "
+
+      - name: Type check (informational)
+        run: |
+          pip install mypy --break-system-packages 2>/dev/null || pip install mypy
+          mypy --ignore-missing-imports --no-error-summary translation_utils.py config.py file_processor/ api_client.py glossary.py translation_db.py || true
+        continue-on-error: true
 
       - name: Integration test (dry-run)
         run: python main.py --game-dir tests/tl_priority_mini/game --provider xai --dry-run

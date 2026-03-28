@@ -25,5 +25,8 @@ Thumbs.db
 resources/fonts/*.ttf
 resources/fonts/*.otf
 
+# User config (do not commit; use renpy_translate.example.json as template)
+renpy_translate.json
+
 # Large test artifacts
 tests/artifacts/tyrant_untranslated.json

@@ -126,7 +126,7 @@ class APIConfig:
     endpoint: str = field(init=False, default="")
     _resolved: bool = field(init=False, default=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         providers = {
             'xai': ('https://api.x.ai/v1/chat/completions', 'grok-4-1-fast-reasoning'),
             'grok': ('https://api.x.ai/v1/chat/completions', 'grok-4-1-fast-reasoning'),

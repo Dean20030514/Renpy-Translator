@@ -47,7 +47,11 @@
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| **main.py** | ~2,400 | 翻译引擎入口。direct-mode（`translate_file` 密度路由 / `_translate_file_targeted` 定向翻译）、tl-mode（`run_tl_pipeline` 并发 chunk 翻译 + 精确回填 + `[MULTILINE]` 标记）、retranslate（`retranslate_file` 残留英文补翻）、`ChunkResult` dataclass、`_translate_chunk_with_retry` chunk 级自动重试、公共辅助（`_restore_placeholders_in_translations` / `_strip_char_prefix` / `_filter_checked_translations` / `_deduplicate_translations` / `_build_fallback_dicts` / `_match_string_entry_fallback`）、CLI 参数校验（`_positive_int` / `_positive_float` / `_ratio_float`）、`ProgressTracker`（批量写入 `SAVE_INTERVAL=10` + 损坏容错）、`logging` 结构化日志（`--verbose`/`--quiet`）、可配置阈值常量（`CHECKER_DROP_RATIO_THRESHOLD` / `MIN_DROPPED_FOR_WARNING` / `MIN_DIALOGUE_LENGTH`） |
+| **main.py** | ~233 | CLI 入口 + argparse + `setup_logging` + 路由（`--tl-mode` / `--retranslate` / default）+ 向后兼容 re-export + CLI 参数校验（`_positive_int` / `_positive_float` / `_ratio_float`） |
+| **direct_translator.py** | ~943 | direct-mode 翻译引擎。`translate_file`（密度路由 + chunk 翻译）、`_translate_file_targeted`（低密度定向翻译）、`run_pipeline`（全量翻译流水线 + dry-run + 断点续传） |
+| **retranslator.py** | ~487 | 补翻引擎。`retranslate_file` / `find_untranslated_lines` / `build_retranslate_chunks` / `calculate_dialogue_density` / `run_retranslate_pipeline` |
+| **tl_translator.py** | ~638 | tl-mode 引擎。`run_tl_pipeline`（扫描+并发翻译+精确回填+重试）/ `build_tl_chunks` / `_apply_tl_game_patches` / `_inject_language_buttons` / `_clean_rpyc` |
+| **translation_utils.py** | ~263 | 公共辅助。`ChunkResult` / `ProgressTracker`（批量写入+损坏容错）/ `_restore_placeholders_in_translations` / `_strip_char_prefix` / `_filter_checked_translations` / `_deduplicate_translations` / `_build_fallback_dicts` / `_match_string_entry_fallback` / 常量 |
 | **one_click_pipeline.py** | ~1,410 | 四阶段编排器。pilot 试跑 → 闸门评估 → 全量翻译 → retranslate 补翻（`_run_retranslate_phase`）；最终报告与打包（`_run_final_report`）；漏翻归因分析（`attribute_untranslated`）；`evaluate_gate` 结构化闸门；`write_report_summary_md` 报告生成；tl-mode 分支（`--tl-mode` 走 tl 流水线）；pilot 后 AI 自动术语表提取；公共辅助（`_is_untranslated_dialogue` / `_extract_dialogue_text`）；可配置常量（`MAX_FILE_RANK_SCORE` / `RISK_KEYWORD_SCORE` / `SAZMOD_BONUS_SCORE` / `MIN_UNTRANSLATED_TEXT_LENGTH` / `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED`） |
 | **file_processor/** | ~1,329 (4 sub-modules) | .rpy 文件处理核心 **包**。`splitter.py`（`split_file` 按块拆分）、`patcher.py`（`apply_translations` 行级回写、占位符保护还原 `protect_placeholders`/`restore_placeholders`）、`checker.py`（`ResponseChecker`：`check_response_item`/`check_response_chunk`）、`validator.py`（`validate_translation` 主入口调度 4 个子检查函数：`_check_structural_integrity` / `_check_placeholders_and_tags` / `_check_glossary_compliance` / `_check_quality_heuristics`；`MIN_CHINESE_RATIO` 常量）、`__init__.py` re-exports 全部公共 API、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
 | **tl_parser.py** | ~980 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、75 个内建测试 |
@@ -66,12 +70,14 @@
 | **verify_alignment.py** (~171行) | 零 API 验证工具，测试新校验策略 |
 | **revalidate.py** (~54行) | 对已翻译输出重跑闸门检查（不调 API） |
 | **patch_font_now.py** (~40行) | 翻译完成后独立运行字体补丁 |
+| **analyze_writeback_failures.py** (~120行) | 回写失败根因分析工具（WF-01~08 分类统计） |
+| **review_generator.py** (~150行) | HTML 翻译校对报告（side-by-side 原文/译文，error/warning 高亮，按文件折叠） |
 
 ### 3.3 测试
 
 | 文件 | 职责 |
 |------|------|
-| **test_all.py** (~902行) | 综合模块测试（53 个用例：单元 + 集成） |
+| **test_all.py** (~1100行) | 综合模块测试（66 个用例：单元 + 集成） |
 | **test_single.py** | 单文件端到端测试（需 API key） |
 | **tests/smoke_test.py** | 校验逻辑冒烟测试（13 个用例） |
 | **tests/fixtures/** | 测试用的 .rpy 样本文件 |
@@ -83,6 +89,9 @@
 | **requirements.txt** | 空（纯标准库，无依赖） |
 | **pyproject.toml** | 项目元数据（name/version/requires-python） |
 | **LICENSE** | MIT 许可证 |
+| **config.py** (~140行) | 配置文件管理：Config 类（三层合并 CLI>配置文件>DEFAULTS）+ resolve_api_key（env/file） |
+| **renpy_translate.example.json** | 示例配置文件模板 |
+| **lang_config.py** (~130行) | 目标语言抽象层：LanguageConfig dataclass + 4 预置语言（zh/ja/ko/zh-tw）+ 文字检测 + 兼容字段读取 |
 | **START.bat** | Windows 入口脚本 |
 | **output/** | 翻译结果、glossary.json、translation_db.json、tl_progress.json、tl_mode_report.json |
 | **resources/fonts/** | 内置中文字体（NotoSansSC / SourceHanSansSC） |
@@ -99,12 +108,12 @@ run_pipeline(args) 入口
   ├─ 扫描 .rpy → 排除引擎(renpy/lib/) → 排除 --exclude → tl-priority 过滤
   ├─ 按文件大小升序排列（小文件优先积累翻译记忆）
   └─ 逐文件翻译：
-      translate_file() 入口（main.py:130）
+      translate_file() 入口（direct_translator.py）
         ├─ 文件名 ∈ SKIP_FILES_FOR_TRANSLATION → [SKIP-CFG] 直接复制
         ├─ calculate_dialogue_density() < 阈值 → _translate_file_targeted()（定向翻译）
         └─ 密度 ≥ 阈值 → split_file() → 逐 chunk 翻译：
             _translate_chunk_with_retry()（自动重试包装器，最多 2 次重试）
-              └─ _translate_chunk()（main.py:216）
+              └─ _translate_chunk()（direct_translator.py 模块级函数）
                     ├─ prev_context: 前一 chunk 末尾 5 行（提供上下文连贯性）
                     ├─ protect_placeholders() → __RENPY_PH_N__ 令牌
                     ├─ client.translate()（API 调用）
@@ -125,7 +134,7 @@ run_pipeline(args) 入口
 ### 4.2 tl-mode（`--tl-mode --tl-lang chinese`）
 
 ```
-run_tl_pipeline(args) 入口（main.py:1691）
+run_tl_pipeline(args) 入口（tl_translator.py）
   ├─ scan_tl_directory() 扫描 tl/<lang>/*.rpy（排除 common.rpy）
   ├─ get_untranslated_entries() 筛选空槽位
   │   ├─ DialogueEntry: translation == ""
@@ -152,7 +161,7 @@ run_tl_pipeline(args) 入口（main.py:1691）
 ### 4.3 Retranslate 补翻模式（`--retranslate`）
 
 ```
-retranslate_file()（main.py:1160）
+retranslate_file()（retranslator.py）
   ├─ find_untranslated_lines()：检测残留英文行
   │   └─ 排除 auto/hover/idle 定义行、image 路径行、screen 布局属性行
   ├─ build_retranslate_chunks()：每 chunk ≤ 20 行漏翻行 + ±3 行上下文，合并重叠区间
@@ -361,9 +370,9 @@ check_response_chunk():
 | `MODEL_SPEAKING_PATTERNS` | file_processor/checker.py | 7 条模式 | W440 模型自述检测关键词 |
 | `PLACEHOLDER_ORDER_PATTERNS` | file_processor/checker.py | 4 组 (regex, name) | W251 占位符顺序提取 |
 | `MIN_CHINESE_RATIO` | file_processor/validator.py | 0.05 | W442 中文占比阈值 |
-| `CHECKER_DROP_RATIO_THRESHOLD` | main.py | 0.3 | chunk 丢弃率重试阈值 |
-| `MIN_DROPPED_FOR_WARNING` | main.py | 3 | 最小丢弃数触发警告 |
-| `MIN_DIALOGUE_LENGTH` | main.py | 4 | 定向翻译最小对话长度 |
+| `CHECKER_DROP_RATIO_THRESHOLD` | translation_utils.py | 0.3 | chunk 丢弃率重试阈值 |
+| `MIN_DROPPED_FOR_WARNING` | translation_utils.py | 3 | 最小丢弃数触发警告 |
+| `MIN_DIALOGUE_LENGTH` | translation_utils.py | 4 | 定向翻译最小对话长度 |
 | `LEN_RATIO_LOWER / UPPER` | one_click_pipeline.py | 0.15 / 2.5 | W430 长度异常阈值 |
 | `RISK_KEYWORDS` | one_click_pipeline.py | 14 个关键词 | 试跑文件风险评分 |
 | `MAX_FILE_RANK_SCORE` | one_click_pipeline.py | 200 | 文件大小评分上限 |
@@ -563,6 +572,51 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 62. README 新增：5 个提供商完整用法示例 + 性能调优表 + 5 项故障排查 FAQ（阶段五）
 63. subprocess 调用 main.py 改绝对路径（跨平台兼容）（阶段六）
 
+### 第十一轮阶段一：main.py 拆分 + 闭包重构
+64. main.py 从 ~2400 行拆分为 5 个模块：main.py(234) / direct_translator.py / retranslator.py / tl_translator.py / translation_utils.py
+65. main.py 保留 re-export 确保 `from main import ...` 向后兼容
+66. CI 增加 4 个新模块的 py_compile 检查
+67. TranslationContext dataclass 替代闭包：`_translate_chunk` / `_translate_chunk_with_retry` / `_should_retry` / `_translate_one_tl_chunk` 从嵌套函数提升为模块级函数
+
+### 第十一轮阶段二+三：回写失败分析与修复
+68. `_diagnose_writeback_failure()` 诊断函数 + `apply_translations` 失败路径记录 `status="writeback_failed"` 到 DB
+69. `analyze_writeback_failures.py` 分析工具（WF-01~08 分类统计 + JSON 报告）
+70. `_replace_string_in_line` 阶段 1b：AI 返回含行前缀（`text _("` / `textbutton "`）的 original 时自动剥离
+71. `_replace_string_in_line` 阶段 3 正则升级：支持转义引号 `\"` 的字符串匹配
+72. `_replace_string_in_line` 阶段 3f：用剥离后 original 在 quoted_parts 中 fallback 匹配
+73. 回写失败从 609 → 28 条（降 95%），进一步修复后预期接近 0
+
+### 第十一轮阶段四：config.json 配置文件
+74. `config.py`（~140行）：Config 类 + DEFAULTS 字典 + 三层合并 + resolve_api_key（env/file）
+75. `renpy_translate.example.json` 示例配置 + `.gitignore` 排除 `renpy_translate.json`
+76. main.py argparse 18 个参数改 `default=None` + `--config` 参数 + Config 集成填充
+77. 新增 3 个测试（55→58）：config 默认值 / CLI 覆盖 / 配置文件加载
+78. README 新增配置文件使用说明章节
+
+### 第十一轮阶段五：Review HTML + 进度增强
+79. `ProgressBar` 类加入 `translation_utils.py`（~60行）：Unicode/ASCII 自适应 + GBK 安全 + `update()`/`finish()` 接口
+80. `review_generator.py` 新增（~150行）：HTML 校对报告（side-by-side + 深色主题 + 按文件折叠 + error/warning/fail 颜色高亮）
+81. `direct_translator.py` `run_pipeline` 集成 ProgressBar（非 quiet/dry-run 模式显示）
+82. 新增 2 个测试（58→60）：ProgressBar 渲染 + review HTML 生成
+
+### 第十一轮阶段六：类型注解
+83. 全部公共 API 补齐返回类型注解（`-> None` / `-> str` 等），修复 `read_file(path)` 和 `update_stats(value)` 参数注解
+84. `py.typed` PEP 561 marker 文件
+85. CI 新增 mypy 步骤（`continue-on-error: true`，informational）
+
+### 第十一轮阶段七：目标语言参数化
+86. `lang_config.py` 新增（~130行）：LanguageConfig dataclass + detect_chinese/japanese/korean_ratio + LANGUAGE_CONFIGS（zh/ja/ko/zh-tw）
+87. `get_language_config()` 回退到 zh + `resolve_translation_field()` 兼容别名读取
+88. main.py 集成：`args.lang_config = get_language_config(args.target_lang)`
+89. 新增 3 个测试（60→63）：语言检测 / 配置查找与回退 / 兼容字段读取
+90. 中文 prompt 基线 `tests/zh_prompt_baseline.txt` + 零变更验证通过
+
+### 第十一轮阶段八：Prompt + Validator 多语言适配
+91. `build_system_prompt` 新增 `lang_config` 参数：zh/zh-tw 走 `_build_chinese_system_prompt`（零变更），其他走 `_build_generic_system_prompt`（英文通用模板）
+92. `_GENERIC_SYSTEM_PROMPT_TEMPLATE` 英文通用模板（含 `{field}` 动态 JSON 字段名）
+93. `validate_translation` + `_check_quality_heuristics` 新增 `lang_config` 参数：W442 使用 `target_script_detector` + `min_target_ratio` 参数化
+94. 新增 3 个测试（63→66）：中文 prompt 零变更回归 / 日语通用模板 / validator lang_config 参数化
+
 ### 已回滚
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
 
@@ -571,7 +625,7 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 ## 14. 已知限制 & TODO 队列
 
 ### 高优先级
-- **回写失败 609 条根因分析**：抽样 20 条看 `apply_translations` 哪个阶段匹配失败
+- （无）
 
 ### 低优先级
 - 可选 CoT 思维链翻译模式（直译→校正→意译）
@@ -588,6 +642,7 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 - ~~Ren'Py 控制标签保护~~ — 已确认现有 tag 正则覆盖，测试确认
 - ~~API Key 安全输入~~ — `getpass` 隐藏 + 命令预览隐藏密钥
 - ~~Glossary 信心度~~ — `_memory_count` 追踪 + count>=2 过滤 + 连字符人名
+- ~~回写失败根因分析~~ — 609→28 条（-95%），diagnostic 记录 + analyze 工具 + 前缀剥离修复
 
 ---
 
@@ -596,27 +651,22 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 ```
 start_launcher.py ─────────────────────────────── renpy_upgrade_tool.py
        │                                                (独立工具)
-       ├─ main.py (模式 1-3, 5-6)
-       │    ├── api_client.py    (APIClient, RateLimiter, UsageStats)
-       │    ├── file_processor/  (包：split/patch/validate/protect/check)
-       │    │    ├── splitter.py   (split_file 按块拆分)
-       │    │    ├── patcher.py    (apply_translations + 占位符保护还原)
-       │    │    ├── checker.py    (ResponseChecker)
-       │    │    ├── validator.py  (validate_translation 50+ 项校验)
-       │    │    └── __init__.py   (re-exports 全部公共 API)
-       │    ├── prompts.py       (prompt 模板工厂)
-       │    ├── glossary.py      (术语表管理 + AI 自动提取)
-       │    ├── translation_db.py(翻译元数据)
-       │    ├── tl_parser.py     (tl-mode 解析+回填)
-       │    └── font_patch.py    (可选字体补丁)
+       ├─ main.py (CLI 入口 + 路由)
+       │    ├── direct_translator.py  (direct-mode: translate_file + run_pipeline)
+       │    ├── retranslator.py       (补翻: retranslate_file + find_untranslated_lines)
+       │    ├── tl_translator.py      (tl-mode: run_tl_pipeline + build_tl_chunks)
+       │    └── translation_utils.py  (公共: ChunkResult / ProgressTracker / 辅助函数)
+       │         ↑ 以上 4 模块共享依赖 ↓
+       │    ├── api_client.py         (APIClient, RateLimiter, UsageStats)
+       │    ├── file_processor/       (split/patch/validate/protect/check)
+       │    ├── prompts.py            (prompt 模板工厂)
+       │    ├── glossary.py           (术语表管理 + AI 自动提取)
+       │    ├── translation_db.py     (翻译元数据)
+       │    ├── tl_parser.py          (tl-mode 解析+回填)
+       │    └── font_patch.py         (可选字体补丁)
        │
-       └─ one_click_pipeline.py (模式 4)
-            ├── 调用 main.py (subprocess)
-            ├── file_processor/  (validate/read/count)
-            ├── glossary.py      (AI 自动术语表提取)
-            ├── translation_db.py (归因分析)
-            ├── font_patch.py    (打包前字体补丁)
-            └── main.py imports  (retranslate_file, find_untranslated_lines)
+       └─ one_click_pipeline.py (模式 4, subprocess 调用 main.py)
+            └── 通过 main.py re-export 引用 retranslate_file 等
 ```
 
 ---

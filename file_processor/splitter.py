@@ -159,7 +159,7 @@ def _force_split_lines(lines: list[str], start: int, end: int,
     return chunks
 
 
-def read_file(path) -> str:
+def read_file(path: object) -> str:
     """读取文件，自动处理编码"""
     if not isinstance(path, Path):
         path = Path(path)
