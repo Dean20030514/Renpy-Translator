@@ -18,6 +18,7 @@
 | 第七轮 | 全量验证（第六轮改进） | 99.99% 成功率（未翻译 25→7，Checker 丢弃 4→2）；9 条遗漏全为边界 case |
 | 第八轮 | 代码质量八阶段优化 | 消除重复 + 大函数拆分 + validator 结构化 + Magic Number 收敛 + except 精细化 + 测试 36→42 + LICENSE/pyproject.toml + CI 增强 |
 | 第九轮 | 深度优化六阶段 | 线程安全修复 + 深层重复消除(`_filter_checked`/`_deduplicate`) + 性能O(1)fallback + API 404/401/推理timeout + 测试 42→50 + `has_entry`封装 |
+| 第十轮 | 功能加固与生态完善 | 控制标签覆盖确认 + CI零依赖+dry-run + 跨平台路径 + Glossary连字符+信心度 + getpass安全输入 + README故障排查/调优/示例 + 测试 50→53 |
 
 ---
 
@@ -501,6 +502,51 @@
 |---|------|----------|------|
 | 84 | `TranslationDB.has_entry()` 公共方法替代 `_index` 直接访问 | `translation_db.py` `main.py` | 封装性 |
 | 85 | 过期注释修正（"外部模板" → "术语表 + 项目名"） | `main.py` | 准确性 |
+
+---
+
+## 第十轮：功能加固与生态完善六阶段
+
+### 阶段一：控制标签保护确认
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 86 | 确认现有 tag 正则 `\{/?[a-zA-Z]+=?[^}]*\}` 已覆盖 `{w}/{p}/{nw}/{fast}/{cps=N}/{done}` 等控制标签；新增测试 `test_protect_control_tags` 确认 | `test_all.py` | 测试覆盖 |
+
+### 阶段二：启动器安全增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 87 | API Key 输入改用 `getpass.getpass()` 隐藏明文回显 | `start_launcher.py` | 安全性 |
+| 88 | 命令预览中 API Key 显示为 `****` | `start_launcher.py` | 安全性 |
+
+### 阶段三：CI 增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 89 | 零第三方依赖自动检查：扫描全部 .py import，排除标准库和本地模块后报错 | `.github/workflows/test.yml` | CI 防护 |
+| 90 | `--dry-run` 集成测试：用 `tests/tl_priority_mini` 目录验证完整 dry-run 流程不崩溃 | `.github/workflows/test.yml` | CI 防护 |
+
+### 阶段四：Glossary 增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 91 | 连字符人名正则：`[A-Z][a-z]+(?:-[A-Z][a-z]+)*` 匹配 `Mary-Jane` 等复合人名 | `glossary.py` | 术语提取准确率 |
+| 92 | 翻译记忆信心度：`_memory_count` 追踪出现次数，`to_prompt_text` 只输出 count>=2 的记忆 | `glossary.py` | Prompt 质量 |
+
+### 阶段五：文档完善
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 93 | README 新增"各提供商用法示例"：xAI/OpenAI/DeepSeek/Claude/Gemini 各一个完整命令行 | `README.md` | 用户体验 |
+| 94 | README 新增"性能调优"表：各提供商推荐 workers/rpm/rps 配置 | `README.md` | 用户体验 |
+| 95 | README 新增"故障排查"FAQ：API 超时/编码错误/进度损坏/漏翻率/词典不生效 5 项 | `README.md` | 用户体验 |
+
+### 阶段六：跨平台兼容
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 96 | subprocess 调用 main.py 改用 `Path(__file__).parent / "main.py"` 绝对路径 | `one_click_pipeline.py` | Linux/Mac 兼容 |
 
 ---
 

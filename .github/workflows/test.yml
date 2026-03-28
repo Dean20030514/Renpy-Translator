@@ -45,3 +45,41 @@ jobs:
 
       - name: Run tl_parser self-tests
         run: python -c "import tl_parser; tl_parser._run_self_tests()"
+
+      - name: Verify zero third-party dependencies
+        run: |
+          python -c "
+          import ast, sys, importlib.util, pathlib
+          stdlib = set(sys.stdlib_module_names) if hasattr(sys, 'stdlib_module_names') else set()
+          errors = []
+          for py in pathlib.Path('.').glob('**/*.py'):
+              if 'output' in py.parts or '.git' in py.parts or 'renpy_upgrade_tool' in py.name:
+                  continue
+              try:
+                  tree = ast.parse(py.read_text(encoding='utf-8'))
+              except SyntaxError:
+                  continue
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [a.name.split('.')[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                      names = [node.module.split('.')[0]]
+                  else:
+                      continue
+                  for name in names:
+                      if name.startswith('_'):
+                          continue
+                      local = pathlib.Path(name + '.py').exists() or pathlib.Path(name).is_dir()
+                      is_stdlib = (name in stdlib) if stdlib else (importlib.util.find_spec(name) is not None)
+                      if not local and not is_stdlib:
+                          errors.append(f'{py}: {name}')
+          if errors:
+              print('Third-party imports detected:')
+              for e in errors:
+                  print(f'  {e}')
+              sys.exit(1)
+          print('Zero-dependency check passed')
+          "
+
+      - name: Integration test (dry-run)
+        run: python main.py --game-dir tests/tl_priority_mini/game --provider xai --dry-run

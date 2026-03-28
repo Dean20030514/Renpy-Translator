@@ -26,6 +26,8 @@ class Glossary:
         self.terms: dict[str, str] = {}
         # 翻译记忆：已翻译的 en → zh（相同原文保持翻译一致）
         self.memory: dict[str, str] = {}
+        # 翻译记忆出现次数（信心度），仅 count >= 2 的才输出到 prompt
+        self._memory_count: dict[str, int] = {}
         # 术语锁定：这些 key 出现在文本中时，必须使用 terms[key] 作为译名（应少而精）
         self.locked_terms: set[str] = set()
         # 禁翻片段：这些字符串在原文中出现时，译文必须保持同样的英文片段（大小写不敏感）
@@ -210,6 +212,7 @@ class Glossary:
                 if original in self.terms:
                     continue
                 self.memory[original] = zh
+                self._memory_count[original] = self._memory_count.get(original, 0) + 1
 
     def extract_terms_from_translations(self, translations: list[dict], min_freq: int = 3) -> dict[str, str]:
         """从翻译结果中自动提取高频专有名词（人名/地名），返回 {en: zh} 词典。
@@ -235,7 +238,8 @@ class Glossary:
         }
         _stop_lower = {w.lower() for w in _STOP_WORDS}
 
-        _word_re = re.compile(r'\b([A-Z][a-z]{1,15})\b')
+        # 匹配首字母大写词，含连字符人名（如 Mary-Jane）
+        _word_re = re.compile(r'\b([A-Z][a-z]{1,15}(?:-[A-Z][a-z]{1,15})*)\b')
 
         def _zh_ngrams(text: str, min_len: int = 2, max_len: int = 5) -> list[str]:
             """从中文文本中提取所有 2~5 字的连续中文子串。"""
@@ -344,10 +348,11 @@ class Glossary:
 
         # 只包含部分翻译记忆（避免 prompt 太长）
         if self.memory:
-            # 取较长的、有代表性的条目，限制总字符数
+            # 取出现 ≥ 2 次且较长的条目（信心度过滤），限制总字符数
             representative = sorted(
-                [(en, zh) for en, zh in self.memory.items() if len(en) > 10],
-                key=lambda x: len(x[0]),
+                [(en, zh) for en, zh in self.memory.items()
+                 if len(en) > 10 and self._memory_count.get(en, 1) >= 2],
+                key=lambda x: self._memory_count.get(x[0], 1),
                 reverse=True
             )
             if representative:

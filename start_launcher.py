@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import getpass
 import os
 import shlex
 import subprocess
@@ -32,7 +33,19 @@ def _normalize_input(s: str) -> str:
 def run(cmd: list[str]) -> int:
     print("\n============================================================")
     print("执行命令:")
-    print(" ".join(shlex.quote(x) for x in cmd))
+    # 隐藏 API 密钥显示
+    display_cmd = []
+    skip_next = False
+    for i, arg in enumerate(cmd):
+        if skip_next:
+            display_cmd.append("****")
+            skip_next = False
+        elif arg == "--api-key":
+            display_cmd.append(arg)
+            skip_next = True
+        else:
+            display_cmd.append(arg)
+    print(" ".join(shlex.quote(x) for x in display_cmd))
     print("============================================================\n")
     return subprocess.call(cmd, cwd=Path(__file__).parent)
 
@@ -85,7 +98,7 @@ def main() -> int:
         ]
         return run(cmd)
 
-    api_key = ask("API 密钥: ")
+    api_key = getpass.getpass("API 密钥（输入时不显示）: ").strip()
     if not api_key:
         print("[错误] 非 dry-run 模式必须提供 API 密钥")
         return 1

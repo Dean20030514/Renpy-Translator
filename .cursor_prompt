@@ -53,7 +53,7 @@
 | **tl_parser.py** | ~980 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、75 个内建测试 |
 | **api_client.py** | ~485 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口（推理模型自动 timeout 提升 300s）、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After + 404/401 立即报错不重试）、精确定价表 |
 | **prompts.py** | ~360 | Prompt 模板工厂。direct-mode（`SYSTEM_PROMPT_TEMPLATE` + `build_user_prompt`）、retranslate（`build_retranslate_system_prompt` + `build_retranslate_user_prompt`）、tl-mode（`TLMODE_SYSTEM_PROMPT` + `build_tl_system_prompt` + `build_tl_user_prompt`）；支持外部 style.txt / culture.txt 覆写 |
-| **glossary.py** | ~265 | 术语表管理。`Glossary` 类：`scan_game_directory` 角色提取、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取 |
+| **glossary.py** | ~369 | 术语表管理。`Glossary` 类：`scan_game_directory` 角色提取、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆（`_memory_count` 信心度追踪，count>=2 才输出 prompt）、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取（支持连字符人名 `Mary-Jane`） |
 | **translation_db.py** | ~124 | `TranslationDB` 类。逐行翻译元数据存储（file/line/original/translation/status/error_codes/warning_codes/provider/model/run_id）、upsert 去重、`has_entry()` 公共查询、按 status/file/stage 筛选 |
 
 ### 3.2 辅助工具
@@ -62,7 +62,7 @@
 |------|------|
 | **font_patch.py** (~94行) | `resolve_font` 字体查找 + `apply_font_patch` 修改 gui.rpy 字体变量 |
 | **renpy_upgrade_tool.py** (~17K) | Ren'Py 7→8 升级扫描器。19 条规则（Python 2→3 + 废弃 API）、`--fix` 自动修复、`--backup` 备份、rpyc 清理、RENPY-020 show 空 ATL 块修复（多行感知） |
-| **start_launcher.py** (~146行) | 中文交互启动器（7 种模式菜单），`START.bat` 调用 |
+| **start_launcher.py** (~175行) | 中文交互启动器（7 种模式菜单），`START.bat` 调用，`getpass` 隐藏 API Key 输入 |
 | **verify_alignment.py** (~171行) | 零 API 验证工具，测试新校验策略 |
 | **revalidate.py** (~54行) | 对已翻译输出重跑闸门检查（不调 API） |
 | **patch_font_now.py** (~40行) | 翻译完成后独立运行字体补丁 |
@@ -71,7 +71,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| **test_all.py** (~855行) | 综合模块测试（50 个用例：单元 + 集成） |
+| **test_all.py** (~902行) | 综合模块测试（53 个用例：单元 + 集成） |
 | **test_single.py** | 单文件端到端测试（需 API key） |
 | **tests/smoke_test.py** | 校验逻辑冒烟测试（13 个用例） |
 | **tests/fixtures/** | 测试用的 .rpy 样本文件 |
@@ -555,6 +555,14 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 56. 新增 8 个测试(42→50)：progress resume/normalize/checker 过滤/去重/fallback/推理检测/参数校验/timeout（阶段五）
 57. `TranslationDB.has_entry()` 封装 + 过期注释修正（阶段六）
 
+### 第十轮：功能加固与生态完善六阶段
+58. 确认控制标签 `{w}/{p}/{nw}/{fast}/{cps=N}/{done}` 已被现有 tag 正则覆盖 + 新增测试确认（阶段一）
+59. API Key 用 `getpass` 隐藏输入 + 命令预览隐藏密钥（阶段二）
+60. CI 增加零第三方依赖自动检查 + `--dry-run` 集成测试（阶段三）
+61. Glossary 连字符人名正则 `Mary-Jane` + 翻译记忆信心度 `_memory_count`（count>=2 才输出 prompt）（阶段四）
+62. README 新增：5 个提供商完整用法示例 + 性能调优表 + 5 项故障排查 FAQ（阶段五）
+63. subprocess 调用 main.py 改绝对路径（跨平台兼容）（阶段六）
+
 ### 已回滚
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
 
@@ -567,17 +575,19 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 
 ### 低优先级
 - 可选 CoT 思维链翻译模式（直译→校正→意译）
-- Ren'Py 控制标签（`{w}/{p}/{nw}/{fast}/{cps=N}`）加入占位符模式
 - chunk 失败自动拆分重试
 - Rich TUI 进度展示
 - tl/none 覆盖模板（避免直接修改 gui.rpy）
 - font_patch.py 字号/布局参数可配置（font_config.json）
 
-### 已完成（第八轮+第九轮）
-- ~~核心函数单元测试~~ — test_all.py 50 个用例全覆盖
-- ~~纳入 git + CI~~ — `.github/workflows/test.yml`（3 版本 + py_compile）
+### 已完成（第八轮+第九轮+第十轮）
+- ~~核心函数单元测试~~ — test_all.py 53 个用例全覆盖
+- ~~纳入 git + CI~~ — `.github/workflows/test.yml`（3 版本 + py_compile + 零依赖 + dry-run）
 - ~~progress.json 原子写入~~ — 临时文件 + `os.replace` + 批量写入 SAVE_INTERVAL=10
 - ~~线程安全修复~~ — 并发锁局部变量 + ProgressTracker 损坏容错
+- ~~Ren'Py 控制标签保护~~ — 已确认现有 tag 正则覆盖，测试确认
+- ~~API Key 安全输入~~ — `getpass` 隐藏 + 命令预览隐藏密钥
+- ~~Glossary 信心度~~ — `_memory_count` 追踪 + count>=2 过滤 + 连字符人名
 
 ---
 

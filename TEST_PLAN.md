@@ -10,7 +10,7 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main（ProgressTracker / calculate_dialogue_density / find_untranslated_lines / _restore_placeholders / _filter_checked / _deduplicate / _match_string_entry_fallback / CLI校验） / one_click_pipeline._is_untranslated_dialogue / translation_db.TranslationDB | 50 | 否 |
+| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main（ProgressTracker / calculate_dialogue_density / find_untranslated_lines / _restore_placeholders / _filter_checked / _deduplicate / _match_string_entry_fallback / CLI校验） / one_click_pipeline._is_untranslated_dialogue / translation_db.TranslationDB | 53 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
@@ -85,6 +85,9 @@
 | 48 | `test_api_empty_choices` | api_client | 推理模型检测（reasoning/o系列） |
 | 49 | `test_positive_int_validation` | main | CLI参数校验：正值/零/负值 |
 | 50 | `test_reasoning_model_timeout` | api_client | 推理模型auto timeout≥300s |
+| 51 | `test_glossary_hyphenated_names` | glossary | 连字符人名提取（Mary-Jane） |
+| 52 | `test_glossary_memory_confidence` | glossary | 翻译记忆信心度过滤（count>=2才输出） |
+| 53 | `test_protect_control_tags` | file_processor | 控制标签{w}/{p}/{nw}/{fast}/{cps=N}被保护 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -372,7 +375,7 @@ python tl_parser.py
 
 全部通过预期输出：
 ```
-ALL 50 TESTS PASSED          (test_all.py)
+ALL 53 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
 All 75 assertions passed.     (tl_parser.py)
 ```
@@ -427,6 +430,9 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | api_client.is_reasoning_model | 推理模型检测 | 1（test_all #48） |
 | main CLI 参数校验 | _positive_int/_positive_float/_ratio_float | 1（test_all #49） |
 | api_client.APIConfig 推理 timeout | auto timeout ≥ 300s | 1（test_all #50） |
+| glossary.extract_terms 连字符人名 | Mary-Jane 提取 | 1（test_all #51） |
+| glossary._memory_count 信心度 | count=1 不输出 / count=2 输出 | 1（test_all #52） |
+| file_processor.protect_placeholders 控制标签 | {w}/{p}/{nw}/{fast}/{cps=N}/{done} 保护+还原 | 1（test_all #53） |
 
 ### 覆盖不足（需补充）
 

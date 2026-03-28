@@ -242,7 +242,7 @@ python renpy_upgrade_tool.py ./game --fix --backup
 │  patch_font_now.py      独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
 │  测试层                                                       │
-│  test_all.py            综合模块测试（50 用例）               │
+│  test_all.py            综合模块测试（53 用例）               │
 │  tests/smoke_test.py    冒烟测试（13 用例）                   │
 │  test_single.py         单文件端到端测试                      │
 └──────────────────────────────────────────────────────────────┘
@@ -546,11 +546,95 @@ MIT License — 详见 [LICENSE](LICENSE)。
 
 ```bash
 # 快速验证（< 5 秒，无需 API）
-python test_all.py           # 50 个单元+集成测试
+python test_all.py           # 53 个单元+集成测试
 python tests/smoke_test.py   # 13 个校验规则冒烟测试
 python tl_parser.py --test   # 75 个解析器断言
 ```
 
 ### CI
 
-GitHub Actions 自动在 Python 3.9 / 3.12 / 3.13 上运行全部测试 + `py_compile` 语法检查。
+GitHub Actions 自动在 Python 3.9 / 3.12 / 3.13 上运行全部测试 + `py_compile` 语法检查 + 零依赖验证 + dry-run 集成测试。
+
+---
+
+## 各提供商用法示例
+
+```bash
+# xAI (Grok) — 推荐，性价比最高
+python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
+    --model grok-4-1-fast-reasoning --workers 5 --rpm 600 --rps 10
+
+# OpenAI (GPT)
+python main.py --game-dir "E:\Games\MyGame" --provider openai --api-key YOUR_KEY \
+    --model gpt-4o-mini --workers 3 --rpm 500 --rps 10
+
+# DeepSeek
+python main.py --game-dir "E:\Games\MyGame" --provider deepseek --api-key YOUR_KEY \
+    --model deepseek-chat --workers 3 --rpm 60 --rps 5
+
+# Claude (Anthropic)
+python main.py --game-dir "E:\Games\MyGame" --provider claude --api-key YOUR_KEY \
+    --model claude-sonnet-4-20250514 --workers 2 --rpm 50 --rps 3
+
+# Gemini (Google)
+python main.py --game-dir "E:\Games\MyGame" --provider gemini --api-key YOUR_KEY \
+    --model gemini-2.5-flash --workers 3 --rpm 60 --rps 5
+```
+
+---
+
+## 性能调优
+
+| 提供商 | 推荐 workers | 推荐 rpm | 推荐 rps | 说明 |
+|--------|-------------|---------|---------|------|
+| xAI | 5-10 | 600 | 10 | 限流宽裕，可高并发 |
+| OpenAI | 3-5 | 500 | 10 | TPM 限制注意 token 用量 |
+| DeepSeek | 3 | 60 | 5 | 限流较严，推理模型更慢 |
+| Claude | 2-3 | 50 | 3 | RPM 限制严格 |
+| Gemini | 3-5 | 60 | 5 | Free tier 限制较多 |
+
+推理模型（如 `grok-*-reasoning`、`deepseek-reasoner`、`o3-mini`）自动将 timeout 提升到 300s。
+
+---
+
+## 故障排查
+
+### API 超时
+
+```
+RuntimeError: API 调用失败，已重试 5 次
+```
+
+- 增大 `--timeout`（默认 180s，推理模型自动 300s）
+- 减少 `--workers` 降低并发压力
+- 检查网络代理设置
+
+### 编码错误
+
+```
+UnicodeDecodeError: 'utf-8' codec can't decode byte ...
+```
+
+- 工具自动尝试 UTF-8 → UTF-8-sig → Latin-1 → GBK 四种编码
+- 如仍报错，手动用文本编辑器将文件转为 UTF-8
+
+### 进度文件损坏
+
+```
+[PROGRESS] 进度文件损坏，已重置
+```
+
+- 工具会自动重置损坏的 progress.json，无需手动处理
+- 如需从头开始：删除 `output/progress.json` 或 `output/tl_progress.json`
+
+### 漏翻率偏高
+
+- 使用 `--tl-mode` 替代 direct-mode（99.99% vs 95.99%）
+- 检查 `--min-dialogue-density` 阈值（默认 0.20）
+- 运行一键流水线（自动试跑→闸门→全量→补翻）
+
+### 词典文件不生效
+
+- 确认文件路径正确（错误路径会显示 `[WARN] 词典文件不存在` 警告）
+- CSV 格式：首行必须是 `english,chinese` 表头
+- JSONL 格式：每行一个 `{"en": "...", "zh": "..."}` 对象

@@ -150,6 +150,7 @@ def test_glossary():
     g.terms['Save Game'] = '保存游戏'
     g.characters['mc'] = 'Main Character'
     g.memory['Hello world'] = '你好世界'
+    g._memory_count['Hello world'] = 3  # 信心度 >= 2 才输出到 prompt
     text = g.to_prompt_text()
     assert 'mc' in text
     assert 'Save Game' in text
@@ -795,6 +796,49 @@ def test_reasoning_model_timeout():
     print("[OK] reasoning_model_timeout")
 
 
+def test_glossary_hyphenated_names():
+    """连字符人名提取（如 Mary-Jane）"""
+    g = glossary.Glossary()
+    # 模拟翻译数据：Mary-Jane 出现 4 次，同译名"玛丽-简"
+    translations = [
+        {"original": f"Mary-Jane says hello {i}", "zh": f"玛丽-简说你好{i}"}
+        for i in range(4)
+    ]
+    terms = g.extract_terms_from_translations(translations, min_freq=3)
+    assert "Mary-Jane" in terms, f"Hyphenated name not extracted: {terms}"
+    print("[OK] glossary_hyphenated_names")
+
+
+def test_glossary_memory_confidence():
+    """翻译记忆信心度过滤：出现 1 次的不输出到 prompt"""
+    g = glossary.Glossary()
+    g.update_from_translations([
+        {"original": "A long sentence for testing", "zh": "测试用的长句子"},
+    ])
+    text = g.to_prompt_text()
+    assert "测试用的长句子" not in text, "count=1 should not appear in prompt"
+    # 再出现一次，count=2 → 应输出
+    g.update_from_translations([
+        {"original": "A long sentence for testing", "zh": "测试用的长句子"},
+    ])
+    text2 = g.to_prompt_text()
+    assert "测试用的长句子" in text2, "count=2 should appear in prompt"
+    print("[OK] glossary_memory_confidence")
+
+
+def test_protect_control_tags():
+    """Ren'Py 控制标签 {w}/{p}/{nw}/{fast}/{cps=N} 被占位符保护覆盖"""
+    text = 'Wait{w=0.5} pause{p} nowait{nw} fast{fast} speed{cps=20} done{done}'
+    protected, mapping = file_processor.protect_placeholders(text)
+    # 所有控制标签应被替换
+    for tag in ['{w=0.5}', '{p}', '{nw}', '{fast}', '{cps=20}', '{done}']:
+        assert tag not in protected, f"{tag} not protected"
+    # 还原后完全一致
+    restored = file_processor.restore_placeholders(protected, mapping)
+    assert restored == text
+    print("[OK] protect_control_tags")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -849,7 +893,10 @@ if __name__ == '__main__':
     test_api_empty_choices()
     test_positive_int_validation()
     test_reasoning_model_timeout()
+    test_glossary_hyphenated_names()
+    test_glossary_memory_confidence()
+    test_protect_control_tags()
     print()
     print("=" * 40)
-    print(f"ALL 50 TESTS PASSED")
+    print(f"ALL 53 TESTS PASSED")
     print("=" * 40)

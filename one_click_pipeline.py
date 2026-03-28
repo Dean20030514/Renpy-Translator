@@ -123,7 +123,7 @@ def run_main(
 ) -> None:
     cmd = [
         sys.executable,
-        "main.py",
+        str(Path(__file__).parent / "main.py"),
         "--game-dir", str(game_dir),
         "--output-dir", str(output_dir),
         "--provider", provider,
