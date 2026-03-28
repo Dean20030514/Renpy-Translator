@@ -41,7 +41,7 @@ class TranslationDB:
             return
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             # Corrupted or incompatible file; start fresh but do not overwrite immediately.
             self.entries = []
             self._index = {}
@@ -86,6 +86,10 @@ class TranslationDB:
         """Bulk insert/update entries."""
         for e in entries:
             self.upsert_entry(e)
+
+    def has_entry(self, file: str, line: int, original: str) -> bool:
+        """Check if an entry with given (file, line, original) key exists."""
+        return (file, line, original) in self._index
 
     def filter_by_status(
         self,

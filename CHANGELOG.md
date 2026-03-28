@@ -16,6 +16,8 @@
 | 第五轮 | tl-mode 全量验证 | 引号剥离修复 + 后处理 + 99.97% 翻译成功率 |
 | 第六轮 | 代码优化与新功能 | chunk重试 + logging + 模块拆分 + 术语提取 + 退避优化 + show修复 + 全文扫描安全性 + 截断阈值提升 + tl_parser 测试扩充 |
 | 第七轮 | 全量验证（第六轮改进） | 99.99% 成功率（未翻译 25→7，Checker 丢弃 4→2）；9 条遗漏全为边界 case |
+| 第八轮 | 代码质量八阶段优化 | 消除重复 + 大函数拆分 + validator 结构化 + Magic Number 收敛 + except 精细化 + 测试 36→42 + LICENSE/pyproject.toml + CI 增强 |
+| 第九轮 | 深度优化六阶段 | 线程安全修复 + 深层重复消除(`_filter_checked`/`_deduplicate`) + 性能O(1)fallback + API 404/401/推理timeout + 测试 42→50 + `has_entry`封装 |
 
 ---
 
@@ -383,6 +385,122 @@
 | W440_MODEL_SPEAKING | 译文含模型自我描述或多余解释 | 仅告警 |
 | W441_PUNCT_MIX | 中英标点连续混用 | 仅告警 |
 | W442_SUSPECT_ENGLISH_OUTPUT | 中文字符占比极低 | 仅告警 |
+
+---
+
+## 第八轮：代码质量八阶段优化
+
+### 阶段一：错误处理加固（commit afb51e0）
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 52 | 8 处 `except Exception` 精细化为具体异常类型 | 多文件 | 更精确的错误处理 |
+| 53 | `.tmp` 临时文件清理 | `main.py` | 进程安全性 |
+
+### 阶段二：消除代码重复
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 54 | 提取 `_restore_placeholders_in_translations()` 统一 4 处占位符还原逻辑 | `main.py` | 代码量 -20 行，维护点 4→1 |
+| 55 | 提取 `_strip_char_prefix()` + `_CHAR_PREFIX_RE` 统一 2 处角色前缀清理 | `main.py` | 消除重复编译正则 |
+| 56 | 提取 `_is_untranslated_dialogue()` + `_extract_dialogue_text()` 消除漏翻检测重复 | `one_click_pipeline.py` | 两个函数共享检测逻辑 |
+| 57 | 删除 4 处冗余 `import re as _re`（模块级已有 `import re`） | `main.py` | 清理冗余 import |
+
+### 阶段三：大函数拆分
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 58 | `one_click_pipeline.main()` 补翻阶段拆分为 `_run_retranslate_phase()` | `one_click_pipeline.py` | ~110 行独立函数 |
+| 59 | `one_click_pipeline.main()` 最终报告拆分为 `_run_final_report()` | `one_click_pipeline.py` | ~120 行独立函数 |
+| 60 | `run_tl_pipeline` 重试块使用 `_restore_placeholders_in_translations` 简化 | `main.py` | 消除 6 行重复代码 |
+
+### 阶段四：validator 结构化拆分
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 61 | `validate_translation` 293 行拆为 4 个子检查函数 + 主入口调度 | `file_processor/validator.py` | 可读性大幅提升 |
+|   | `_check_structural_integrity` — 缩进/非字符串行/引号结构/代码关键字 | | |
+|   | `_check_placeholders_and_tags` — 变量/标签/菜单ID/格式化/顺序 | | |
+|   | `_check_glossary_compliance` — 术语锁定/禁翻/漏翻疑似 | | |
+|   | `_check_quality_heuristics` — 风格/长度比例/中文占比 | | |
+
+### 阶段五：测试体系升级
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 62 | 新增 6 个集成测试（36→42）：密度自适应 / 跳过名单 / 漏翻检测 / TranslationDB 往返 / `_is_untranslated_dialogue` / `_restore_placeholders_in_translations` | `test_all.py` | 测试覆盖扩展 |
+| 63 | CI 增加 `py_compile` 语法检查步骤（14 个 .py 文件） | `.github/workflows/test.yml` | CI 加固 |
+
+### 阶段六：Magic Number 收敛
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 64 | `CHECKER_DROP_RATIO_THRESHOLD` / `MIN_DROPPED_FOR_WARNING` / `MIN_DIALOGUE_LENGTH` | `main.py` | 3 处硬编码→命名常量 |
+| 65 | `MAX_FILE_RANK_SCORE` / `RISK_KEYWORD_SCORE` / `SAZMOD_BONUS_SCORE` / `MIN_UNTRANSLATED_TEXT_LENGTH` / `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED` | `one_click_pipeline.py` | 5 处硬编码→命名常量 |
+| 66 | `MIN_CHINESE_RATIO` | `file_processor/validator.py` | W442 阈值命名化 |
+
+### 阶段七：项目工程化
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 67 | MIT LICENSE 文件 | `LICENSE`（新增） | 开源许可证 |
+| 68 | `pyproject.toml`（name/version/requires-python/零依赖） | `pyproject.toml`（新增） | 项目元数据 |
+| 69 | 4 处硬编码 Windows 路径改为环境变量可配置 | `test_single.py` / `verify_alignment.py` / `patch_font_now.py` / `revalidate.py` | 可移植性 |
+
+### 阶段八：代码细节打磨
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 70 | 6 处 `except Exception:` 精细化为 `(KeyError, AttributeError, ValueError)` 等具体类型 | `api_client.py` / `glossary.py` / `translation_db.py` | 异常处理更精确 |
+| 71 | `_SKIP_TOKENS` 常量提取（validator 中资源路径检测元组） | `file_processor/validator.py` | 可读性 |
+
+---
+
+## 第九轮：深度优化六阶段
+
+### 阶段一：线程安全与健壮性加固
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 72 | 并发锁修复：`run_tl_pipeline` 的 `as_completed` 回调中 `n` → `n_completed` 局部变量，在锁内赋值锁外使用 | `main.py` | 消除潜在竞态 |
+| 73 | CLI 参数校验：`_positive_int` / `_positive_float` / `_ratio_float` 三个校验函数，rpm/rps/timeout/max-chunk-tokens/max-response-tokens/min-dialogue-density 负值/零值防御 | `main.py` | 参数错误提前报错 |
+| 74 | 词典文件提前校验：3 处 `load_dict` 前检查文件存在，不存在则 warning | `main.py` | 防静默忽略拼错路径 |
+| 75 | ProgressTracker 规范化：`_load()` 捕获 JSON 损坏 + `setdefault` 确保必需 key | `main.py` | 防损坏文件 KeyError |
+
+### 阶段二：深层代码重复消除
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 76 | `_filter_checked_translations()` 提取：checker 逐条过滤 + kept/dropped 分流（4 处→1 函数） | `main.py` | 消除 4 处重复 |
+| 77 | `_deduplicate_translations()` 提取：`(line, original)` 去重（3 处→1 函数） | `main.py` | 消除 3 处重复 |
+
+### 阶段三：性能优化
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 78 | `_build_fallback_dicts()` + `_match_string_entry_fallback()`：StringEntry 四层 fallback O(n*m)→O(1) 预建查找表 | `main.py` | 大项目性能提升 |
+| 79 | ProgressTracker 批量写入：`SAVE_INTERVAL=10`，每 10 次 mark 才写磁盘 | `main.py` | 减少磁盘 I/O |
+
+### 阶段四：API 兼容性加固
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 80 | 空 choices 响应显式 warning（不再静默返回空字符串） | `api_client.py` | 更好的错误诊断 |
+| 81 | HTTP 404 → 立即报错"模型不存在"（不重试）；HTTP 401 → 立即报错"认证失败" | `api_client.py` | 避免无意义重试 |
+| 82 | 推理模型自动 timeout 提升：`is_reasoning_model()` 检测到时 timeout 从 180s 提升到 300s | `api_client.py` | 推理模型稳定性 |
+
+### 阶段五：测试深度覆盖
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 83 | 新增 8 个测试（42→50）：progress resume/normalize、`_filter_checked_translations`、`_deduplicate_translations`、`_match_string_entry_fallback`、推理模型检测、CLI 参数校验、推理模型 timeout | `test_all.py` | 测试覆盖扩展 |
+
+### 阶段六：文档与代码卫生
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 84 | `TranslationDB.has_entry()` 公共方法替代 `_index` 直接访问 | `translation_db.py` `main.py` | 封装性 |
+| 85 | 过期注释修正（"外部模板" → "术语表 + 项目名"） | `main.py` | 准确性 |
 
 ---
 

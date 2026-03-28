@@ -10,7 +10,7 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `test_all.py` | 单元测试 | api_client / file_processor / glossary / prompts / main.ProgressTracker | 36 | 否 |
+| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main（ProgressTracker / calculate_dialogue_density / find_untranslated_lines / _restore_placeholders / _filter_checked / _deduplicate / _match_string_entry_fallback / CLI校验） / one_click_pipeline._is_untranslated_dialogue / translation_db.TranslationDB | 50 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
@@ -71,6 +71,20 @@
 | 34 | `test_check_response_chunk_mismatch` | file_processor | 条数不一致有警告 |
 | 35 | `test_check_response_chunk_empty` | file_processor | 空 chunk 无警告 |
 | 36 | `test_check_response_chunk_skip_chinese` | file_processor | 已含中文行跳过 |
+| 37 | `test_dialogue_density` | main | 密度自适应路由（低/高/空 3 用例） |
+| 38 | `test_skip_files` | file_processor | SKIP_FILES_FOR_TRANSLATION 跳过名单完整性 |
+| 39 | `test_find_untranslated_lines` | main | 漏翻检测二次过滤（auto/idle/hover/image 排除） |
+| 40 | `test_translation_db_roundtrip` | translation_db | save/load 往返 + upsert 去重 |
+| 41 | `test_is_untranslated_dialogue` | one_click_pipeline | 漏翻检测辅助函数（中文/英文/短文本） |
+| 42 | `test_restore_placeholders_in_translations` | main | 公共辅助函数占位符还原 |
+| 43 | `test_progress_resume` | main.ProgressTracker | 写入后重载数据一致 |
+| 44 | `test_progress_normalize` | main.ProgressTracker | 损坏/缺key的JSON不崩溃 |
+| 45 | `test_filter_checked_translations` | main | checker过滤：正常/空译文/占位符缺失 |
+| 46 | `test_deduplicate_translations` | main | 去重：有重复/无重复/空列表 |
+| 47 | `test_match_string_entry_fallback` | main | 四层fallback：精确/strip/去令牌/转义 |
+| 48 | `test_api_empty_choices` | api_client | 推理模型检测（reasoning/o系列） |
+| 49 | `test_positive_int_validation` | main | CLI参数校验：正值/零/负值 |
+| 50 | `test_reasoning_model_timeout` | api_client | 推理模型auto timeout≥300s |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -358,7 +372,7 @@ python tl_parser.py
 
 全部通过预期输出：
 ```
-ALL 36 TESTS PASSED          (test_all.py)
+ALL 50 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
 All 75 assertions passed.     (tl_parser.py)
 ```
@@ -378,7 +392,7 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 
 ### 推荐执行顺序
 
-1. **快速验证**：`python test_all.py && python tests/smoke_test.py && python tl_parser.py`（< 5 秒，无 API）
+1. **快速验证**：`python test_all.py && python tests/smoke_test.py && python tl_parser.py --test`（< 5 秒，无 API）
 2. **边界验证**：smoke_test 中的 boundary 测试已覆盖 W430/W251 边界
 3. **密度/跳过**：构造低密度文件 + define.rpy 验证 `[DENSITY]` / `[SKIP-CFG]` 日志
 4. **tl 优先**：`--dry-run` 模式验证文件选择（无需 API）
@@ -400,6 +414,19 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | api_client | APIConfig / UsageStats / RateLimiter / JSON 解析 / 定价 | 5（test_all） |
 | glossary | prompt_text / 过滤 / 去重 / 线程安全 | 4（test_all） |
 | tl_parser | 状态机 / 回填 / 清理 / 后处理 / _sanitize_translation 边界 / fill_translation 边界 | 75（内建） |
+| main.calculate_dialogue_density | 低密度/高密度/空文件 | 1（test_all #37） |
+| main.find_untranslated_lines | auto/idle/hover/image 排除 + 长英文检出 | 1（test_all #39） |
+| main._restore_placeholders_in_translations | 占位符还原辅助函数 | 1（test_all #42） |
+| translation_db.TranslationDB | save/load 往返 + upsert 去重 | 1（test_all #40） |
+| one_click_pipeline._is_untranslated_dialogue | 中文/英文/短文本判定 | 1（test_all #41） |
+| file_processor.SKIP_FILES_FOR_TRANSLATION | 跳过名单完整性 | 1（test_all #38） |
+| main.ProgressTracker resume/normalize | 写入重载 + 损坏容错 | 2（test_all #43-44） |
+| main._filter_checked_translations | checker 过滤分流 | 1（test_all #45） |
+| main._deduplicate_translations | 翻译去重 | 1（test_all #46） |
+| main._match_string_entry_fallback | 四层 fallback 匹配 | 1（test_all #47） |
+| api_client.is_reasoning_model | 推理模型检测 | 1（test_all #48） |
+| main CLI 参数校验 | _positive_int/_positive_float/_ratio_float | 1（test_all #49） |
+| api_client.APIConfig 推理 timeout | auto timeout ≥ 300s | 1（test_all #50） |
 
 ### 覆盖不足（需补充）
 
@@ -409,9 +436,11 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | ~~高~~ | ~~`check_response_item`~~ | **已覆盖** | ~~T2~~ → test_all #27-32 |
 | ~~高~~ | ~~`check_response_chunk`~~ | **已覆盖** | ~~T3~~ → test_all #33-36 |
 | ~~高~~ | ~~`_sanitize_translation`~~ | **已覆盖** | ~~T4~~ → tl_parser.py 内建自测 #11-#12（12 个断言） |
-| 中 | `calculate_dialogue_density` | 无测试 | T6：3 个用例 |
-| 中 | `find_untranslated_lines` 过滤 | 无测试 | T8：6 个用例 |
+| ~~中~~ | ~~`calculate_dialogue_density`~~ | **已覆盖** | ~~T6~~ → test_all.py `test_dialogue_density`（3 用例） |
+| ~~中~~ | ~~`find_untranslated_lines` 过滤~~ | **已覆盖** | ~~T8~~ → test_all.py `test_find_untranslated_lines`（多项断言） |
 | ~~中~~ | ~~`fill_translation` 边界~~ | **已覆盖** | ~~T5~~ → tl_parser.py 内建自测 #11-#12（7 个断言） |
+| ~~中~~ | ~~`TranslationDB` save/load~~ | **已覆盖** | ~~T10~~ → test_all.py `test_translation_db_roundtrip` |
+| ~~中~~ | ~~`SKIP_FILES_FOR_TRANSLATION`~~ | **已覆盖** | ~~T7~~ → test_all.py `test_skip_files` |
 | 低 | 端到端 tl-mode | 无自动化 | T12：需 API |
 | 低 | 端到端 retranslate | 无自动化 | T13：需 API |
 
@@ -419,5 +448,5 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 
 1. ~~将 T1-T3 的代码示例加入 `test_all.py` 或新建 `test_core.py`~~ — **已完成**（test_all.py #22-36）
 2. ~~将 T4-T5 的边界场景加入 `tl_parser.py` 内建测试~~ — **已完成**（tl_parser.py 内建自测 #11-#12，19 个断言）
-3. T6-T10 作为集成级测试，可在 smoke_test 中补充
+3. ~~T6-T10 作为集成级测试~~ — **已完成**（test_all.py #37-42，6 个集成测试）
 4. T11-T14 的端到端测试需 API key，建议作为 CI 中的可选步骤

@@ -242,8 +242,8 @@ python renpy_upgrade_tool.py ./game --fix --backup
 │  patch_font_now.py      独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
 │  测试层                                                       │
-│  test_all.py            综合模块测试                          │
-│  tests/smoke_test.py    冒烟测试                              │
+│  test_all.py            综合模块测试（50 用例）               │
+│  tests/smoke_test.py    冒烟测试（13 用例）                   │
 │  test_single.py         单文件端到端测试                      │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -532,6 +532,25 @@ output/projects/<project_name>/
 
 ---
 
-## Python 版本
+## 开发与测试
+
+### Python 版本
 
 Python >= 3.9，无第三方依赖（纯标准库：`threading` / `json` / `re` / `pathlib` / `urllib`）。
+
+### 许可证
+
+MIT License — 详见 [LICENSE](LICENSE)。
+
+### 测试
+
+```bash
+# 快速验证（< 5 秒，无需 API）
+python test_all.py           # 50 个单元+集成测试
+python tests/smoke_test.py   # 13 个校验规则冒烟测试
+python tl_parser.py --test   # 75 个解析器断言
+```
+
+### CI
+
+GitHub Actions 自动在 Python 3.9 / 3.12 / 3.13 上运行全部测试 + `py_compile` 语法检查。

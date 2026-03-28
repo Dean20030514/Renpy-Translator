@@ -17,6 +17,7 @@ r"""零 API 调用验证方案 a（strings 专用回写）和方案 b（original
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -28,7 +29,7 @@ from translation_db import TranslationDB
 
 def _default_paths(script_dir: Path) -> dict:
     return {
-        "game_dir": Path(r"E:\浏览器下载\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\game"),
+        "game_dir": Path(os.environ.get("TEST_GAME_DIR", r"E:\浏览器下载\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\game")),
         "db_path": script_dir / "output" / "projects" / "TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed" / "translation_db.json",
         "old_translated": script_dir / "output" / "projects" / "TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed" / "stage2_translated" / "game",
     }

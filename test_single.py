@@ -10,7 +10,7 @@ from file_processor import split_file, apply_translations, validate_translation,
 from glossary import Glossary
 from prompts import build_system_prompt, build_user_prompt
 
-GAME_DIR = Path(r"E:\浏览器下载\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\game")
+GAME_DIR = Path(os.environ.get("TEST_GAME_DIR", r"E:\浏览器下载\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\game"))
 TEST_FILE = GAME_DIR / "tutorial.rpy"
 
 def main():

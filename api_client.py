@@ -140,6 +140,10 @@ class APIConfig:
             self.endpoint, default_model = providers[key]
             if not self.model:
                 self.model = default_model
+        # 推理模型自动提高 timeout（推理过程耗时较长）
+        if is_reasoning_model(self.model) and self.timeout < 300:
+            logger.info(f"[API] 推理模型 {self.model} 检测到，timeout 从 {self.timeout}s 提升到 300s")
+            self.timeout = 300.0
         self._resolved = True
 
 
@@ -271,14 +275,23 @@ class APIClient:
                     ra = e.headers.get("Retry-After", "") if e.headers else ""
                     if ra and ra.isdigit():
                         retry_after = int(ra)
-                except Exception:
+                except (AttributeError, KeyError, ValueError):
                     pass
                 try:
                     body = e.read().decode('utf-8', errors='replace')[:500]
-                except Exception:
+                except (AttributeError, OSError, ValueError):
                     pass
 
-                if status == 429:
+                if status == 404:
+                    raise RuntimeError(
+                        f"API 404: 模型 '{self.config.model}' 不存在或已下线，"
+                        f"请检查 --model 参数是否正确 (body: {body[:200]})"
+                    )
+                elif status == 401:
+                    raise RuntimeError(
+                        f"API 401: 认证失败，请检查 --api-key 是否正确 (provider: {self.config.provider})"
+                    )
+                elif status == 429:
                     base = retry_after if retry_after > 0 else min(2 ** attempt * 5, 60)
                     jitter = random.uniform(0, min(base * 0.3, 5))
                     wait = base + jitter
@@ -335,7 +348,11 @@ class APIClient:
             usage.get("completion_tokens", 0),
         )
 
-        msg = result.get("choices", [{}])[0].get("message", {})
+        choices = result.get("choices") or []
+        if not choices:
+            logger.warning("[API] 响应中无 choices 字段，返回空内容")
+            return ""
+        msg = choices[0].get("message", {})
         content = msg.get("content", "")
         # grok reasoning 模型可能有 reasoning_content
         if not content and msg.get("reasoning_content"):

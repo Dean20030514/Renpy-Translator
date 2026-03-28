@@ -18,7 +18,7 @@
 - chunk 级自动重试 + 结构化 logging 系统
 - AI 自动术语表提取（pilot 后自动生成术语表）
 
-**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging），~9,500 行。
+**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging），~8,100 行核心代码。
 
 ---
 
@@ -47,14 +47,14 @@
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| **main.py** | ~2,100 | 翻译引擎入口。direct-mode（`translate_file` 密度路由 / `_translate_file_targeted` 定向翻译）、tl-mode（`run_tl_pipeline` 并发 chunk 翻译 + 精确回填 + `[MULTILINE]` 标记）、retranslate（`retranslate_file` 残留英文补翻）、`ChunkResult` dataclass、`_translate_chunk_with_retry` chunk 级自动重试、`logging` 结构化日志（`--verbose`/`--quiet`）、CLI 参数解析、进度管理 |
-| **one_click_pipeline.py** | ~1,350 | 四阶段编排器。pilot 试跑 → 闸门评估 → 全量翻译 → retranslate 补翻；漏翻归因分析（`attribute_untranslated`）；`evaluate_gate` 结构化闸门；`write_report_summary_md` 报告生成；tl-mode 分支（`--tl-mode` 走 tl 流水线）；pilot 后 AI 自动术语表提取 |
-| **file_processor/** | ~1,337 (4 sub-modules) | .rpy 文件处理核心 **包**。`splitter.py`（`split_file` 按块拆分）、`patcher.py`（`apply_translations` 行级回写、占位符保护还原 `protect_placeholders`/`restore_placeholders`）、`checker.py`（`ResponseChecker`：`check_response_item`/`check_response_chunk`）、`validator.py`（`validate_translation` 50+ 项校验）、`__init__.py` re-exports 全部公共 API、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
-| **tl_parser.py** | ~750 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、75 个内建测试 |
-| **api_client.py** | ~451 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After 退避优化）、精确定价表 |
+| **main.py** | ~2,400 | 翻译引擎入口。direct-mode（`translate_file` 密度路由 / `_translate_file_targeted` 定向翻译）、tl-mode（`run_tl_pipeline` 并发 chunk 翻译 + 精确回填 + `[MULTILINE]` 标记）、retranslate（`retranslate_file` 残留英文补翻）、`ChunkResult` dataclass、`_translate_chunk_with_retry` chunk 级自动重试、公共辅助（`_restore_placeholders_in_translations` / `_strip_char_prefix` / `_filter_checked_translations` / `_deduplicate_translations` / `_build_fallback_dicts` / `_match_string_entry_fallback`）、CLI 参数校验（`_positive_int` / `_positive_float` / `_ratio_float`）、`ProgressTracker`（批量写入 `SAVE_INTERVAL=10` + 损坏容错）、`logging` 结构化日志（`--verbose`/`--quiet`）、可配置阈值常量（`CHECKER_DROP_RATIO_THRESHOLD` / `MIN_DROPPED_FOR_WARNING` / `MIN_DIALOGUE_LENGTH`） |
+| **one_click_pipeline.py** | ~1,410 | 四阶段编排器。pilot 试跑 → 闸门评估 → 全量翻译 → retranslate 补翻（`_run_retranslate_phase`）；最终报告与打包（`_run_final_report`）；漏翻归因分析（`attribute_untranslated`）；`evaluate_gate` 结构化闸门；`write_report_summary_md` 报告生成；tl-mode 分支（`--tl-mode` 走 tl 流水线）；pilot 后 AI 自动术语表提取；公共辅助（`_is_untranslated_dialogue` / `_extract_dialogue_text`）；可配置常量（`MAX_FILE_RANK_SCORE` / `RISK_KEYWORD_SCORE` / `SAZMOD_BONUS_SCORE` / `MIN_UNTRANSLATED_TEXT_LENGTH` / `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED`） |
+| **file_processor/** | ~1,329 (4 sub-modules) | .rpy 文件处理核心 **包**。`splitter.py`（`split_file` 按块拆分）、`patcher.py`（`apply_translations` 行级回写、占位符保护还原 `protect_placeholders`/`restore_placeholders`）、`checker.py`（`ResponseChecker`：`check_response_item`/`check_response_chunk`）、`validator.py`（`validate_translation` 主入口调度 4 个子检查函数：`_check_structural_integrity` / `_check_placeholders_and_tags` / `_check_glossary_compliance` / `_check_quality_heuristics`；`MIN_CHINESE_RATIO` 常量）、`__init__.py` re-exports 全部公共 API、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
+| **tl_parser.py** | ~980 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、75 个内建测试 |
+| **api_client.py** | ~485 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口（推理模型自动 timeout 提升 300s）、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After + 404/401 立即报错不重试）、精确定价表 |
 | **prompts.py** | ~360 | Prompt 模板工厂。direct-mode（`SYSTEM_PROMPT_TEMPLATE` + `build_user_prompt`）、retranslate（`build_retranslate_system_prompt` + `build_retranslate_user_prompt`）、tl-mode（`TLMODE_SYSTEM_PROMPT` + `build_tl_system_prompt` + `build_tl_user_prompt`）；支持外部 style.txt / culture.txt 覆写 |
 | **glossary.py** | ~265 | 术语表管理。`Glossary` 类：`scan_game_directory` 角色提取、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取 |
-| **translation_db.py** | ~120 | `TranslationDB` 类。逐行翻译元数据存储（file/line/original/translation/status/error_codes/warning_codes/provider/model/run_id）、upsert 去重、按 status/file/stage 筛选 |
+| **translation_db.py** | ~124 | `TranslationDB` 类。逐行翻译元数据存储（file/line/original/translation/status/error_codes/warning_codes/provider/model/run_id）、upsert 去重、`has_entry()` 公共查询、按 status/file/stage 筛选 |
 
 ### 3.2 辅助工具
 
@@ -71,9 +71,9 @@
 
 | 文件 | 职责 |
 |------|------|
-| **test_all.py** | 综合模块测试 |
+| **test_all.py** (~855行) | 综合模块测试（50 个用例：单元 + 集成） |
 | **test_single.py** | 单文件端到端测试（需 API key） |
-| **tests/smoke_test.py** | 校验逻辑冒烟测试 |
+| **tests/smoke_test.py** | 校验逻辑冒烟测试（13 个用例） |
 | **tests/fixtures/** | 测试用的 .rpy 样本文件 |
 
 ### 3.4 配置与输出
@@ -81,6 +81,8 @@
 | 文件/目录 | 说明 |
 |-----------|------|
 | **requirements.txt** | 空（纯标准库，无依赖） |
+| **pyproject.toml** | 项目元数据（name/version/requires-python） |
+| **LICENSE** | MIT 许可证 |
 | **START.bat** | Windows 入口脚本 |
 | **output/** | 翻译结果、glossary.json、translation_db.json、tl_progress.json、tl_mode_report.json |
 | **resources/fonts/** | 内置中文字体（NotoSansSC / SourceHanSansSC） |
@@ -176,11 +178,11 @@ main() 入口
   │   run_main() 翻译全部文件 → evaluate_gate()
   │   → errors > 0 则中止
   │
-  ├─ Stage 3/4: 漏翻补翻轮
+  ├─ Stage 3/4: 漏翻补翻轮 → _run_retranslate_phase()
   │   collect_files_with_untranslated() → retranslate_file() × N
   │   → 原地补翻残留英文行
   │
-  └─ Stage 4/4: 统计报告 + 打包
+  └─ Stage 4/4: 统计报告 + 打包 → _run_final_report()
       evaluate_gate() 最终评估
       attribute_untranslated() 漏翻归因
       write_report_summary_md() 生成报告
@@ -356,10 +358,21 @@ check_response_chunk():
 | 常量/参数 | 位置 | 默认值 | 说明 |
 |-----------|------|--------|------|
 | `SKIP_FILES_FOR_TRANSLATION` | file_processor/splitter.py | `{define, variables, screens, earlyoptions, options}.rpy` | 跳过翻译的配置文件 |
-| `MODEL_SPEAKING_PATTERNS` | file_processor/validator.py | 7 条模式 | W440 模型自述检测关键词 |
-| `PLACEHOLDER_ORDER_PATTERNS` | file_processor/validator.py | 4 组 (regex, name) | W251 占位符顺序提取 |
+| `MODEL_SPEAKING_PATTERNS` | file_processor/checker.py | 7 条模式 | W440 模型自述检测关键词 |
+| `PLACEHOLDER_ORDER_PATTERNS` | file_processor/checker.py | 4 组 (regex, name) | W251 占位符顺序提取 |
+| `MIN_CHINESE_RATIO` | file_processor/validator.py | 0.05 | W442 中文占比阈值 |
+| `CHECKER_DROP_RATIO_THRESHOLD` | main.py | 0.3 | chunk 丢弃率重试阈值 |
+| `MIN_DROPPED_FOR_WARNING` | main.py | 3 | 最小丢弃数触发警告 |
+| `MIN_DIALOGUE_LENGTH` | main.py | 4 | 定向翻译最小对话长度 |
 | `LEN_RATIO_LOWER / UPPER` | one_click_pipeline.py | 0.15 / 2.5 | W430 长度异常阈值 |
 | `RISK_KEYWORDS` | one_click_pipeline.py | 14 个关键词 | 试跑文件风险评分 |
+| `MAX_FILE_RANK_SCORE` | one_click_pipeline.py | 200 | 文件大小评分上限 |
+| `RISK_KEYWORD_SCORE` | one_click_pipeline.py | 80 | 风险关键词加分 |
+| `SAZMOD_BONUS_SCORE` | one_click_pipeline.py | 30 | SAZMOD 模组额外加分 |
+| `MIN_UNTRANSLATED_TEXT_LENGTH` | one_click_pipeline.py | 20 | 漏翻检测最小文本长度 |
+| `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED` | one_click_pipeline.py | 12 | 漏翻检测最小英文字符数 |
+| `SAVE_INTERVAL` | main.py ProgressTracker | 10 | 批量写入间隔（每 N 次 mark 写磁盘） |
+| `_PH_TOKEN_RE` | main.py | `__RENPY_PH_\d+__` | 占位符令牌正则（fallback 匹配用） |
 | `_QUOTE_STRIP_PAIRS` | tl_parser.py | ASCII "" / 弯引号 "" / 全角 ＂＂ | fill_translation 引号剥离对 |
 | `_MODEL_PRICING` | api_client.py | ~20 个模型 | 精确定价表 |
 | 截断匹配阈值 | file_processor/patcher.py line 414 | 0.7 | AI 截断文本匹配阈值（阶段 3e），低于此值不替换 |
@@ -414,9 +427,9 @@ if density < 0.20:  # 走定向翻译
 
 ### 风险评分（试跑文件选择）
 ```python
-score = min(file_size / 1024, 200)
-      + 80 * (any keyword in filename)
-      + 30 * ("sazmod" in filename)
+score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
+      + RISK_KEYWORD_SCORE * (any keyword in filename)
+      + SAZMOD_BONUS_SCORE * ("sazmod" in filename)
 ```
 
 ### tl-mode StringEntry 四层 fallback 匹配
@@ -523,6 +536,25 @@ score = min(file_size / 1024, 200)
 41. tl_parser 内建测试新增 19 个断言（56→75），覆盖 `_sanitize_translation` 12 个边界 + `fill_translation` 7 个边界
 42. 截断匹配阈值从 0.5 提高到 0.7（`_replace_string_in_line` 阶段 3e）
 
+### 第八轮：代码质量八阶段优化
+43. 8 处 except 精细化 + .tmp 清理（阶段一）
+44. 消除代码重复：`_restore_placeholders_in_translations` / `_strip_char_prefix` / `_is_untranslated_dialogue` + `_extract_dialogue_text`（阶段二）
+45. 删除 4 处冗余 `import re as _re`（阶段二）
+46. 大函数拆分：`one_click_pipeline.main()` → `_run_retranslate_phase` + `_run_final_report`（阶段三）
+47. `validate_translation` 293 行拆为 4 个子检查函数（阶段四）
+48. Magic Number 收敛：10+ 处硬编码阈值提为命名常量（阶段六）
+49. 测试体系升级：36→42 测试 + CI 增加 py_compile 步骤（阶段五）
+50. 项目工程化：LICENSE + pyproject.toml + 4 处硬编码路径改环境变量（阶段七）
+51. 6 处 except 精细化 + SKIP_TOKENS 常量（阶段八）
+
+### 第九轮：深度优化六阶段
+52. 并发锁修复（`n` → `n_completed` 局部变量）+ CLI 参数校验函数（`_positive_int`/`_positive_float`/`_ratio_float`）+ 词典文件提前校验 + ProgressTracker 损坏容错+规范化（阶段一）
+53. `_filter_checked_translations` 提取(4处) + `_deduplicate_translations` 提取(3处)（阶段二）
+54. `_build_fallback_dicts` + `_match_string_entry_fallback` O(n*m)→O(1) + ProgressTracker 批量写入 SAVE_INTERVAL=10（阶段三）
+55. 空 choices 显式 warning + 404/401 不重试+友好提示 + 推理模型 auto timeout 300s（阶段四）
+56. 新增 8 个测试(42→50)：progress resume/normalize/checker 过滤/去重/fallback/推理检测/参数校验/timeout（阶段五）
+57. `TranslationDB.has_entry()` 封装 + 过期注释修正（阶段六）
+
 ### 已回滚
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
 
@@ -532,11 +564,6 @@ score = min(file_size / 1024, 200)
 
 ### 高优先级
 - **回写失败 609 条根因分析**：抽样 20 条看 `apply_translations` 哪个阶段匹配失败
-- **核心函数单元测试**：`_replace_string_in_line`、`protect/restore_placeholders`、`_check_translation_safety`、`check_response_item`
-
-### 中优先级
-- progress.json 原子写入（临时文件 + `os.replace`）
-- 纳入 git + CI（GitHub Actions）
 
 ### 低优先级
 - 可选 CoT 思维链翻译模式（直译→校正→意译）
@@ -545,6 +572,12 @@ score = min(file_size / 1024, 200)
 - Rich TUI 进度展示
 - tl/none 覆盖模板（避免直接修改 gui.rpy）
 - font_patch.py 字号/布局参数可配置（font_config.json）
+
+### 已完成（第八轮+第九轮）
+- ~~核心函数单元测试~~ — test_all.py 50 个用例全覆盖
+- ~~纳入 git + CI~~ — `.github/workflows/test.yml`（3 版本 + py_compile）
+- ~~progress.json 原子写入~~ — 临时文件 + `os.replace` + 批量写入 SAVE_INTERVAL=10
+- ~~线程安全修复~~ — 并发锁局部变量 + ProgressTracker 损坏容错
 
 ---
 

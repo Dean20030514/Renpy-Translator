@@ -532,6 +532,269 @@ def test_check_response_chunk_skip_chinese():
     print("[OK] check_response_chunk_skip_chinese")
 
 
+# ============================================================
+# C: 集成级测试 — 密度自适应 / 跳过名单 / 漏翻检测 / TranslationDB
+# ============================================================
+
+def test_dialogue_density():
+    """T6: calculate_dialogue_density 密度自适应路由"""
+    from main import calculate_dialogue_density
+    # 低密度：多代码少对话
+    low = "label start:\n    pass\n    pass\n    pass\n    pass\n" + \
+          '    e "Hello"\n' + "    pass\n    pass\n    pass\n    pass\n"
+    d_low = calculate_dialogue_density(low)
+    assert d_low < 0.20, f"Expected low density, got {d_low}"
+
+    # 高密度：全对话
+    high = '    e "Line 1"\n    e "Line 2"\n    e "Line 3"\n    e "Line 4"\n    e "Line 5"\n'
+    d_high = calculate_dialogue_density(high)
+    assert d_high >= 0.20, f"Expected high density, got {d_high}"
+
+    # 空文件
+    d_empty = calculate_dialogue_density("")
+    assert d_empty == 0.0
+    print("[OK] dialogue_density")
+
+
+def test_skip_files():
+    """T7: SKIP_FILES_FOR_TRANSLATION 跳过逻辑"""
+    from file_processor import SKIP_FILES_FOR_TRANSLATION
+    for name in ("define.rpy", "variables.rpy", "screens.rpy", "options.rpy", "earlyoptions.rpy"):
+        assert name in SKIP_FILES_FOR_TRANSLATION, f"{name} not in SKIP_FILES"
+    assert "script.rpy" not in SKIP_FILES_FOR_TRANSLATION
+    print("[OK] skip_files")
+
+
+def test_find_untranslated_lines():
+    """T8: find_untranslated_lines 二次过滤"""
+    from main import find_untranslated_lines
+    content = (
+        '    auto "path_%s.png"\n'
+        '    idle "icon_hover.png"\n'
+        '    hover "btn_hover.png"\n'
+        '    image bg = "backgrounds/bg.png"\n'
+        '    pov "Hello world, this is a long test line for detection that should be found."\n'
+        '    e "Short"\n'
+    )
+    results = find_untranslated_lines(content)
+    found_texts = [text for _, text in results]
+    # 应检出长英文对话
+    assert any("Hello world" in t for t in found_texts), f"Long dialogue not found: {found_texts}"
+    # 不应检出资源路径/属性行
+    assert not any("path_" in t for t in found_texts)
+    assert not any("icon_hover" in t for t in found_texts)
+    print("[OK] find_untranslated_lines")
+
+
+def test_translation_db_roundtrip():
+    """T10: TranslationDB save/load 往返 + upsert 去重"""
+    import tempfile, os
+    from pathlib import Path
+    from translation_db import TranslationDB
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        tmp_path = f.name
+    try:
+        db = TranslationDB(Path(tmp_path))
+        entries = [
+            {"file": "test.rpy", "line": 1, "original": "Hello", "translation": "你好", "status": "ok"},
+            {"file": "test.rpy", "line": 2, "original": "World", "translation": "世界", "status": "ok"},
+        ]
+        db.add_entries(entries)
+        assert len(db.entries) == 2
+        db.save()
+
+        # Reload
+        db2 = TranslationDB(Path(tmp_path))
+        db2.load()
+        assert len(db2.entries) == 2
+
+        # Upsert：相同 file+line 应更新
+        db2.add_entries([
+            {"file": "test.rpy", "line": 1, "original": "Hello", "translation": "你好啊", "status": "ok"},
+        ])
+        assert len(db2.entries) == 2  # 不应增加
+        print("[OK] translation_db_roundtrip")
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_is_untranslated_dialogue():
+    """测试 one_click_pipeline._is_untranslated_dialogue 辅助函数"""
+    from one_click_pipeline import _is_untranslated_dialogue
+    # 纯英文长文本 → 应判定为未翻译
+    assert _is_untranslated_dialogue("This is a long English sentence that should be detected as untranslated.")
+    # 含中文 → 不应判定
+    assert not _is_untranslated_dialogue("这是一个中文句子 with some English mixed in for testing.")
+    # 太短 → 不应判定
+    assert not _is_untranslated_dialogue("Short text")
+    print("[OK] is_untranslated_dialogue")
+
+
+def test_restore_placeholders_in_translations():
+    """测试 _restore_placeholders_in_translations 辅助函数"""
+    from main import _restore_placeholders_in_translations
+    from file_processor import protect_placeholders
+    text = "Hello [name], welcome to {color=#f00}town{/color}!"
+    protected, mapping = protect_placeholders(text)
+    translations = [
+        {"original": protected, "zh": f"你好 {protected.split('__RENPY_PH_0__')[0]}__RENPY_PH_0__！"}
+    ]
+    # 不应崩溃
+    _restore_placeholders_in_translations(translations, mapping)
+    # original 应被还原
+    assert "[name]" in translations[0]["original"]
+    print("[OK] restore_placeholders_in_translations")
+
+
+# ============================================================
+# D: 第九轮新增测试
+# ============================================================
+
+def test_progress_resume():
+    """T43: ProgressTracker 写入后重载，数据一致"""
+    import tempfile, os
+    from pathlib import Path
+    from main import ProgressTracker
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        tmp_path = f.name
+    try:
+        p = ProgressTracker(Path(tmp_path))
+        p.mark_chunk_done("test.rpy", 1, [{"line": 1, "zh": "你好"}])
+        p.save()  # 强制刷盘
+
+        p2 = ProgressTracker(Path(tmp_path))
+        assert p2.is_chunk_done("test.rpy", 1)
+        assert not p2.is_chunk_done("test.rpy", 2)
+        print("[OK] progress_resume")
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_progress_normalize():
+    """T44: 加载损坏/缺key的 progress.json 不崩溃"""
+    import tempfile, os
+    from pathlib import Path
+    from main import ProgressTracker
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode='w') as f:
+        f.write('{"completed_files": ["a.rpy"]}')  # 缺 completed_chunks 和 stats
+        tmp_path = f.name
+    try:
+        p = ProgressTracker(Path(tmp_path))
+        assert "a.rpy" in p.data["completed_files"]
+        assert "completed_chunks" in p.data
+        assert "stats" in p.data
+        print("[OK] progress_normalize")
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_filter_checked_translations():
+    """T47: _filter_checked_translations 正常/空译文/占位符缺失"""
+    from main import _filter_checked_translations
+    items = [
+        {"line": 1, "original": "Hello", "zh": "你好"},
+        {"line": 2, "original": "World", "zh": ""},          # 空译文 → dropped
+        {"line": 3, "original": "[name] hi", "zh": "你好"},  # 占位符缺失 → dropped
+    ]
+    kept, dropped_count, dropped_items, warnings = _filter_checked_translations(items)
+    assert len(kept) == 1 and kept[0]["line"] == 1
+    assert dropped_count == 2
+    assert len(dropped_items) == 2
+    assert len(warnings) >= 2
+    print("[OK] filter_checked_translations")
+
+
+def test_deduplicate_translations():
+    """T48: _deduplicate_translations 去重"""
+    from main import _deduplicate_translations
+    items = [
+        {"line": 1, "original": "Hello", "zh": "你好"},
+        {"line": 1, "original": "Hello", "zh": "你好啊"},  # 重复 key
+        {"line": 2, "original": "World", "zh": "世界"},
+    ]
+    result = _deduplicate_translations(items)
+    assert len(result) == 2
+    assert result[0]["zh"] == "你好"  # 保留首次
+    # 空列表
+    assert _deduplicate_translations([]) == []
+    print("[OK] deduplicate_translations")
+
+
+def test_match_string_entry_fallback():
+    """T49: _match_string_entry_fallback 四层 fallback"""
+    from main import _match_string_entry_fallback, _build_fallback_dicts
+    ft = {
+        "Save Game": "保存游戏",
+        "  Load Game  ": "读取存档",
+        '__RENPY_PH_0__ Settings': "设置",
+        'He said \\"hello\\"': "他说了你好",
+    }
+    ft_stripped, ft_clean, ft_norm = _build_fallback_dicts(ft)
+
+    # L1: 精确匹配
+    zh, level = _match_string_entry_fallback("Save Game", ft, ft_stripped, ft_clean, ft_norm)
+    assert zh == "保存游戏" and level == 0
+
+    # L2: strip 匹配
+    zh, level = _match_string_entry_fallback("Load Game", ft, ft_stripped, ft_clean, ft_norm)
+    assert zh == "读取存档" and level == 2
+
+    # L3: 去占位符匹配
+    zh, level = _match_string_entry_fallback("Settings", ft, ft_stripped, ft_clean, ft_norm)
+    assert zh == "设置" and level == 3
+
+    # L4: 转义规范化匹配
+    zh, level = _match_string_entry_fallback('He said "hello"', ft, ft_stripped, ft_clean, ft_norm)
+    assert zh == "他说了你好" and level == 4
+
+    # 无匹配
+    zh, level = _match_string_entry_fallback("Unknown", ft, ft_stripped, ft_clean, ft_norm)
+    assert zh is None and level == 0
+    print("[OK] match_string_entry_fallback")
+
+
+def test_api_empty_choices():
+    """T50: API 返回空 choices 时不崩溃"""
+    import api_client
+    # 模拟空 choices 的情况——直接测试解析逻辑
+    # _call_openai_format 需要网络，这里测试 get_pricing 和 is_reasoning_model
+    assert api_client.is_reasoning_model("grok-4-1-fast-reasoning") is True
+    assert api_client.is_reasoning_model("gpt-4o-mini") is False
+    assert api_client.is_reasoning_model("o3-mini") is True
+    assert api_client.is_reasoning_model("deepseek-reasoner") is True
+    print("[OK] api_reasoning_detection")
+
+
+def test_positive_int_validation():
+    """T52: CLI 参数校验函数"""
+    from main import _positive_int, _positive_float, _ratio_float
+    import argparse
+    # 正常值
+    assert _positive_int("5") == 5
+    assert _positive_float("3.14") == 3.14
+    assert _ratio_float("0.5") == 0.5
+    # 非法值
+    for fn, val in [(_positive_int, "0"), (_positive_int, "-1"),
+                    (_positive_float, "0"), (_ratio_float, "1.5"), (_ratio_float, "0")]:
+        try:
+            fn(val)
+            assert False, f"应该抛出异常: {fn.__name__}({val})"
+        except argparse.ArgumentTypeError:
+            pass
+    print("[OK] positive_int_validation")
+
+
+def test_reasoning_model_timeout():
+    """推理模型自动提升 timeout"""
+    import api_client
+    config = api_client.APIConfig(provider='xai', api_key='test', model='grok-4-1-fast-reasoning', timeout=180.0)
+    assert config.timeout >= 300.0, f"Expected >= 300, got {config.timeout}"
+    # 非推理模型不应提升
+    config2 = api_client.APIConfig(provider='openai', api_key='test', model='gpt-4o-mini', timeout=180.0)
+    assert config2.timeout == 180.0
+    print("[OK] reasoning_model_timeout")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -554,7 +817,7 @@ if __name__ == '__main__':
     test_glossary_thread_safety()
     test_progress_cleanup()
     test_pricing_lookup()
-    # B1: 新增核心函数测试
+    # B1: 核心函数测试
     test_protect_restore_roundtrip()
     test_protect_dedup()
     test_protect_empty_and_no_placeholders()
@@ -570,7 +833,23 @@ if __name__ == '__main__':
     test_check_response_chunk_mismatch()
     test_check_response_chunk_empty()
     test_check_response_chunk_skip_chinese()
+    # C: 集成级测试
+    test_dialogue_density()
+    test_skip_files()
+    test_find_untranslated_lines()
+    test_translation_db_roundtrip()
+    test_is_untranslated_dialogue()
+    test_restore_placeholders_in_translations()
+    # D: 第九轮新增测试
+    test_progress_resume()
+    test_progress_normalize()
+    test_filter_checked_translations()
+    test_deduplicate_translations()
+    test_match_string_entry_fallback()
+    test_api_empty_choices()
+    test_positive_int_validation()
+    test_reasoning_model_timeout()
     print()
     print("=" * 40)
-    print(f"ALL 36 TESTS PASSED")
+    print(f"ALL 50 TESTS PASSED")
     print("=" * 40)

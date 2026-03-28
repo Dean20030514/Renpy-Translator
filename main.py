@@ -111,19 +111,31 @@ class ChunkResult:
 class ProgressTracker:
     """追踪翻译进度，支持中断续传"""
 
+    SAVE_INTERVAL = 10  # 每 N 次 mark 操作才写磁盘（减少 I/O）
+
     def __init__(self, progress_file: Path):
         self.path = progress_file
         self._lock = threading.Lock()
+        self._dirty = 0  # 未写入磁盘的 mark 操作计数
         self.data: dict = {"completed_files": [], "completed_chunks": {}, "stats": {}}
         self._load()
 
     def _load(self):
         if self.path.exists():
-            self.data = json.loads(self.path.read_text(encoding='utf-8'))
+            try:
+                self.data = json.loads(self.path.read_text(encoding='utf-8'))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[PROGRESS] 进度文件损坏，已重置: {e}")
+                self.data = {}
+        # 确保必需 key 存在（防损坏文件缺 key 导致 KeyError）
+        self.data.setdefault("completed_files", [])
+        self.data.setdefault("completed_chunks", {})
+        self.data.setdefault("stats", {})
 
     def save(self):
         with self._lock:
             self._save_unlocked()
+            self._dirty = 0
 
     def _save_unlocked(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +168,10 @@ class ProgressTracker:
             results = self.data.setdefault("results", {})
             file_results = results.setdefault(rel_path, [])
             file_results.extend(translations)
-            self._save_unlocked()
+            self._dirty += 1
+            if self._dirty >= self.SAVE_INTERVAL:
+                self._save_unlocked()
+                self._dirty = 0
 
     def get_file_translations(self, rel_path: str) -> list[dict]:
         """获取文件的所有已完成翻译"""
@@ -176,6 +191,139 @@ class ProgressTracker:
             self.data.setdefault("stats", {})[key] = value
             self._save_unlocked()
 
+
+# ============================================================
+# 可配置阈值常量
+# ============================================================
+
+CHECKER_DROP_RATIO_THRESHOLD = 0.3   # chunk 丢弃率超此值触发重试
+MIN_DROPPED_FOR_WARNING = 3          # 丢弃数达此值才触发警告
+MIN_DIALOGUE_LENGTH = 4              # 定向翻译中对话行最小长度
+
+# ============================================================
+# 公共辅助
+# ============================================================
+
+# 匹配 AI 返回带角色名前缀的译文，如 mc "你好"
+_CHAR_PREFIX_RE = re.compile(r'^[a-zA-Z_]\w*\s+"((?:[^"\\]|\\.)*)"$')
+
+
+def _strip_char_prefix(translations: list[dict]) -> None:
+    """如果 AI 返回的 original/zh 带角色名前缀（如 mc "text"），剥离为纯对话文本。"""
+    for t in translations:
+        for key in ("original", "zh"):
+            val = t.get(key, "") or ""
+            m = _CHAR_PREFIX_RE.match(val)
+            if m:
+                t[key] = m.group(1)
+
+
+def _restore_placeholders_in_translations(
+    translations: list[dict],
+    ph_mapping: list[tuple[str, str]],
+    extra_keys: tuple[str, ...] = (),
+) -> None:
+    """将翻译结果中的占位符令牌还原为原始文本。
+
+    默认还原 original 和 zh 字段，extra_keys 可追加额外字段（如 tl-mode 的 id）。
+    """
+    keys = ("original", "zh") + extra_keys
+    for t in translations:
+        for key in keys:
+            val = t.get(key)
+            if val:
+                t[key] = restore_placeholders(val, ph_mapping)
+
+
+_PH_TOKEN_RE = re.compile(r"__RENPY_PH_\d+__")
+
+
+def _build_fallback_dicts(
+    ft: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """为 StringEntry 四层 fallback 匹配预建 3 个查找 dict（O(1) 查找代替 O(n) 遍历）。"""
+    ft_stripped = {}
+    ft_clean = {}
+    ft_norm = {}
+    for k, v in ft.items():
+        s = k.strip()
+        if s and s not in ft_stripped:
+            ft_stripped[s] = v
+        c = _PH_TOKEN_RE.sub("", k).strip()
+        if c and c not in ft_clean:
+            ft_clean[c] = v
+        n = k.replace('\\"', '"').replace("\\n", "\n").strip()
+        if n and n not in ft_norm:
+            ft_norm[n] = v
+    return ft_stripped, ft_clean, ft_norm
+
+
+def _match_string_entry_fallback(
+    entry_old: str,
+    ft: dict[str, str],
+    ft_stripped: dict[str, str],
+    ft_clean: dict[str, str],
+    ft_norm: dict[str, str],
+) -> tuple[str | None, int]:
+    """StringEntry 四层 fallback 匹配。返回 (zh, fallback_level)。"""
+    # L1: 精确匹配
+    zh = ft.get(entry_old)
+    if zh:
+        return zh, 0
+    # L2: strip 空白
+    zh = ft_stripped.get(entry_old.strip())
+    if zh:
+        return zh, 2
+    # L3: 去占位符令牌
+    clean = _PH_TOKEN_RE.sub("", entry_old).strip()
+    if clean:
+        zh = ft_clean.get(clean)
+        if zh:
+            return zh, 3
+    # L4: 转义规范化
+    norm = entry_old.replace('\\"', '"').replace("\\n", "\n").strip()
+    if norm:
+        zh = ft_norm.get(norm)
+        if zh:
+            return zh, 4
+    return None, 0
+
+
+def _filter_checked_translations(
+    translations: list[dict],
+    line_offset: int = 0,
+) -> tuple[list[dict], int, list[dict], list[str]]:
+    """对翻译结果逐条执行 checker，分流为 kept / dropped。
+
+    Returns:
+        (kept, dropped_count, dropped_items, warnings)
+    """
+    kept: list[dict] = []
+    dropped_items: list[dict] = []
+    dropped_count = 0
+    warnings: list[str] = []
+    for t in translations:
+        item_warnings = check_response_item(t, line_offset=line_offset)
+        if item_warnings:
+            dropped_count += 1
+            dropped_items.append(t)
+            for w in item_warnings:
+                warnings.append(f"[CHECK-DROPPED] {w}")
+        else:
+            kept.append(t)
+    return kept, dropped_count, dropped_items, warnings
+
+
+def _deduplicate_translations(translations: list[dict]) -> list[dict]:
+    """按 (line, original) 去重，保留首次出现的条目。"""
+    seen: set[tuple] = set()
+    unique: list[dict] = []
+    for t in translations:
+        key = (t.get("line", 0), t.get("original", ""))
+        if key not in seen:
+            seen.add(key)
+            unique.append(t)
+    return unique
 
 
 # ============================================================
@@ -246,7 +394,7 @@ def translate_file(
     if len(chunks) > 1:
         logger.debug(f"    拆分为 {len(chunks)} 个块")
 
-    # 构建 prompt（按题材 + 项目名选择外部模板）
+    # 构建 prompt（按题材 + 术语表 + 项目名）
     project_name = game_dir.parent.name if game_dir.name.lower() == "game" else game_dir.name
     system_prompt = build_system_prompt(
         genre=genre,
@@ -287,27 +435,16 @@ def translate_file(
         except Exception as e:
             return ChunkResult(part=part, error=f"块 {part} API 调用失败: {e}", expected=expected_count)
         # 占位符还原 — 将响应中的令牌还原为原始占位符
-        for t in translations:
-            t["original"] = restore_placeholders(t.get("original") or "", ph_mapping)
-            t["zh"] = restore_placeholders(t.get("zh") or "", ph_mapping)
+        _restore_placeholders_in_translations(translations, ph_mapping)
         # Chunk 级检查（条数一致）
         chunk_warnings = check_response_chunk(protected_content, translations)
         for w in chunk_warnings:
             logger.debug(f"    [CHECK] {w}")
         # 逐条检查 — 有警告则丢弃该条，不写入译文（宁可漏翻也不误翻）
-        kept: list[dict] = []
-        dropped_items: list[dict] = []
-        dropped_count = 0
-        for t in translations:
-            item_warnings = check_response_item(t)
-            if item_warnings:
-                dropped_count += 1
-                dropped_items.append(t)
-                for w in item_warnings:
-                    logger.debug(f"    [CHECK-DROPPED] {w}")
-                    all_warnings.append(f"[CHECK-DROPPED] {w}")
-            else:
-                kept.append(t)
+        kept, dropped_count, dropped_items, check_warns = _filter_checked_translations(translations)
+        for w in check_warns:
+            logger.debug(f"    {w}")
+            all_warnings.append(w)
         if not translations:
             logger.debug(f"    [INFO] 块 {part}: 无需翻译的内容")
         else:
@@ -323,7 +460,7 @@ def translate_file(
         """判断 chunk 是否需要重试：API 错误或丢弃率过高。"""
         if cr.error:
             return True
-        if cr.returned > 0 and cr.dropped_count >= 3 and cr.dropped_count / cr.returned > 0.3:
+        if cr.returned > 0 and cr.dropped_count >= MIN_DROPPED_FOR_WARNING and cr.dropped_count / cr.returned > CHECKER_DROP_RATIO_THRESHOLD:
             return True
         return False
 
@@ -379,13 +516,7 @@ def translate_file(
         return 0, [], total_checker_dropped, chunk_stats_list
 
     # 去重（多 chunk 可能有重叠）
-    seen = set()
-    unique_translations = []
-    for t in all_translations:
-        key = (t.get('line', 0), t.get('original', ''))
-        if key not in seen:
-            seen.add(key)
-            unique_translations.append(t)
+    unique_translations = _deduplicate_translations(all_translations)
 
     # 应用翻译
     patched, patch_warnings, _ = apply_translations(content, unique_translations)
@@ -466,8 +597,7 @@ def translate_file(
                 if not line_no or not original:
                     continue
                 # 若同一 key 已有 kept 条目，不覆盖
-                key = (rel_path, line_no, original)
-                if key in translation_db._index:
+                if translation_db.has_entry(rel_path, line_no, original):
                     continue
                 dropped_db_entries.append({
                     "file": rel_path,
@@ -527,7 +657,6 @@ def _translate_file_targeted(
     - 输出到 output_dir（可能与 game_dir 不同）
     - 返回值与 translate_file 一致的 4-tuple
     """
-    import re as _re
     from one_click_pipeline import _is_user_visible_string_line
 
     all_lines = content.splitlines()
@@ -536,8 +665,8 @@ def _translate_file_targeted(
     dialogue_indices: list[int] = []
     for i, line in enumerate(all_lines):
         if _is_user_visible_string_line(line):
-            m = _re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
-            if m and len(m.group(1)) >= 4:
+            m = re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
+            if m and len(m.group(1)) >= MIN_DIALOGUE_LENGTH:
                 dialogue_indices.append(i)
 
     if not dialogue_indices:
@@ -558,7 +687,6 @@ def _translate_file_targeted(
     all_warnings: list[str] = []
     chunk_stats_list: list[dict] = []
     total_checker_dropped = 0
-    _char_prefix_re = _re.compile(r'^[a-zA-Z_]\w*\s+"((?:[^"\\]|\\.)*)"$')
 
     for ci, chunk_lines in enumerate(chunks, 1):
         raw_for_detect = "\n".join(
@@ -594,28 +722,12 @@ def _translate_file_targeted(
                                      "returned": 0, "dropped": 0})
             continue
 
-        for t in translations:
-            t["original"] = restore_placeholders(t.get("original") or "", ph_mapping)
-            t["zh"] = restore_placeholders(t.get("zh") or "", ph_mapping)
+        _restore_placeholders_in_translations(translations, ph_mapping)
+        _strip_char_prefix(translations)
 
-        for t in translations:
-            for key in ("original", "zh"):
-                val = t.get(key, "") or ""
-                m2 = _char_prefix_re.match(val)
-                if m2:
-                    t[key] = m2.group(1)
-
-        kept: list[dict] = []
-        dropped = 0
-        for t in translations:
-            item_warnings = check_response_item(t)
-            if item_warnings:
-                for w in item_warnings:
-                    all_warnings.append(f"[CHECK-DROPPED] {w}")
-                dropped += 1
-                total_checker_dropped += 1
-            else:
-                kept.append(t)
+        kept, dropped, _, check_warns = _filter_checked_translations(translations)
+        all_warnings.extend(check_warns)
+        total_checker_dropped += dropped
 
         chunk_stats_list.append({"chunk_idx": ci, "expected": target_count,
                                  "returned": len(translations), "dropped": dropped})
@@ -631,13 +743,7 @@ def _translate_file_targeted(
         progress.mark_file_done(rel_path)
         return 0, all_warnings, total_checker_dropped, chunk_stats_list
 
-    seen: set[tuple] = set()
-    unique: list[dict] = []
-    for t in all_translations:
-        key = (t.get("line", 0), t.get("original", ""))
-        if key not in seen:
-            seen.add(key)
-            unique.append(t)
+    unique = _deduplicate_translations(all_translations)
 
     patched, patch_warnings, _ = apply_translations(content, unique)
     all_warnings.extend(patch_warnings)
@@ -728,6 +834,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # 加载外部词典
     if args.dict:
         for dict_path in args.dict:
+            if not Path(dict_path).exists():
+                logger.warning(f"[WARN] 词典文件不存在，跳过: {dict_path}")
+                continue
             glossary.load_dict(dict_path)
 
     # 加载项目级系统 UI 术语（可选）
@@ -1139,7 +1248,6 @@ def find_untranslated_lines(content: str) -> list[tuple[int, str]]:
     Returns:
         [(0-based_line_index, quoted_english_text), ...]
     """
-    import re as _re
     from one_click_pipeline import _is_user_visible_string_line
 
     # screen 属性关键字——引号后紧跟这些词说明是 UI 布局行而非对话
@@ -1161,7 +1269,7 @@ def find_untranslated_lines(content: str) -> list[tuple[int, str]]:
         if stripped.startswith(('idle "', 'hover "', 'insensitive "')):
             continue
 
-        m = _re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
+        m = re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
         if not m:
             continue
         s = m.group(1)
@@ -1315,28 +1423,13 @@ def retranslate_file(
             all_warnings.append(warn)
             continue
 
-        for t in translations:
-            t["original"] = restore_placeholders(t.get("original") or "", ph_mapping)
-            t["zh"] = restore_placeholders(t.get("zh") or "", ph_mapping)
+        _restore_placeholders_in_translations(translations, ph_mapping)
+        _strip_char_prefix(translations)
 
-        import re as _re
-        _char_prefix_re = _re.compile(r'^[a-zA-Z_]\w*\s+"((?:[^"\\]|\\.)*)"$')
-        for t in translations:
-            for key in ("original", "zh"):
-                val = t.get(key, "") or ""
-                m = _char_prefix_re.match(val)
-                if m:
-                    t[key] = m.group(1)
-
-        kept: list[dict] = []
-        for t in translations:
-            item_warnings = check_response_item(t)
-            if item_warnings:
-                for w in item_warnings:
-                    logger.debug(f"    [CHECK-DROPPED] {w}")
-                    all_warnings.append(f"[CHECK-DROPPED] {w}")
-            else:
-                kept.append(t)
+        kept, _, _, check_warns = _filter_checked_translations(translations)
+        for w in check_warns:
+            logger.debug(f"    {w}")
+        all_warnings.extend(check_warns)
 
         if kept:
             logger.debug(f"    [OK  ] 补翻块 {ci}: 获得 {len(kept)} 条翻译")
@@ -1346,14 +1439,7 @@ def retranslate_file(
         progress.mark_file_done(rel_path)
         return 0, all_warnings
 
-    # 去重
-    seen: set[tuple] = set()
-    unique: list[dict] = []
-    for t in all_translations:
-        key = (t.get("line", 0), t.get("original", ""))
-        if key not in seen:
-            seen.add(key)
-            unique.append(t)
+    unique = _deduplicate_translations(all_translations)
 
     # 回写（走现有安全流程）
     patched, patch_warnings, _ = apply_translations(content, unique)
@@ -1453,6 +1539,9 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     glossary.load(str(glossary_path))
     if args.dict:
         for dict_path in args.dict:
+            if not Path(dict_path).exists():
+                logger.warning(f"[WARN] 词典文件不存在，跳过: {dict_path}")
+                continue
             glossary.load_dict(dict_path)
 
     # 补翻使用独立进度文件，不干扰主翻译进度
@@ -1674,8 +1763,6 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
 
 def _inject_language_buttons(game_dir: Path, tl_lang: str) -> None:
     """Find all screen preferences() in .rpy files and inject Language radio buttons."""
-    import re as _re
-
     snippet = _LANG_BUTTON_SNIPPET.replace("{lang}", tl_lang)
     marker = 'action Language('
 
@@ -1832,6 +1919,9 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     glossary.load(str(glossary_path))
     if args.dict:
         for dict_path in args.dict:
+            if not Path(dict_path).exists():
+                logger.warning(f"[WARN] 词典文件不存在，跳过: {dict_path}")
+                continue
             glossary.load_dict(dict_path)
 
     progress = ProgressTracker(output_dir / "tl_progress.json")
@@ -1945,10 +2035,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         user_prompt = build_tl_user_prompt(protected_text, len(chunk_entries))
         translations = client.translate(system_prompt, user_prompt)
 
-        for t in translations:
-            t["id"] = restore_placeholders(t.get("id") or "", ph_mapping)
-            t["original"] = restore_placeholders(t.get("original") or "", ph_mapping)
-            t["zh"] = restore_placeholders(t.get("zh") or "", ph_mapping)
+        _restore_placeholders_in_translations(translations, ph_mapping, extra_keys=("id",))
 
         kept_items: dict[str, str] = {}
         dropped = 0
@@ -1983,21 +2070,21 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                     total_checker_dropped += dropped
                     total_warnings.extend(warnings)
                     _completed[0] += 1
-                    n = _completed[0]
-                logger.info(f"  [{n}/{len(all_chunk_tasks)}] {rp} "
-                     f"chunk {ci}/{total}: 保留 {len(kept_items)} 条"
+                    n_completed = _completed[0]
+                    n_kept = len(kept_items)
+                logger.info(f"  [{n_completed}/{len(all_chunk_tasks)}] {rp} "
+                     f"chunk {ci}/{total}: 保留 {n_kept} 条"
                      + (f", 丢弃 {dropped} 条" if dropped else ""))
                 progress.mark_chunk_done(rp, ci, [])
             except Exception as e:
                 with _lock:
                     total_warnings.append(f"{rel_path} chunk {ci}: {e}")
                     _completed[0] += 1
-                    n = _completed[0]
-                logger.error(f"  [{n}/{len(all_chunk_tasks)}] [ERROR] "
+                    n_completed = _completed[0]
+                logger.error(f"  [{n_completed}/{len(all_chunk_tasks)}] [ERROR] "
                       f"{rel_path} chunk {ci}/{total}: {e}")
 
     # ── 3. 匹配 + 回填（串行，保证文件写入安全） ──
-    _ph_token_re = re.compile(r"__RENPY_PH_\d+__")
 
     for rel_path, (file_path, entries, _total_chunks) in file_meta.items():
         ft = file_translations.get(rel_path, {})
@@ -2005,6 +2092,9 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             progress.mark_file_done(rel_path)
             files_processed += 1
             continue
+
+        # 预建 fallback 查找表（O(1) 替代 O(n) 遍历）
+        ft_stripped, ft_clean, ft_norm = _build_fallback_dicts(ft)
 
         matched_entries: list = []
         db_entries: list[dict] = []
@@ -2029,31 +2119,9 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                         "model": config.model,
                     })
             else:  # StringEntry — 四层 fallback 匹配（精确 → strip → 去占位符令牌 → 转义规范化）
-                zh = ft.get(entry.old)
-                fb_level = 0
-                if not zh:
-                    old_stripped = entry.old.strip()
-                    for tid, tzh in ft.items():
-                        if tid.strip() == old_stripped:
-                            zh = tzh
-                            fb_level = 2
-                            break
-                if not zh:
-                    old_clean = _ph_token_re.sub("", entry.old).strip()
-                    for tid, tzh in ft.items():
-                        tid_clean = _ph_token_re.sub("", tid).strip()
-                        if tid_clean == old_clean and tid_clean:
-                            zh = tzh
-                            fb_level = 3
-                            break
-                if not zh:
-                    old_norm = entry.old.replace('\\"', '"').replace("\\n", "\n").strip()
-                    for tid, tzh in ft.items():
-                        tid_norm = tid.replace('\\"', '"').replace("\\n", "\n").strip()
-                        if tid_norm == old_norm and tid_norm:
-                            zh = tzh
-                            fb_level = 4
-                            break
+                zh, fb_level = _match_string_entry_fallback(
+                    entry.old, ft, ft_stripped, ft_clean, ft_norm,
+                )
                 if zh:
                     if fb_level:
                         total_fallback_matched += 1
@@ -2115,16 +2183,13 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                 ptext, phmap = protect_placeholders(chunk_text)
                 up = build_tl_user_prompt(ptext, len(_cen))
                 ts = client.translate(system_prompt, up)
-                for t in ts:
-                    t["id"] = restore_placeholders(t.get("id") or "", phmap)
-                    t["original"] = restore_placeholders(
-                        t.get("original") or "", phmap)
-                    t["zh"] = restore_placeholders(t.get("zh") or "", phmap)
+                _restore_placeholders_in_translations(ts, phmap, extra_keys=("id",))
                 for t in ts:
                     iw = check_response_item(t)
                     if not iw and t.get("id") and t.get("zh"):
                         r_kept[t["id"]] = t["zh"]
 
+            r_stripped, r_clean, r_norm = _build_fallback_dicts(r_kept)
             r_matched: list = []
             for entry in r_entries:
                 if isinstance(entry, DialogueEntry):
@@ -2134,16 +2199,9 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                         r_matched.append(entry)
                         total_translated += 1
                 else:
-                    zh = r_kept.get(entry.old)
-                    if not zh:
-                        old_norm = entry.old.replace('\\"', '"') \
-                                       .replace("\\n", "\n").strip()
-                        for tid, tzh in r_kept.items():
-                            tid_norm = tid.replace('\\"', '"') \
-                                          .replace("\\n", "\n").strip()
-                            if tid_norm == old_norm and tid_norm:
-                                zh = tzh
-                                break
+                    zh, _ = _match_string_entry_fallback(
+                        entry.old, r_kept, r_stripped, r_clean, r_norm,
+                    )
                     if zh:
                         entry.new = zh
                         r_matched.append(entry)
@@ -2210,6 +2268,30 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     logger.info(f"[TL-MODE] 报告: {report_path}")
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: 正整数。"""
+    iv = int(value)
+    if iv <= 0:
+        raise argparse.ArgumentTypeError(f"必须为正整数: {value}")
+    return iv
+
+
+def _positive_float(value: str) -> float:
+    """argparse type: 正浮点数。"""
+    fv = float(value)
+    if fv <= 0:
+        raise argparse.ArgumentTypeError(f"必须为正数: {value}")
+    return fv
+
+
+def _ratio_float(value: str) -> float:
+    """argparse type: 0~1 之间的比例值。"""
+    fv = float(value)
+    if not (0 < fv <= 1.0):
+        raise argparse.ArgumentTypeError(f"必须在 (0, 1.0] 范围内: {value}")
+    return fv
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Ren'Py 整文件翻译工具 — AI 自主识别翻译内容",
@@ -2223,11 +2305,11 @@ def main():
     parser.add_argument("--model", default="", help="模型名称 (留空使用默认)")
     parser.add_argument("--genre", default="adult", choices=['adult', 'visual_novel', 'rpg', 'general'],
                         help="翻译风格 (默认: adult)")
-    parser.add_argument("--rpm", type=int, default=60, help="每分钟请求数限制 (默认: 60)")
-    parser.add_argument("--rps", type=int, default=5, help="每秒请求数限制 (默认: 5)")
-    parser.add_argument("--timeout", type=float, default=180.0, help="API 超时秒数 (默认: 180)")
+    parser.add_argument("--rpm", type=_positive_int, default=60, help="每分钟请求数限制 (默认: 60)")
+    parser.add_argument("--rps", type=_positive_int, default=5, help="每秒请求数限制 (默认: 5)")
+    parser.add_argument("--timeout", type=_positive_float, default=180.0, help="API 超时秒数 (默认: 180)")
     parser.add_argument("--temperature", type=float, default=0.1, help="生成温度 (默认: 0.1, 低=一致性高)")
-    parser.add_argument("--max-chunk-tokens", type=int, default=4000,
+    parser.add_argument("--max-chunk-tokens", type=_positive_int, default=4000,
                         help="每个分块最大 token 数 (默认: 4000，适配 AI 输出长度限制)")
     parser.add_argument("--resume", action="store_true", help="从上次中断处继续")
     parser.add_argument("--dict", nargs="*", default=[], metavar="PATH",
@@ -2240,7 +2322,7 @@ def main():
                         help="排除匹配的文件 (glob 模式, 如 'tl/*' '*.bak')")
     parser.add_argument("--dry-run", action="store_true",
                         help="仅扫描统计，不实际翻译（预估费用）")
-    parser.add_argument("--max-response-tokens", type=int, default=32768,
+    parser.add_argument("--max-response-tokens", type=_positive_int, default=32768,
                         help="API 最大响应 token 数 (默认: 32768)")
     parser.add_argument("--log-file", default="", metavar="PATH",
                         help="保存详细日志到文件")
@@ -2261,7 +2343,7 @@ def main():
     parser.add_argument("--retranslate", action="store_true",
                         help="补翻模式：扫描已翻译文件中残留的英文对话行，构建小 chunk 精准补翻。"
                              "若 --output-dir 与 --game-dir 相同则原地覆写，建议先备份或指向不同目录")
-    parser.add_argument("--min-dialogue-density", type=float, default=0.20, metavar="RATIO",
+    parser.add_argument("--min-dialogue-density", type=_ratio_float, default=0.20, metavar="RATIO",
                         help="对话密度阈值 (默认: 0.20)；密度低于此值的文件在全量阶段自动走定向翻译模式")
     parser.add_argument("--tl-mode", action="store_true",
                         help="tl 模式：读取 tl/<lang>/ 目录中的空翻译槽位，AI 翻译后精确回填。"

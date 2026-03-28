@@ -66,7 +66,7 @@ class Glossary:
             except (UnicodeDecodeError, OSError):
                 try:
                     content = rpy.read_text(encoding='latin-1')
-                except Exception:
+                except (UnicodeDecodeError, OSError):
                     continue
 
             for m in char_re.finditer(content):
@@ -143,7 +143,7 @@ class Glossary:
 
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
-        except Exception:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             logger.warning(f"系统 UI 术语表解析失败: {filepath}")
             return
 

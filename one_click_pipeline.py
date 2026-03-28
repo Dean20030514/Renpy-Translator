@@ -28,6 +28,15 @@ RISK_KEYWORDS = [
     "parents", "secret", "weekend", "v0", "help", "interaction",
 ]
 
+# 风险评分常量
+MAX_FILE_RANK_SCORE = 200        # 文件大小评分上限
+RISK_KEYWORD_SCORE = 80          # 命中风险关键词加分
+SAZMOD_BONUS_SCORE = 30          # SAZMOD 模组额外加分
+
+# 漏翻检测阈值
+MIN_UNTRANSLATED_TEXT_LENGTH = 20  # 疑似漏翻最小文本长度
+MIN_ENGLISH_CHARS_FOR_UNTRANSLATED = 12  # 疑似漏翻最小英文字符数
+
 # 翻译长度比例告警阈值（可根据需要调整）
 # 经验值：中英对话正常 ratio 往往在 0.2~0.4 之间，将下限调低以减少噪音
 LEN_RATIO_LOWER = 0.15
@@ -58,12 +67,12 @@ def list_rpy_files(scan_root: Path) -> list[Path]:
 
 def score_file(rel_path: str, size: int) -> int:
     lower = rel_path.lower()
-    score = min(size // 1024, 200)
+    score = min(size // 1024, MAX_FILE_RANK_SCORE)
     for k in RISK_KEYWORDS:
         if k in lower:
-            score += 80
+            score += RISK_KEYWORD_SCORE
     if "sazmod" in lower:
-        score += 30
+        score += SAZMOD_BONUS_SCORE
     return score
 
 
@@ -151,6 +160,28 @@ def run_main(
         raise StageError(f"main.py 执行失败，退出码 {proc.returncode}")
 
 
+def _is_untranslated_dialogue(text: str) -> bool:
+    """判断一段对话文本是否为疑似未翻译的英文。"""
+    cn = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    en = sum(1 for c in text if "a" <= c.lower() <= "z")
+    return cn == 0 and en >= MIN_ENGLISH_CHARS_FOR_UNTRANSLATED and len(text) >= MIN_UNTRANSLATED_TEXT_LENGTH
+
+
+def _extract_dialogue_text(line: str) -> str | None:
+    """从一行代码中提取用户可见的对话文本，不符合条件返回 None。"""
+    if not _is_user_visible_string_line(line):
+        return None
+    m = re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
+    if not m:
+        return None
+    s = m.group(1)
+    if len(s) < 8:
+        return None
+    if any(x in s for x in ("/", "\\", ".png", ".jpg", ".webp", ".ttf", "#")):
+        return None
+    return s
+
+
 def count_untranslated_dialogues_in_file(path: Path) -> tuple[int, int]:
     """返回 (对话行总数, 疑似未翻译英文对话行数)。"""
     if path.name in SKIP_FILES_FOR_TRANSLATION:
@@ -163,30 +194,17 @@ def count_untranslated_dialogues_in_file(path: Path) -> tuple[int, int]:
         return 0, 0
 
     for line in text.splitlines():
-        if not _is_user_visible_string_line(line):
-            continue
-        m = re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
-        if not m:
-            continue
-        s = m.group(1)
-        if len(s) < 8:
-            continue
-        if any(x in s for x in ("/", "\\", ".png", ".jpg", ".webp", ".ttf", "#")):
+        s = _extract_dialogue_text(line)
+        if s is None:
             continue
         dialogue += 1
-        cn = sum(1 for c in s if "\u4e00" <= c <= "\u9fff")
-        en = sum(1 for c in s if "a" <= c.lower() <= "z")
-        if cn == 0 and en >= 12 and len(s) >= 20:
+        if _is_untranslated_dialogue(s):
             untranslated += 1
     return dialogue, untranslated
 
 
 def collect_untranslated_details(path: Path) -> list[tuple[int, str]]:
-    """返回 [(行号, 原文文本), ...] 对于疑似未翻译的英文对话行。
-
-    检测逻辑与 count_untranslated_dialogues_in_file 完全一致，
-    但额外返回每条漏翻的行号和原文内容，供归因分析使用。
-    """
+    """返回 [(行号, 原文文本), ...] 对于疑似未翻译的英文对话行。"""
     if path.name in SKIP_FILES_FOR_TRANSLATION:
         return []
     result: list[tuple[int, str]] = []
@@ -195,19 +213,10 @@ def collect_untranslated_details(path: Path) -> list[tuple[int, str]]:
     except OSError:
         return []
     for i, line in enumerate(text.splitlines(), 1):
-        if not _is_user_visible_string_line(line):
+        s = _extract_dialogue_text(line)
+        if s is None:
             continue
-        m = re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
-        if not m:
-            continue
-        s = m.group(1)
-        if len(s) < 8:
-            continue
-        if any(x in s for x in ("/", "\\", ".png", ".jpg", ".webp", ".ttf", "#")):
-            continue
-        cn = sum(1 for c in s if "\u4e00" <= c <= "\u9fff")
-        en = sum(1 for c in s if "a" <= c.lower() <= "z")
-        if cn == 0 and en >= 12 and len(s) >= 20:
+        if _is_untranslated_dialogue(s):
             result.append((i, s))
     return result
 
@@ -824,6 +833,248 @@ def write_report_summary_md(
     summary_path = project_out_root / "report_summary.md"
     summary_path.write_text("\n".join(lines), encoding="utf-8")
 
+def _run_retranslate_phase(
+    full_translated_root: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    args: argparse.Namespace,
+    api_key: str,
+) -> dict:
+    """Stage 3: 漏翻补翻轮。返回 report["stages"]["retranslate"] 数据。"""
+    untranslated_files = collect_files_with_untranslated(full_translated_root)
+    result: dict = {"candidate_files": len(untranslated_files)}
+
+    if not untranslated_files:
+        _print("[INFO] 全量阶段无漏翻文件，跳过补翻")
+        result["skipped"] = True
+        result["checker_dropped"] = 0
+        return result
+
+    from main import (
+        retranslate_file as _retranslate_file,
+        find_untranslated_lines as _find_untranslated_lines,
+        ProgressTracker as _ProgressTracker,
+    )
+    from api_client import APIClient as _APIClient, APIConfig as _APIConfig
+    from glossary import Glossary as _Glossary
+
+    rt_config = _APIConfig(
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        temperature=0.1,
+        max_response_tokens=args.max_response_tokens,
+    )
+    rt_client = _APIClient(rt_config)
+
+    rt_glossary = _Glossary()
+    rt_glossary_path = stage2_translated / "glossary.json"
+    rt_glossary.load(str(rt_glossary_path))
+    if args.dict:
+        for dp in args.dict:
+            rt_glossary.load_dict(dp)
+
+    rt_progress = _ProgressTracker(pipeline_root / "retranslate_progress.json")
+    rt_progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
+    rt_progress.save()
+
+    rt_db = TranslationDB(pipeline_root / "retranslate_db.json")
+    rt_run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+
+    # �� find_untranslated_lines 精确扫描漏翻行
+    rpy_files_all = sorted(list_rpy_files(full_translated_root))
+    files_to_rt: list[tuple[Path, int]] = []
+    total_ut = 0
+    for f in rpy_files_all:
+        ut = _find_untranslated_lines(read_file(f))
+        if ut:
+            files_to_rt.append((f, len(ut)))
+            total_ut += len(ut)
+
+    _print(f"[SCAN] 发现 {total_ut} 行漏翻，分布在 {len(files_to_rt)} 个文件中")
+
+    rt_total_translated = 0
+    rt_total_warnings: list[str] = []
+    rt_quality: dict[str, list[dict]] = {}
+
+    for idx, (rpy_path, n_ut) in enumerate(files_to_rt, 1):
+        rel = rpy_path.relative_to(full_translated_root)
+        _print(f"  [{idx}/{len(files_to_rt)}] {rel} ({n_ut} 行)")
+        try:
+            count, warnings = _retranslate_file(
+                rpy_path,
+                full_translated_root,
+                full_translated_root,
+                rt_client,
+                rt_glossary,
+                rt_progress,
+                rt_quality,
+                genre=args.genre,
+                translation_db=rt_db,
+                run_id=rt_run_id,
+                stage="retranslate",
+                provider=rt_config.provider,
+                model=rt_config.model,
+            )
+            rt_total_translated += count
+            rt_total_warnings.extend(warnings)
+        except KeyboardInterrupt:
+            rt_glossary.save(str(rt_glossary_path))
+            rt_progress.save()
+            rt_db.save()
+            raise
+        except Exception as e:
+            _print(f"  [ERROR] {rel}: {e}")
+            rt_total_warnings.append(str(e))
+
+        if idx % 5 == 0:
+            rt_glossary.save(str(rt_glossary_path))
+
+    rt_glossary.save(str(rt_glossary_path))
+    rt_db.save()
+
+    _print(f"[RETRANSLATE] 补翻完成: {rt_total_translated} 条, "
+           f"API 用量: {rt_client.usage.summary()}")
+
+    result.update({
+        "mode": "retranslate",
+        "retranslated_files": len(files_to_rt),
+        "total_untranslated_scanned": total_ut,
+        "total_translated": rt_total_translated,
+        "total_warnings": len(rt_total_warnings),
+        "api_requests": rt_client.usage.total_requests,
+        "input_tokens": rt_client.usage.total_input_tokens,
+        "output_tokens": rt_client.usage.total_output_tokens,
+        "estimated_cost_usd": round(rt_client.usage.estimated_cost, 4),
+        "checker_dropped": 0,
+    })
+    return result
+
+
+def _run_final_report(
+    scan_root: Path,
+    stage2_translated: Path,
+    project_out_root: Path,
+    pipeline_root: Path,
+    pilot_output: Path,
+    args: argparse.Namespace,
+    report: dict,
+    t0: float,
+) -> bool:
+    """最终闸门、归因分析、报告生成、打包。返回是否通过。"""
+    full_translated_root = resolve_scan_root(stage2_translated)
+    gate3 = evaluate_gate(scan_root, full_translated_root)
+    report["stages"]["final_gate"] = gate3
+    _print(
+        "[GATE-FINAL] "
+        f"errors={gate3['errors']} "
+        f"warnings={gate3['warnings']} "
+        f"untranslated={gate3['untranslated_total']} "
+        f"ratio={gate3['untranslated_ratio']:.4f} "
+        f"len_warns={gate3['len_ratio_warnings']} "
+        f"len_ratio={gate3['len_ratio_warning_ratio']:.4f} "
+        f"ph_order_warns={gate3['placeholder_order_warnings']}"
+    )
+
+    # Strings 翻译统计视图
+    try:
+        strings_stats = collect_strings_stats(full_translated_root)
+        report["stages"]["strings_stats"] = strings_stats
+    except Exception as e:
+        _print(f"[WARN ] 收集 strings 统计时出错: {e}")
+
+    ok = gate3["errors"] == 0 and gate3["untranslated_ratio"] <= args.gate_max_untranslated_ratio
+
+    # 打包前自动字体补丁（可选）
+    if getattr(args, "patch_font", False):
+        resources_fonts = Path(__file__).parent / "resources" / "fonts"
+        font_path = resolve_font(resources_fonts, args.font_file or None)
+        if font_path:
+            output_game = resolve_scan_root(stage2_translated)
+            apply_font_patch(output_game, scan_root, font_path)
+
+    report["stages"]["package"] = {}
+    package_path = package_output(stage2_translated, args.package_name)
+    report["stages"]["package"]["zip"] = str(package_path)
+
+    report["success"] = ok
+    report["elapsed_seconds"] = round(time.time() - t0, 2)
+
+    report_path = project_out_root / "pipeline_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 合并各阶段 translation_db.json
+    project_db = None
+    try:
+        project_db = TranslationDB(project_out_root / "translation_db.json")
+        project_db.load()
+        db_paths_to_merge = [
+            pilot_output / "translation_db.json",
+            stage2_translated / "translation_db.json",
+            pipeline_root / "retranslate_db.json",
+        ]
+        for db_path in db_paths_to_merge:
+            if not db_path.exists():
+                continue
+            sub_db = TranslationDB(db_path)
+            sub_db.load()
+            project_db.add_entries(sub_db.entries)
+        project_db.save()
+    except Exception as e:
+        _print(f"[WARN ] 合并 translation_db.json 失败: {e}")
+
+    # 漏翻归因分析
+    try:
+        if project_db and project_db.entries:
+            attribution = attribute_untranslated(full_translated_root, project_db)
+        else:
+            attribution = {
+                "total": 0, "ai_missing": 0, "checker_dropped": 0,
+                "write_fail": 0, "unknown": 0, "db_entries_count": 0,
+                "note": "translation_db 为空，无法逐行归因",
+            }
+        report["stages"]["attribution"] = attribution
+        if attribution["total"] > 0:
+            _print(
+                f"[ATTRIBUTION] 漏翻归因: 总计 {attribution['total']} | "
+                f"AI未返回 {attribution['ai_missing']} "
+                f"({attribution['ai_missing'] / attribution['total'] * 100:.1f}%) | "
+                f"Checker丢弃 {attribution['checker_dropped']} "
+                f"({attribution['checker_dropped'] / attribution['total'] * 100:.1f}%) | "
+                f"回写失败 {attribution['write_fail']} "
+                f"({attribution['write_fail'] / attribution['total'] * 100:.1f}%) | "
+                f"未知 {attribution['unknown']} "
+                f"({attribution['unknown'] / attribution['total'] * 100:.1f}%)"
+            )
+        else:
+            _print("[ATTRIBUTION] 无漏翻条目需要归因")
+    except Exception as e:
+        _print(f"[WARN ] 漏翻归因分析失败: {e}")
+
+    # 结构化 Markdown 概要
+    try:
+        write_report_summary_md(
+            project_out_root=project_out_root,
+            report=report,
+            gate_max_untranslated_ratio=args.gate_max_untranslated_ratio,
+        )
+    except Exception as e:
+        _print(f"[WARN ] 生成 report_summary.md 失败: {e}")
+
+    # 重新写入 pipeline_report.json（归因分析等后续数据已追加到 report dict）
+    try:
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        _print(f"[WARN ] 写入 pipeline_report.json 失败: {e}")
+
+    _print(f"\n[REPORT] {report_path}")
+    return ok
+
+
 def package_output(output_root: Path, package_name: str) -> Path:
     """将翻译结果打包为 zip，默认打包 output_root/game。"""
     src = output_root / "game"
@@ -1135,226 +1386,18 @@ def main() -> None:
 
         # Stage 3: 漏翻补翻轮 (retranslate — 原地补翻，不覆盖已有翻译)
         _print("\n=== Stage 3/4: 漏翻补翻轮 ===")
-        untranslated_files = collect_files_with_untranslated(full_translated_root)
-        report["stages"]["retranslate"] = {"candidate_files": len(untranslated_files)}
-
-        if untranslated_files:
-            from main import (
-                retranslate_file as _retranslate_file,
-                find_untranslated_lines as _find_untranslated_lines,
-                ProgressTracker as _ProgressTracker,
-            )
-            from api_client import APIClient as _APIClient, APIConfig as _APIConfig
-            from glossary import Glossary as _Glossary
-
-            rt_config = _APIConfig(
-                provider=args.provider,
-                api_key=api_key,
-                model=args.model,
-                rpm=args.rpm,
-                rps=args.rps,
-                timeout=args.timeout,
-                temperature=0.1,
-                max_response_tokens=args.max_response_tokens,
-            )
-            rt_client = _APIClient(rt_config)
-
-            rt_glossary = _Glossary()
-            rt_glossary_path = stage2_translated / "glossary.json"
-            rt_glossary.load(str(rt_glossary_path))
-            if args.dict:
-                for dp in args.dict:
-                    rt_glossary.load_dict(dp)
-
-            rt_progress = _ProgressTracker(pipeline_root / "retranslate_progress.json")
-            rt_progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
-            rt_progress.save()
-
-            rt_db = TranslationDB(pipeline_root / "retranslate_db.json")
-            rt_run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
-
-            # 用 find_untranslated_lines 精确扫描漏翻行
-            rpy_files_all = sorted(list_rpy_files(full_translated_root))
-            files_to_rt: list[tuple[Path, int]] = []
-            total_ut = 0
-            for f in rpy_files_all:
-                ut = _find_untranslated_lines(read_file(f))
-                if ut:
-                    files_to_rt.append((f, len(ut)))
-                    total_ut += len(ut)
-
-            _print(f"[SCAN] 发现 {total_ut} 行漏翻，分布在 {len(files_to_rt)} 个文件中")
-
-            rt_total_translated = 0
-            rt_total_warnings: list[str] = []
-            rt_quality: dict[str, list[dict]] = {}
-
-            for idx, (rpy_path, n_ut) in enumerate(files_to_rt, 1):
-                rel = rpy_path.relative_to(full_translated_root)
-                _print(f"  [{idx}/{len(files_to_rt)}] {rel} ({n_ut} 行)")
-                try:
-                    count, warnings = _retranslate_file(
-                        rpy_path,
-                        full_translated_root,
-                        full_translated_root,
-                        rt_client,
-                        rt_glossary,
-                        rt_progress,
-                        rt_quality,
-                        genre=args.genre,
-                        translation_db=rt_db,
-                        run_id=rt_run_id,
-                        stage="retranslate",
-                        provider=rt_config.provider,
-                        model=rt_config.model,
-                    )
-                    rt_total_translated += count
-                    rt_total_warnings.extend(warnings)
-                except KeyboardInterrupt:
-                    rt_glossary.save(str(rt_glossary_path))
-                    rt_progress.save()
-                    rt_db.save()
-                    raise
-                except Exception as e:
-                    _print(f"  [ERROR] {rel}: {e}")
-                    rt_total_warnings.append(str(e))
-
-                if idx % 5 == 0:
-                    rt_glossary.save(str(rt_glossary_path))
-
-            rt_glossary.save(str(rt_glossary_path))
-            rt_db.save()
-
-            _print(f"[RETRANSLATE] 补翻完成: {rt_total_translated} 条, "
-                   f"API 用量: {rt_client.usage.summary()}")
-
-            report["stages"]["retranslate"].update({
-                "mode": "retranslate",
-                "retranslated_files": len(files_to_rt),
-                "total_untranslated_scanned": total_ut,
-                "total_translated": rt_total_translated,
-                "total_warnings": len(rt_total_warnings),
-                "api_requests": rt_client.usage.total_requests,
-                "input_tokens": rt_client.usage.total_input_tokens,
-                "output_tokens": rt_client.usage.total_output_tokens,
-                "estimated_cost_usd": round(rt_client.usage.estimated_cost, 4),
-                "checker_dropped": 0,
-            })
-        else:
-            _print("[INFO] 全量阶段无漏翻文件，跳过补翻")
-            report["stages"]["retranslate"]["skipped"] = True
-            report["stages"]["retranslate"]["checker_dropped"] = 0
+        report["stages"]["retranslate"] = _run_retranslate_phase(
+            full_translated_root, stage2_translated, pipeline_root, args, api_key,
+        )
 
         # Stage 4: final gate (direct-mode)
         _print("\n=== Stage 4/4: 最终自动闸门 ===")
 
     # ── 共享的最终闸门与报告（direct-mode 和 tl-mode 共用） ──
-    full_translated_root = resolve_scan_root(stage2_translated)
-    gate3 = evaluate_gate(scan_root, full_translated_root)
-    report["stages"]["final_gate"] = gate3
-    _print(
-        "[GATE-FINAL] "
-        f"errors={gate3['errors']} "
-        f"warnings={gate3['warnings']} "
-        f"untranslated={gate3['untranslated_total']} "
-        f"ratio={gate3['untranslated_ratio']:.4f} "
-        f"len_warns={gate3['len_ratio_warnings']} "
-        f"len_ratio={gate3['len_ratio_warning_ratio']:.4f} "
-        f"ph_order_warns={gate3['placeholder_order_warnings']}"
+    ok = _run_final_report(
+        scan_root, stage2_translated, project_out_root, pipeline_root,
+        pilot_output, args, report, t0,
     )
-
-    # Strings 翻译统计视图：基于最终翻译结果统计 translate ... strings: 覆盖情况
-    try:
-        strings_stats = collect_strings_stats(full_translated_root)
-        report["stages"]["strings_stats"] = strings_stats
-    except Exception as e:
-        _print(f"[WARN ] 收集 strings 统计时出错: {e}")
-
-    ok = gate3["errors"] == 0 and gate3["untranslated_ratio"] <= args.gate_max_untranslated_ratio
-
-    # 打包前自动字体补丁（可选）
-    if getattr(args, "patch_font", False):
-        resources_fonts = Path(__file__).parent / "resources" / "fonts"
-        font_path = resolve_font(resources_fonts, args.font_file or None)
-        if font_path:
-            output_game = resolve_scan_root(stage2_translated)
-            apply_font_patch(output_game, scan_root, font_path)
-
-    report["stages"]["package"] = {}
-    package_path = package_output(stage2_translated, args.package_name)
-    report["stages"]["package"]["zip"] = str(package_path)
-
-    report["success"] = ok
-    report["elapsed_seconds"] = round(time.time() - t0, 2)
-
-    report_path = project_out_root / "pipeline_report.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    # 合并各阶段 translation_db.json 到项目级 translation_db.json（pilot → full → retranslate）
-    try:
-        project_db = TranslationDB(project_out_root / "translation_db.json")
-        project_db.load()
-        db_paths_to_merge = [
-            pilot_output / "translation_db.json",
-            stage2_translated / "translation_db.json",
-            pipeline_root / "retranslate_db.json",
-        ]
-        for db_path in db_paths_to_merge:
-            if not db_path.exists():
-                continue
-            sub_db = TranslationDB(db_path)
-            sub_db.load()
-            project_db.add_entries(sub_db.entries)
-        project_db.save()
-    except Exception as e:
-        _print(f"[WARN ] 合并 translation_db.json 失败: {e}")
-
-    # 漏翻归因分析
-    try:
-        if project_db.entries:
-            attribution = attribute_untranslated(full_translated_root, project_db)
-        else:
-            attribution = {
-                "total": 0, "ai_missing": 0, "checker_dropped": 0,
-                "write_fail": 0, "unknown": 0, "db_entries_count": 0,
-                "note": "translation_db 为空，无法逐行归因",
-            }
-        report["stages"]["attribution"] = attribution
-        if attribution["total"] > 0:
-            _print(
-                f"[ATTRIBUTION] 漏翻归因: 总计 {attribution['total']} | "
-                f"AI未返回 {attribution['ai_missing']} "
-                f"({attribution['ai_missing'] / attribution['total'] * 100:.1f}%) | "
-                f"Checker丢弃 {attribution['checker_dropped']} "
-                f"({attribution['checker_dropped'] / attribution['total'] * 100:.1f}%) | "
-                f"回写失败 {attribution['write_fail']} "
-                f"({attribution['write_fail'] / attribution['total'] * 100:.1f}%) | "
-                f"未知 {attribution['unknown']} "
-                f"({attribution['unknown'] / attribution['total'] * 100:.1f}%)"
-            )
-        else:
-            _print("[ATTRIBUTION] 无漏翻条目需要归因")
-    except Exception as e:
-        _print(f"[WARN ] 漏翻归因分析失败: {e}")
-
-    # 结构化 Markdown 概要（基于全量 + 增量后的最终闸门结果）
-    try:
-        write_report_summary_md(
-            project_out_root=project_out_root,
-            report=report,
-            gate_max_untranslated_ratio=args.gate_max_untranslated_ratio,
-        )
-    except Exception as e:
-        _print(f"[WARN ] 生成 report_summary.md 失败: {e}")
-
-    # 重新写入 pipeline_report.json（归因分析等后续数据已追加到 report dict）
-    try:
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as e:
-        _print(f"[WARN ] 写入 pipeline_report.json 失败: {e}")
-
-    _print(f"\n[REPORT] {report_path}")
     if ok:
         _print("[DONE ] 一键流水线执行成功")
         return

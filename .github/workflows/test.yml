@@ -21,6 +21,22 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Syntax check (py_compile)
+        run: |
+          python -m py_compile main.py
+          python -m py_compile one_click_pipeline.py
+          python -m py_compile api_client.py
+          python -m py_compile glossary.py
+          python -m py_compile prompts.py
+          python -m py_compile translation_db.py
+          python -m py_compile tl_parser.py
+          python -m py_compile font_patch.py
+          python -m py_compile file_processor/__init__.py
+          python -m py_compile file_processor/splitter.py
+          python -m py_compile file_processor/patcher.py
+          python -m py_compile file_processor/checker.py
+          python -m py_compile file_processor/validator.py
+
       - name: Run unit tests (test_all.py)
         run: python test_all.py
 
