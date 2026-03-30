@@ -123,7 +123,7 @@ class EngineBase(ABC):
 
     def run(self, args) -> None:
         """运行完整翻译流水线。Ren'Py 覆写此方法，其他引擎走通用流水线。"""
-        from generic_pipeline import run_generic_pipeline
+        from engines.generic_pipeline import run_generic_pipeline
         run_generic_pipeline(self, args)
 
     def dry_run(self, game_dir: Path) -> dict:

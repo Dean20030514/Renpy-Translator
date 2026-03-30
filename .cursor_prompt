@@ -17,8 +17,9 @@
 - 占位符保护/还原 + 术语锁定 + 翻译记忆
 - chunk 级自动重试 + 结构化 logging 系统
 - AI 自动术语表提取（pilot 后自动生成术语表）
+- Tkinter 图形界面（gui.py）+ PyInstaller 打包为单文件 .exe（build.py）
 
-**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging / csv），~10,200 行核心代码。
+**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging / csv / tkinter），~11,000 行核心代码。
 
 **多引擎架构**（阶段一已完成）：
 - `EngineProfile` 参数化引擎差异 + `TranslatableUnit` 通用文本单元 + `EngineBase` ABC
@@ -60,13 +61,13 @@
 | **one_click_pipeline.py** | ~1,460 | 四阶段编排器。`_run_pilot_phase`（试跑+闸门+AI 术语提取）→ `_run_full_translation_phase`（全量+闸门）→ `_run_retranslate_phase`（补翻）→ `_run_final_report`（报告+打包）；`_run_tl_mode_phase`（tl-mode 分支）；`main()` 纯编排函数 ~113 行；漏翻归因分析（`attribute_untranslated`）；`evaluate_gate` 结构化闸门；`write_report_summary_md` 报告生成；公共辅助（`_is_untranslated_dialogue` / `_extract_dialogue_text`）；可配置常量（`MAX_FILE_RANK_SCORE` / `RISK_KEYWORD_SCORE` / `SAZMOD_BONUS_SCORE` / `MIN_UNTRANSLATED_TEXT_LENGTH` / `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED`） |
 | **file_processor/** | ~1,350 (4 sub-modules) | .rpy 文件处理核心 **包**。`splitter.py`（`split_file` 按块拆分）、`patcher.py`（`apply_translations` 行级回写）、`checker.py`（`protect_placeholders(patterns=)` 引擎参数化占位符保护 + `restore_placeholders` + `check_response_item(placeholder_re=)` 参数化校验 + `check_response_chunk` + `_extract_placeholder_sequence(regex=)` 参数化提取）、`validator.py`（`validate_translation` 主入口调度 4 个子检查函数）、`__init__.py` re-exports 全部公共 API、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
 | **tl_parser.py** | ~980 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、75 个内建测试 |
-| **engine_base.py** | ~202 | 引擎抽象层。`EngineProfile` 数据类（9 字段 + `compile_placeholder_re` / `compile_skip_re`）、`TranslatableUnit` 数据类（8 字段）、`EngineBase` ABC（4 抽象 + 3 可选方法）、内置 Profile 常量（`RENPY_PROFILE` / `RPGMAKER_MV_PROFILE` / `CSV_PROFILE`）、`ENGINE_PROFILES` 注册表 |
-| **engine_detector.py** | ~160 | 引擎检测器。`EngineType` 枚举（6 值）、`detect_engine_type` 目录特征扫描（5 级优先）、`create_engine` 延迟导入工厂、`detect_engine` 检测+实例化、`resolve_engine` CLI 路由 |
-| **engines/renpy_engine.py** | ~74 | Ren'Py 薄包装。`RenPyEngine`：`detect` 检查 .rpy/.rpa、`run` 路由到三条管线（延迟导入）、`extract_texts`/`write_back` 抛 NotImplementedError |
-| **engines/csv_engine.py** | ~317 | CSV/JSONL 通用格式引擎。`CSVEngine`：`detect` 始终 False（手动 `--engine csv`）、`extract_texts` 单文件或目录扫描（.csv/.tsv/.jsonl/.json）、列名别名自动匹配（6 组别名集）、UTF-8 BOM + 多行 CSV 安全读取、`write_back` 按源格式分流（CSV/JSONL） |
-| **generic_pipeline.py** | ~414 | 通用翻译流水线（非 Ren'Py 引擎共用）。6 阶段：提取→初始化（APIClient/Glossary/TranslationDB/断点恢复）→分块（`build_generic_chunks` 按 file_path + max_size/max_chars）→并发翻译（ThreadPoolExecutor + id/original 双重匹配）→回写→报告。RPG Maker 术语扫描钩子、原子进度写入 |
-| **engines/rpgmaker_engine.py** | ~636 | RPG Maker MV/MZ 引擎。`RPGMakerMVEngine`：`_find_data_dir`（MV www/data/ vs MZ data/）、`_extract_event_commands`（401/405 合并 + 102 选项 + 402 When + 320/324 改名）、`_extract_database`（8 种 JSON 按 `_DB_FIELDS` 配置表）、`_extract_system`（gameTitle + 数组 + terms.*）、`_navigate_to_node` / `_patch_by_json_path`（JSON path 导航回写）、`_patch_dialogue`（对话块拆分回写 + 行数不匹配处理）、紧凑 JSON 输出 |
-| **engines/__init__.py** | ~3 | 引擎实现包声明（各引擎通过 `engine_detector.create_engine()` 延迟导入） |
+| **engines/__init__.py** | ~39 | 引擎包公共 API re-export（EngineProfile / TranslatableUnit / EngineBase / EngineType / resolve_engine 等） |
+| **engines/engine_base.py** | ~202 | `EngineProfile`（9 字段）+ `TranslatableUnit`（8 字段）+ `EngineBase` ABC + 内置 Profile 常量 + `ENGINE_PROFILES` 注册表 |
+| **engines/engine_detector.py** | ~160 | `EngineType` 枚举（6 值）+ `detect_engine_type`（5 级优先）+ `create_engine` 延迟导入 + `resolve_engine` CLI 路由 |
+| **engines/generic_pipeline.py** | ~414 | 通用翻译流水线 6 阶段（提取→初始化→分块→并发翻译→回写→报告）+ 断点恢复 + RPG Maker 术语钩子 |
+| **engines/renpy_engine.py** | ~74 | Ren'Py 薄包装。`run` 路由到三条管线（延迟导入） |
+| **engines/rpgmaker_engine.py** | ~636 | RPG Maker MV/MZ。事件指令(401/405 合并+102 选项+320 改名) + 8 种数据库 + System.json + JSON path 回写 |
+| **engines/csv_engine.py** | ~317 | CSV/JSONL 通用格式。列名别名(6 组) + UTF-8 BOM + 多行 CSV + 按源格式分流回写 |
 | **api_client.py** | ~485 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口（推理模型自动 timeout 提升 300s）、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After + 404/401 立即报错不重试）、精确定价表 |
 | **prompts.py** | ~490 | Prompt 模板工厂。direct-mode（`SYSTEM_PROMPT_TEMPLATE` + `build_user_prompt`）、retranslate（`build_retranslate_system_prompt` + `build_retranslate_user_prompt`）、tl-mode（`TLMODE_SYSTEM_PROMPT` + `build_tl_system_prompt` + `build_tl_user_prompt`）；支持外部 style.txt / culture.txt 覆写；`_ENGINE_PROMPT_ADDONS` 引擎 addon 字典（rpgmaker/generic）+ `build_system_prompt(engine_profile=)` 参数化 |
 | **glossary.py** | ~429 | 术语表管理。`Glossary` 类：`scan_game_directory` Ren'Py 角色提取、`scan_rpgmaker_database` RPG Maker 角色名+系统术语提取（Actors.json + System.json terms）、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆（`_memory_count` 信心度追踪，count>=2 才输出 prompt）、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取 |
@@ -78,20 +79,22 @@
 |------|------|
 | **font_patch.py** (~94行) | `resolve_font` 字体查找 + `apply_font_patch` 修改 gui.rpy 字体变量 |
 | **renpy_upgrade_tool.py** (~17K) | Ren'Py 7→8 升级扫描器。19 条规则（Python 2→3 + 废弃 API）、`--fix` 自动修复、`--backup` 备份、rpyc 清理、RENPY-020 show 空 ATL 块修复（多行感知） |
-| **start_launcher.py** (~210行) | 多引擎中文交互启动器（9 种模式菜单：Ren'Py 6 + RPG Maker 1 + CSV 1 + 升级扫描 1），`START.bat` 调用，`getpass` 隐藏 API Key 输入 |
-| **verify_alignment.py** (~171行) | 零 API 验证工具，测试新校验策略 |
-| **revalidate.py** (~54行) | 对已翻译输出重跑闸门检查（不调 API） |
-| **patch_font_now.py** (~40行) | 翻译完成后独立运行字体补丁 |
-| **analyze_writeback_failures.py** (~120行) | 回写失败根因分析工具（WF-01~08 分类统计） |
+| **gui.py** (~753行) | Tkinter 图形界面启动器。3 Tab（基本设置 + 翻译设置动态引擎面板 + 高级设置）、引擎选择联动面板切换、API key 隐藏、命令预览（实时+****遮蔽）、内嵌日志（ScrolledText + queue 线程安全）、subprocess 执行/停止、配置 JSON 加载/保存、工具菜单（Dry-run 摘要弹窗 + 升级扫描）、DPI 适配 |
+| **build.py** (~100行) | PyInstaller 打包脚本。29 个 hidden-import + 资源文件 → `dist/多引擎游戏汉化工具.exe`（~32MB 单文件） |
+| **start_launcher.py** (~218行) | CLI 中文交互启动器（9 种模式菜单），`START.bat` 调用，`getpass` 隐藏 API Key 输入 |
+| **tools/verify_alignment.py** (~171行) | 零 API 验证工具，测试新校验策略 |
+| **tools/revalidate.py** (~54行) | 对已翻译输出重跑闸门检查（不调 API） |
+| **tools/patch_font_now.py** (~40行) | 翻译完成后独立运行字体补丁 |
+| **tools/analyze_writeback_failures.py** (~120行) | 回写失败根因分析工具（WF-01~08 分类统计） |
 | **review_generator.py** (~150行) | HTML 翻译校对报告（side-by-side 原文/译文，error/warning 高亮，按文件折叠） |
 
 ### 3.3 测试
 
 | 文件 | 职责 |
 |------|------|
-| **test_all.py** (~1197行) | 综合模块测试（70 个用例：单元 + 集成） |
-| **test_engines.py** (~962行) | 引擎抽象层测试（62 个用例：EngineProfile 6 + TranslatableUnit 3 + Detector 10 + RenPyEngine 5 + EngineBase 1 + CSV 10 + generic_pipeline 5 + patcher/checker 4 + prompts 2 + write_back 1 + RPG Maker 15） |
-| **test_single.py** | 单文件端到端测试（需 API key） |
+| **tests/test_all.py** (~1201行) | 综合模块测试（70 个用例：单元 + 集成） |
+| **tests/test_engines.py** (~962行) | 引擎抽象层测试（62 个用例：EngineProfile 6 + TranslatableUnit 3 + Detector 10 + RenPyEngine 5 + EngineBase 1 + CSV 10 + generic_pipeline 5 + patcher/checker 4 + prompts 2 + write_back 1 + RPG Maker 15） |
+| **tests/test_single.py** | 单文件端到端测试（需 API key） |
 | **tests/smoke_test.py** | 校验逻辑冒烟测试（13 个用例） |
 | **tests/fixtures/** | 测试用的 .rpy 样本文件 |
 

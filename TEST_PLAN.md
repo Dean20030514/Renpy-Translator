@@ -10,11 +10,13 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator | 70 | 否 |
-| `test_engines.py` | 引擎抽象层测试 | EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine / EngineBase / CSVEngine / generic_pipeline / checker 参数化 / prompts addon / RPGMakerMVEngine / glossary RPG Maker | 62 | 否 |
+| `tests/test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator | 70 | 否 |
+| `tests/test_engines.py` | 引擎抽象层测试 | EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine / EngineBase / CSVEngine / generic_pipeline / checker 参数化 / prompts addon / RPGMakerMVEngine / glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
-| `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
+| `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
+
+> **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
 ### 测试数据文件
 

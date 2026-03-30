@@ -31,6 +31,8 @@
 | 第十二轮 阶段二 | CSV/JSONL + 通用流水线 | CSVEngine（CSV/TSV/JSONL/JSON 读写）+ generic_pipeline（6 阶段通用翻译）+ checker/prompts 参数化适配 + 引擎测试 25→47 |
 | 第十二轮 阶段三 | RPG Maker MV/MZ | RPGMakerMVEngine（事件指令 401/405 合并 + 102 选项 + 8 种数据库 + System.json）+ glossary.scan_rpgmaker_database + 引擎测试 47→62 |
 | 第十二轮 阶段四 | 文档 + 发布 | start_launcher.py 新增模式 8/9（RPG Maker / CSV）+ 全部文档更新 + 里程碑 M4 达成 |
+| 第十二轮 结构整理 | 项目目录重构 | 根目录 .py 27→17：测试→tests/ + 工具→tools/ + 引擎抽象→engines/ 包合并 + import 路径更新 |
+| 第十二轮 GUI | 图形界面 + 打包 | gui.py Tkinter GUI（3 Tab + 内嵌日志 + 命令预览 + 配置加载）+ build.py PyInstaller 打包（32MB 单文件 .exe） |
 
 ---
 
@@ -785,6 +787,30 @@
 |---|------|----------|------|
 | 163 | start_launcher.py 新增模式 8（RPG Maker MV/MZ 翻译）和模式 9（CSV/JSONL 通用格式翻译）；菜单标题改为「多引擎游戏汉化统一启动器」；分类显示（Ren'Py / 其他引擎 / 工具） | `start_launcher.py` | 新增菜单选项 |
 | 164 | README/CHANGELOG/TEST_PLAN/.cursor_prompt/EXPANSION_PLAN 全部文档已在各阶段增量更新完成 | 多文件 | 文档齐全 |
+
+---
+
+## 第十二轮 结构整理：项目目录重构
+
+| # | 描述 | 影响 |
+|---|------|------|
+| 165 | 测试文件移入 `tests/`：test_all.py / test_engines.py / test_single.py + sys.path 修正 | 根目录 -3 |
+| 166 | 独立工具移入 `tools/`（新建）：verify_alignment / revalidate / patch_font_now / analyze_writeback_failures + sys.path 修正 | 根目录 -4 |
+| 167 | 引擎抽象层合并到 `engines/` 包：engine_base / engine_detector / generic_pipeline 移入 + `engines/__init__.py` 新增 re-export（EngineProfile / TranslatableUnit / EngineBase / EngineType 等） | 根目录 -3 |
+| 168 | 全量 import 路径更新：`from engine_base import` → `from engines.engine_base import`（main.py + 4 引擎 + 3 测试 + 3 工具共 11 个文件） | 零功能变更 |
+| 169 | 清理所有 `__pycache__/` 目录 | 磁盘清理 |
+
+**结果**：根目录 .py 文件 **27 → 17**，目录结构清晰分层。132 测试全绿。
+
+---
+
+## 第十二轮 GUI：图形界面 + PyInstaller 打包
+
+| # | 描述 | 文件 | 行数 |
+|---|------|------|------|
+| 170 | Tkinter GUI 启动器：3 Tab 分页（基本设置 + 翻译设置动态引擎面板 + 高级设置）、引擎选择联动面板切换、API key 隐藏（Entry show="*" + 命令预览 ****）、命令预览实时更新、内嵌 ScrolledText 日志（queue.Queue 线程安全轮询）、subprocess 后台执行 + kill 停止、配置加载/保存（JSON）、工具菜单（Dry-run 摘要弹窗 + 升级扫描）、DPI 适配 | `gui.py`（新增） | ~753 |
+| 171 | PyInstaller 打包脚本：29 个 hidden-import + 资源文件打包 → 单文件 .exe（32MB） | `build.py`（新增） | ~100 |
+| 172 | .gitignore 新增 build/dist/*.spec 排除 | `.gitignore` | +4 行 |
 
 ---
 

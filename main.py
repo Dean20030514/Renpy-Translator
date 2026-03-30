@@ -271,7 +271,7 @@ def main():
             run_pipeline(args)
     else:
         # 非 Ren'Py 引擎路由
-        from engine_detector import resolve_engine as _resolve_engine
+        from engines.engine_detector import resolve_engine as _resolve_engine
         engine = _resolve_engine(engine_arg, Path(args.game_dir))
         if engine is None:
             logger.error(f"[ERROR] 无法创建引擎: {engine_arg}")

@@ -2,7 +2,7 @@
 
 一个纯 Python 的游戏自动汉化工具，支持 **Ren'Py**、**RPG Maker MV/MZ**、**CSV/JSONL 通用格式**，通过 LLM API 翻译为简体中文。
 
-**零依赖**（纯标准库）| **五大 LLM 提供商** | **多引擎自动检测** | **50+ 项翻译校验** | **断点续传** | **并发翻译**
+**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **50+ 项翻译校验** | **断点续传** | **并发翻译**
 
 ---
 
@@ -29,17 +29,17 @@
 - Python >= 3.9
 - 无第三方依赖（纯标准库）
 
-### 最简用法
+### 三种启动方式
 
 ```bash
-# 整文件翻译
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY
+# 方式一：图形界面（推荐）
+python gui.py                  # 或双击 多引擎游戏汉化工具.exe
 
-# tl 框架翻译（推荐，精度更高）
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --tl-mode --tl-lang chinese --workers 5
-
-# 中文交互启动器（推荐新手使用）
+# 方式二：中文交互菜单
 START.bat
+
+# 方式三：命令行
+python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --tl-mode --tl-lang chinese --workers 5
 ```
 
 ### 先估费再翻译

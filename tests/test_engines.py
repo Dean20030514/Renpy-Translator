@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 # 确保项目根目录在 sys.path 中
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 # ============================================================
@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def test_profile_compile_placeholder_empty():
     """空占位符列表 → None"""
-    from engine_base import EngineProfile
+    from engines.engine_base import EngineProfile
     p = EngineProfile(name="test", display_name="Test", placeholder_patterns=[])
     assert p.compile_placeholder_re() is None
     print("[OK] profile_compile_placeholder_empty")
@@ -28,7 +28,7 @@ def test_profile_compile_placeholder_empty():
 
 def test_profile_compile_placeholder_single():
     """单模式编译正确"""
-    from engine_base import EngineProfile
+    from engines.engine_base import EngineProfile
     p = EngineProfile(name="test", display_name="Test",
                       placeholder_patterns=[r"\[\w+\]"])
     regex = p.compile_placeholder_re()
@@ -40,7 +40,7 @@ def test_profile_compile_placeholder_single():
 
 def test_profile_compile_placeholder_multi():
     """多模式用 | 合并"""
-    from engine_base import EngineProfile
+    from engines.engine_base import EngineProfile
     p = EngineProfile(name="test", display_name="Test",
                       placeholder_patterns=[r"\[\w+\]", r"\{[^}]+\}"])
     regex = p.compile_placeholder_re()
@@ -53,7 +53,7 @@ def test_profile_compile_placeholder_multi():
 
 def test_profile_compile_skip_empty():
     """空 skip 列表 → None"""
-    from engine_base import EngineProfile
+    from engines.engine_base import EngineProfile
     p = EngineProfile(name="test", display_name="Test", skip_line_patterns=[])
     assert p.compile_skip_re() is None
     print("[OK] profile_compile_skip_empty")
@@ -61,7 +61,7 @@ def test_profile_compile_skip_empty():
 
 def test_profile_compile_skip_pattern():
     """skip 模式编译正确"""
-    from engine_base import EngineProfile
+    from engines.engine_base import EngineProfile
     p = EngineProfile(name="test", display_name="Test",
                       skip_line_patterns=[r"^\s*label\s+", r"^\s*screen\s+"])
     regex = p.compile_skip_re()
@@ -74,7 +74,7 @@ def test_profile_compile_skip_pattern():
 
 def test_engine_profiles_registry():
     """ENGINE_PROFILES 字典完整性 + rpgmaker_mv/mz 指向同一实例"""
-    from engine_base import ENGINE_PROFILES
+    from engines.engine_base import ENGINE_PROFILES
     assert "renpy" in ENGINE_PROFILES
     assert "rpgmaker_mv" in ENGINE_PROFILES
     assert "rpgmaker_mz" in ENGINE_PROFILES
@@ -90,7 +90,7 @@ def test_engine_profiles_registry():
 
 def test_unit_defaults():
     """TranslatableUnit 默认值正确"""
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     u = TranslatableUnit(id="test_001", original="Hello", file_path="test.json")
     assert u.status == "pending"
     assert u.translation == ""
@@ -102,7 +102,7 @@ def test_unit_defaults():
 
 def test_unit_fields():
     """TranslatableUnit 字段赋值和读取"""
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     u = TranslatableUnit(
         id="map1:ev3", original="Welcome!", file_path="Map001.json",
         speaker="Guard", context="near gate", translation="欢迎！",
@@ -117,7 +117,7 @@ def test_unit_fields():
 
 def test_unit_metadata_roundtrip():
     """metadata round-trip"""
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     meta = {"start_idx": 5, "line_count": 3, "type": "dialogue"}
     u = TranslatableUnit(id="t1", original="hi", file_path="f.json", metadata=meta)
     assert u.metadata is meta  # 同一引用
@@ -132,7 +132,7 @@ def test_unit_metadata_roundtrip():
 
 def test_detect_renpy():
     """检测 Ren'Py 目录（有 game/*.rpy）"""
-    from engine_detector import detect_engine_type, EngineType
+    from engines.engine_detector import detect_engine_type, EngineType
     with tempfile.TemporaryDirectory() as d:
         game = Path(d) / "game"
         game.mkdir()
@@ -143,7 +143,7 @@ def test_detect_renpy():
 
 def test_detect_renpy_root():
     """检测 Ren'Py 目录（根目录有 .rpy）"""
-    from engine_detector import detect_engine_type, EngineType
+    from engines.engine_detector import detect_engine_type, EngineType
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "script.rpy").write_text("label start:", encoding="utf-8")
         assert detect_engine_type(Path(d)) == EngineType.RENPY
@@ -152,7 +152,7 @@ def test_detect_renpy_root():
 
 def test_detect_rpgmaker_mv():
     """检测 RPG Maker MV（www/data/System.json）"""
-    from engine_detector import detect_engine_type, EngineType
+    from engines.engine_detector import detect_engine_type, EngineType
     with tempfile.TemporaryDirectory() as d:
         data = Path(d) / "www" / "data"
         data.mkdir(parents=True)
@@ -163,7 +163,7 @@ def test_detect_rpgmaker_mv():
 
 def test_detect_rpgmaker_mz():
     """检测 RPG Maker MZ（data/System.json，无 www/）"""
-    from engine_detector import detect_engine_type, EngineType
+    from engines.engine_detector import detect_engine_type, EngineType
     with tempfile.TemporaryDirectory() as d:
         data = Path(d) / "data"
         data.mkdir()
@@ -174,7 +174,7 @@ def test_detect_rpgmaker_mz():
 
 def test_detect_vxace():
     """检测 RPG Maker VX/Ace（.rgss3a）"""
-    from engine_detector import detect_engine_type, EngineType
+    from engines.engine_detector import detect_engine_type, EngineType
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "Game.rgss3a").write_bytes(b"\x00")
         assert detect_engine_type(Path(d)) == EngineType.RPGMAKER_VXACE
@@ -183,7 +183,7 @@ def test_detect_vxace():
 
 def test_detect_unknown():
     """未知目录"""
-    from engine_detector import detect_engine_type, EngineType
+    from engines.engine_detector import detect_engine_type, EngineType
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "readme.txt").write_text("nothing", encoding="utf-8")
         assert detect_engine_type(Path(d)) == EngineType.UNKNOWN
@@ -192,7 +192,7 @@ def test_detect_unknown():
 
 def test_create_engine_renpy():
     """create_engine: RENPY → RenPyEngine 实例"""
-    from engine_detector import create_engine, EngineType
+    from engines.engine_detector import create_engine, EngineType
     from engines.renpy_engine import RenPyEngine
     engine = create_engine(EngineType.RENPY)
     assert isinstance(engine, RenPyEngine)
@@ -201,7 +201,7 @@ def test_create_engine_renpy():
 
 def test_create_engine_unknown():
     """create_engine: UNKNOWN → None"""
-    from engine_detector import create_engine, EngineType
+    from engines.engine_detector import create_engine, EngineType
     engine = create_engine(EngineType.UNKNOWN)
     assert engine is None
     print("[OK] create_engine_unknown")
@@ -209,7 +209,7 @@ def test_create_engine_unknown():
 
 def test_resolve_engine_auto_renpy():
     """resolve_engine: auto + Ren'Py 目录"""
-    from engine_detector import resolve_engine
+    from engines.engine_detector import resolve_engine
     from engines.renpy_engine import RenPyEngine
     with tempfile.TemporaryDirectory() as d:
         game = Path(d) / "game"
@@ -222,7 +222,7 @@ def test_resolve_engine_auto_renpy():
 
 def test_resolve_engine_manual_renpy():
     """resolve_engine: renpy 显式指定"""
-    from engine_detector import resolve_engine
+    from engines.engine_detector import resolve_engine
     from engines.renpy_engine import RenPyEngine
     with tempfile.TemporaryDirectory() as d:
         engine = resolve_engine("renpy", Path(d))
@@ -295,7 +295,7 @@ def test_renpy_engine_profile():
 
 def test_engine_base_dry_run():
     """EngineBase.dry_run 默认实现"""
-    from engine_base import EngineBase, EngineProfile, TranslatableUnit
+    from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit
 
     class MockEngine(EngineBase):
         def _default_profile(self):
@@ -429,7 +429,7 @@ def test_json_array_fallback():
 def test_csv_write_back():
     """CSV write_back 输出包含翻译列"""
     from engines.csv_engine import CSVEngine
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     engine = CSVEngine()
     units = [
         TranslatableUnit(id="k1", original="Hello", file_path="test.csv",
@@ -449,7 +449,7 @@ def test_csv_write_back():
 def test_jsonl_write_back():
     """JSONL write_back"""
     from engines.csv_engine import CSVEngine
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     engine = CSVEngine()
     units = [
         TranslatableUnit(id="k1", original="Hello", file_path="test.jsonl",
@@ -486,8 +486,8 @@ def test_csv_directory_scan():
 
 def test_build_generic_chunks_single():
     """build_generic_chunks: 30 条 → 1 chunk"""
-    from generic_pipeline import build_generic_chunks
-    from engine_base import TranslatableUnit
+    from engines.generic_pipeline import build_generic_chunks
+    from engines.engine_base import TranslatableUnit
     units = [TranslatableUnit(id=f"u{i}", original=f"line {i}", file_path="a.csv")
              for i in range(25)]
     chunks = build_generic_chunks(units, max_size=30)
@@ -498,8 +498,8 @@ def test_build_generic_chunks_single():
 
 def test_build_generic_chunks_split():
     """build_generic_chunks: 60 条 → 2 chunks"""
-    from generic_pipeline import build_generic_chunks
-    from engine_base import TranslatableUnit
+    from engines.generic_pipeline import build_generic_chunks
+    from engines.engine_base import TranslatableUnit
     units = [TranslatableUnit(id=f"u{i}", original=f"line {i}", file_path="a.csv")
              for i in range(60)]
     chunks = build_generic_chunks(units, max_size=30)
@@ -510,8 +510,8 @@ def test_build_generic_chunks_split():
 
 def test_build_generic_chunks_by_file():
     """build_generic_chunks: 按 file_path 分组"""
-    from generic_pipeline import build_generic_chunks
-    from engine_base import TranslatableUnit
+    from engines.generic_pipeline import build_generic_chunks
+    from engines.engine_base import TranslatableUnit
     units = [
         TranslatableUnit(id="a1", original="Hello", file_path="a.csv"),
         TranslatableUnit(id="b1", original="World", file_path="b.csv"),
@@ -525,8 +525,8 @@ def test_build_generic_chunks_by_file():
 
 def test_match_translations_to_units():
     """翻译结果匹配到 TranslatableUnit"""
-    from generic_pipeline import _match_translations_to_units
-    from engine_base import TranslatableUnit
+    from engines.generic_pipeline import _match_translations_to_units
+    from engines.engine_base import TranslatableUnit
     units = [
         TranslatableUnit(id="k1", original="Hello", file_path="a.csv"),
         TranslatableUnit(id="k2", original="World", file_path="a.csv"),
@@ -544,8 +544,8 @@ def test_match_translations_to_units():
 
 def test_match_translations_fallback():
     """翻译结果 id 不匹配时按 original fallback"""
-    from generic_pipeline import _match_translations_to_units
-    from engine_base import TranslatableUnit
+    from engines.generic_pipeline import _match_translations_to_units
+    from engines.engine_base import TranslatableUnit
     units = [TranslatableUnit(id="k1", original="Hello", file_path="a.csv")]
     translations = [{"id": "wrong_id", "original": "Hello", "zh": "你好"}]
     matched = _match_translations_to_units(translations, units, "zh")
@@ -619,7 +619,7 @@ def test_prompt_addon_none():
 def test_prompt_addon_rpgmaker():
     """build_system_prompt(engine_profile=rpgmaker) 包含 addon"""
     from prompts import build_system_prompt
-    from engine_base import RPGMAKER_MV_PROFILE
+    from engines.engine_base import RPGMAKER_MV_PROFILE
     result = build_system_prompt(genre="adult", engine_profile=RPGMAKER_MV_PROFILE)
     assert "\\V[n]" in result or "RPG Maker" in result
     print("[OK] prompt_addon_rpgmaker")
@@ -792,7 +792,7 @@ def test_rpgm_extract_system():
 def test_rpgm_writeback_dialogue():
     """回写: 对话块（行数匹配）"""
     from engines.rpgmaker_engine import RPGMakerMVEngine
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     engine = RPGMakerMVEngine()
     data = {
         "events": [None, {"pages": [{"list": [
@@ -817,7 +817,7 @@ def test_rpgm_writeback_dialogue():
 def test_rpgm_writeback_dialogue_fewer_lines():
     """回写: 翻译行数 < 原行数（补空串）"""
     from engines.rpgmaker_engine import RPGMakerMVEngine
-    from engine_base import TranslatableUnit
+    from engines.engine_base import TranslatableUnit
     engine = RPGMakerMVEngine()
     data = {"events": [None, {"pages": [{"list": [
         {"code": 401, "parameters": ["Line 1"]},

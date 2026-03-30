@@ -21,6 +21,11 @@ Thumbs.db
 *.tmp
 *.bak
 
+# PyInstaller
+build/
+dist/
+*.spec
+
 # Large binary files (fonts shipped separately)
 resources/fonts/*.ttf
 resources/fonts/*.otf

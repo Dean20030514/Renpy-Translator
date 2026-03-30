@@ -6,7 +6,9 @@ Run from project root. After running, copy stage2_translated/game contents into 
 """
 
 import os
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from font_patch import resolve_font, apply_font_patch
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from engine_base import EngineBase, EngineProfile, TranslatableUnit, RENPY_PROFILE
+from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, RENPY_PROFILE
 
 logger = logging.getLogger("renpy_translator")
 

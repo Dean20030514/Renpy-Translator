@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from engine_base import EngineBase, EngineProfile, TranslatableUnit, CSV_PROFILE
+from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, CSV_PROFILE
 
 logger = logging.getLogger("renpy_translator")
 

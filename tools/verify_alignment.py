@@ -21,6 +21,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from file_processor import apply_translations, read_file
 from one_click_pipeline import evaluate_gate, list_rpy_files

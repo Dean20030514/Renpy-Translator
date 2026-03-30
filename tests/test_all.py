@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """综合测试 — 验证优化后的所有模块"""
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import api_client
 import file_processor
 import glossary

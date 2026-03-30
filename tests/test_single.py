@@ -4,6 +4,7 @@
 import os
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api_client import APIClient, APIConfig
 from file_processor import split_file, apply_translations, validate_translation, read_file, estimate_tokens

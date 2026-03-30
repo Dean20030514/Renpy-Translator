@@ -2,7 +2,7 @@
 
 > 基于「多引擎游戏汉化工具」当前状态（第十二轮全部完成、~10200 行核心代码、70+62 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
 >
-> **阶段零~四全部落地**，里程碑 M1~M4 达成。后续路线见 §8。
+> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包。后续路线见 §8。
 
 ---
 
@@ -112,10 +112,10 @@
 
 | 文件 | 预计行数 | 实际行数 | 职责 |
 |------|----------|----------|------|
-| `engine_base.py` | ~300 | **202** | `EngineProfile` 数据类 + `TranslatableUnit` 数据类 + `EngineBase` ABC + 内置 Profile 常量 |
-| `engine_detector.py` | ~200 | **160** | `detect_engine_type()` 目录特征扫描 + `resolve_engine()` CLI 路由 + `EngineType` 枚举 |
-| `generic_pipeline.py` | ~450 | **414** | 通用翻译流水线（非 Ren'Py 引擎共用）：提取 → 分块 → 翻译 → 校验 → 回写 → 报告 |
-| `engines/__init__.py` | ~10 | **3** | 包声明 |
+| `engines/engine_base.py` | ~300 | **202** | `EngineProfile` 数据类 + `TranslatableUnit` 数据类 + `EngineBase` ABC + 内置 Profile 常量 |
+| `engines/engine_detector.py` | ~200 | **160** | `detect_engine_type()` 目录特征扫描 + `resolve_engine()` CLI 路由 + `EngineType` 枚举 |
+| `engines/generic_pipeline.py` | ~450 | **414** | 通用翻译流水线（非 Ren'Py 引擎共用）：提取 → 分块 → 翻译 → 校验 → 回写 → 报告 |
+| `engines/__init__.py` | ~10 | **39** | 包公共 API re-export |
 | `engines/renpy_engine.py` | ~100 | **74** | Ren'Py 薄包装：`run()` 委托给现有三条管线，`extract_texts()` 和 `write_back()` 抛 NotImplementedError |
 | `engines/rpgmaker_engine.py` | ~600 | **636** | RPG Maker MV/MZ JSON 解析与回写（详见第 3 节） |
 | `engines/csv_engine.py` | ~350 | **317** | CSV/JSONL 通用格式读写（详见第 4 节） |
@@ -843,7 +843,7 @@ python main.py --engine csv --game-dir texts.csv --placeholder-regex '\{\w+\}' -
 
 | 文件 | 预计用例数 | 实际用例数 | 覆盖范围 |
 |------|-----------|-----------|----------|
-| `test_engines.py` | ~55-65 | **62** | EngineProfile 编译 6 + TranslatableUnit 3 + 引擎检测 10 + RenPyEngine 5 + EngineBase 1 + CSV 提取/回写 10 + generic_pipeline 分块/匹配 5 + patcher/checker 参数化 4 + prompts addon 2 + RPG Maker 提取/回写 15 + glossary RPG Maker 1 |
+| `tests/test_engines.py` | ~55-65 | **62** | EngineProfile 编译 6 + TranslatableUnit 3 + 引擎检测 10 + RenPyEngine 5 + EngineBase 1 + CSV 提取/回写 10 + generic_pipeline 分块/匹配 5 + patcher/checker 参数化 4 + prompts addon 2 + RPG Maker 提取/回写 15 + glossary RPG Maker 1 |
 
 ### 7.2 测试数据
 
@@ -868,7 +868,7 @@ python main.py --engine csv --game-dir texts.csv --placeholder-regex '\{\w+\}' -
 
 - 现有模块的改动全部通过新增可选参数实现，默认值保持原有行为
 - `test_prompt_zh_unchanged` 基线测试保证 Ren'Py prompt 不受影响
-- 新测试在独立文件 `test_engines.py` 中
+- 新测试在独立文件 `tests/test_engines.py` 中
 
 ### 7.5 CI 扩展
 
@@ -962,7 +962,7 @@ python main.py --engine csv --game-dir texts.csv --placeholder-regex '\{\w+\}' -
 3. **更新 `engine_detector.py`**：在 `detect_engine_type()` 中添加检测逻辑，在 `create_engine()` 中添加实例化分支，在 `resolve_engine()` 的 manual_map 中添加 CLI 名称映射
 4. **更新 `prompts.py`**：在 `_ENGINE_PROMPT_ADDONS` 中添加引擎专属 prompt 片段
 5. **可选：更新 `glossary.py`**：如果引擎有结构化的角色/术语数据（如 RPG Maker 的 Actors.json），添加扫描方法
-6. **新增测试**：在 `test_engines.py` 中添加该引擎的检测、提取、回写测试
+6. **新增测试**：在 `tests/test_engines.py` 中添加该引擎的检测、提取、回写测试
 7. **更新文档**：README 的"支持引擎"列表、CLI 帮助的 `--engine` choices
 
 每个新引擎预计 200-600 行代码（取决于文件格式复杂度），不需要改动任何现有引擎的代码。
