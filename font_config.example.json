@@ -1,0 +1,10 @@
+{
+    "font_file": "",
+    "gui_overrides": {
+        "gui.text_size": 22,
+        "gui.name_text_size": 24,
+        "gui.interface_text_size": 22,
+        "gui.button_text_size": 22,
+        "gui.choice_button_text_size": 24
+    }
+}

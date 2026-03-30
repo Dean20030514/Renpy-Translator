@@ -1271,6 +1271,18 @@ def _run_final_report(
     except Exception as e:
         _print(f"[WARN ] 漏翻归因分析失败: {e}")
 
+    # HTML 校对报告
+    try:
+        from review_generator import generate_review_html
+        db_merged_path = project_out_root / "translation_db.json"
+        if db_merged_path.exists():
+            review_path = project_out_root / "review.html"
+            review_count = generate_review_html(db_merged_path, review_path)
+            report["stages"]["review_html"] = {"path": str(review_path), "entries": review_count}
+            _print(f"[REVIEW] 生成校对报告: {review_path} ({review_count} 条)")
+    except Exception as e:
+        _print(f"[WARN ] 生成 review.html 失败: {e}")
+
     # 结构化 Markdown 概要
     try:
         write_report_summary_md(

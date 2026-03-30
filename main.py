@@ -175,6 +175,8 @@ def main():
                         help="启用自动字体补丁")
     parser.add_argument("--font-file", default="", metavar="PATH",
                         help="指定字体文件路径")
+    parser.add_argument("--font-config", default="", metavar="PATH",
+                        help="字体配置文件路径（font_config.json，可设置字号/布局参数）")
     parser.add_argument("--retranslate", action="store_true",
                         help="补翻模式：扫描残留英文对话行，精准补翻")
     parser.add_argument("--min-dialogue-density", type=_ratio_float, default=None, metavar="RATIO",
@@ -183,6 +185,8 @@ def main():
                         help="tl 模式：翻译 tl/<lang>/ 空槽位")
     parser.add_argument("--tl-lang", default=None, metavar="LANG",
                         help="tl 语言子目录名 (默认: chinese)")
+    parser.add_argument("--cot", action="store_true",
+                        help="启用 CoT 思维链翻译（直译→校正→意译，质量更高但费用+30-50%%）")
     parser.add_argument("--verbose", action="store_true",
                         help="输出详细调试信息（DEBUG 级别）")
     parser.add_argument("--quiet", action="store_true",

@@ -19,6 +19,8 @@
 - **AI 自动术语抽取**：试跑阶段后 AI 自动从译文中提取高频术语补充词典
 - **Ren'Py 7→8 show 修复**：自动为空 ATL 块的 `show` 语句补加冒号（RENPY-020 规则）
 - **多引擎支持**：Ren'Py（direct/tl/retranslate 三模式）+ RPG Maker MV/MZ（事件指令+数据库+System）+ CSV/JSONL 通用格式，`--engine auto` 自动检测
+- **CoT 思维链翻译**：`--cot` 启用直译→校正→意译三步流程，提升长难句和文化改编质量
+- **字体配置可定制**：`--font-config font_config.json` 自定义字号/布局参数，tl-mode 使用 `translate None` 覆盖模板（不修改 gui.rpy）
 
 ---
 

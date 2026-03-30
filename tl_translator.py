@@ -107,14 +107,20 @@ def _clean_rpyc(game_dir: Path, modified_files: "set[str] | None" = None) -> Non
         logger.info(f"[RPYC] 已清理 {count} 个缓存文件")
 
 
-def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
+def _apply_tl_game_patches(game_dir: Path, tl_lang: str,
+                           font_config_path: "Path | None" = None) -> None:
     """Apply font patch and language switch to game directory for tl-mode.
 
     1. Copy Chinese font from resources/fonts/ into game dir.
-    2. Patch all gui.rpy files (define gui.*_font) — same approach as direct-mode.
-    3. Write chinese_language_patch.rpy with config.language + translate python font override.
+    2. Generate tl/<lang>/none_overlay.rpy with font overrides (不直接修改 gui.rpy).
+    3. Write chinese_language_patch.rpy with config.language setting.
     4. Inject Language radio buttons into all screen preferences() definitions.
+
+    使用 translate None python: 覆盖模板，避免直接修改 gui.rpy。
+    游戏更新 gui.rpy 不会丢失字体补丁。
     """
+    from font_patch import load_font_config
+
     resources_fonts = Path(__file__).parent / "resources" / "fonts"
     font_path = resolve_font(resources_fonts)
     if not font_path:
@@ -132,39 +138,38 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
     else:
         logger.info(f"[TL-PATCH] 字体已存在: {font_name}")
 
-    # 2. Patch all gui.rpy (define gui.*_font = "...")
-    _font_re = re.compile(
-        r'^(\s*define\s+gui\.\w+_font\s*=\s*)["\']([^"\']*)["\'](\s*)$',
-        re.MULTILINE,
-    )
-    for gui_rpy in game_dir.rglob("gui.rpy"):
-        try:
-            gui_rpy.relative_to(game_dir / "tl")
-            continue
-        except ValueError:
-            pass
-        gui_text = gui_rpy.read_text(encoding="utf-8-sig")
-        new_gui, count = _font_re.subn(
-            lambda m: m.group(1) + '"' + font_name + '"' + m.group(3),
-            gui_text,
-        )
-        if count:
-            gui_rpy.write_text(new_gui, encoding="utf-8")
-            logger.info(f"[TL-PATCH] 更新 {gui_rpy.relative_to(game_dir.parent)}: "
-                  f"{count} 处 gui.*_font -> {font_name}")
-
-    # 3. Write chinese_language_patch.rpy (default language + translate python font override)
+    # 2. Generate none_overlay.rpy（覆盖模板，不修改 gui.rpy）
     tl_dir = game_dir / "tl" / tl_lang
     tl_dir.mkdir(parents=True, exist_ok=True)
+
+    overlay_lines = [
+        "# none_overlay.rpy — 自动生成的字体覆盖模板，请勿手动编辑",
+        "# 使用 translate None python: 在运行时覆盖字体设置",
+        "",
+        "translate None python:",
+        f'    gui.text_font = "{font_name}"',
+        f'    gui.name_text_font = "{font_name}"',
+        f'    gui.interface_text_font = "{font_name}"',
+    ]
+
+    # 如果有 font_config.json，追加 gui_overrides
+    config = load_font_config(font_config_path)
+    overrides = config.get("gui_overrides", {})
+    if overrides:
+        overlay_lines.append("")
+        overlay_lines.append("    # font_config.json gui_overrides")
+        for var_name, value in overrides.items():
+            overlay_lines.append(f"    {var_name} = {value}")
+
+    overlay_rpy = tl_dir / "none_overlay.rpy"
+    overlay_rpy.write_text("\n".join(overlay_lines) + "\n", encoding="utf-8")
+    logger.info(f"[TL-PATCH] 生成覆盖模板: {overlay_rpy.relative_to(game_dir.parent)}")
+
+    # 3. Write chinese_language_patch.rpy (default language setting)
     patch_rpy = tl_dir / "chinese_language_patch.rpy"
     patch_content = (
         f'init python:\n'
         f'    config.language = "{tl_lang}"\n'
-        f'\n'
-        f'translate {tl_lang} python:\n'
-        f'    gui.text_font = "{font_name}"\n'
-        f'    gui.name_text_font = "{font_name}"\n'
-        f'    gui.interface_text_font = "{font_name}"\n'
     )
     patch_rpy.write_text(patch_content, encoding="utf-8")
     logger.info(f"[TL-PATCH] 写入语言补丁: {patch_rpy.relative_to(game_dir.parent)}")
@@ -293,7 +298,8 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     logger.info("")
 
     # ── 0. 自动字体补丁 + 语言切换注入 ──
-    _apply_tl_game_patches(game_dir, tl_lang)
+    font_config = getattr(args, "font_config", "") or None
+    _apply_tl_game_patches(game_dir, tl_lang, font_config_path=Path(font_config) if font_config else None)
     logger.info("")
 
     # ── 1. 扫描 ──
@@ -349,6 +355,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     system_prompt = build_tl_system_prompt(
         glossary_text=glossary.to_prompt_text(),
         genre=args.genre,
+        cot=getattr(args, 'cot', False),
     )
 
     # ── 1b. 自动回填不需要 AI 翻译的条目（纯空白/纯标点原文） ──

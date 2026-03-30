@@ -51,15 +51,47 @@ def resolve_font(
     return candidates[0]
 
 
+def load_font_config(config_path: "Path | None") -> dict:
+    """加载字体配置文件（font_config.json）。
+
+    返回配置字典，至少包含 gui_overrides。不存在或加载失败时返回空字典。
+
+    配置示例::
+
+        {
+            "font_file": "path/to/font.ttf",
+            "gui_overrides": {
+                "gui.text_size": 22,
+                "gui.name_text_size": 24,
+                "gui.interface_text_size": 20
+            }
+        }
+    """
+    import json as _json
+    if not config_path:
+        return {}
+    config_path = Path(config_path)
+    if not config_path.is_file():
+        logger.warning(f"font_config 文件不存在: {config_path}")
+        return {}
+    try:
+        return _json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"font_config 加载失败: {e}")
+        return {}
+
+
 def apply_font_patch(
     output_game_dir: Path,
     source_game_dir: Path,
     font_path: Path,
+    font_config_path: "Path | None" = None,
 ) -> None:
     """Copy font into output_game_dir and patch gui.*_font in gui.rpy.
 
     Only replaces define gui.XXX_font = "..." lines; other content unchanged.
     If gui.rpy is missing in output, copy from source_game_dir first.
+    If font_config_path provided, also patches gui size/layout variables.
     """
     output_game_dir = output_game_dir.resolve()
     source_game_dir = source_game_dir.resolve()
@@ -93,6 +125,23 @@ def apply_font_patch(
     )
     if count == 0:
         logger.warning("gui.rpy 中未找到 gui.*_font 变量定义，未修改任何内容")
-        return
+    else:
+        logger.info(f"已更新 gui.rpy 中 {count} 处 gui.*_font 为 {font_basename}")
+
+    # 可选：应用 font_config.json 中的 gui_overrides（字号/布局参数）
+    config = load_font_config(font_config_path)
+    overrides = config.get("gui_overrides", {})
+    if overrides and new_text:
+        size_count = 0
+        for var_name, value in overrides.items():
+            # 匹配 define gui.xxx = N 或 define gui.xxx = N.N
+            var_pattern = re.compile(
+                rf'^(\s*define\s+{re.escape(var_name)}\s*=\s*)[\d.]+(\s*)$',
+                re.MULTILINE,
+            )
+            new_text, n = var_pattern.subn(rf'\g<1>{value}\2', new_text)
+            size_count += n
+        if size_count:
+            logger.info(f"已更新 gui.rpy 中 {size_count} 处 gui 参数（font_config）")
+
     gui_rpy.write_text(new_text, encoding="utf-8")
-    logger.info(f"已更新 gui.rpy 中 {count} 处 gui.*_font 为 {font_basename}")

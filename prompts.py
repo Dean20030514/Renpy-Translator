@@ -174,12 +174,40 @@ Preserve any placeholder tokens (e.g., __RENPY_PH_0__) exactly as they appear.
 }
 
 
+# ============================================================
+# CoT 思维链翻译 addon
+# ============================================================
+
+_COT_ADDON_ZH = """
+## 翻译流程（Chain-of-Thought）
+
+对每条文本，请在内部按以下三步思考后再输出最终译文：
+1. **直译**：逐字忠实翻译原文，保留所有占位符和标点
+2. **校正**：检查术语一致性（参考术语表）、占位符完整性、语法自然度
+3. **意译**：基于校正结果，输出自然流畅、符合目标语言习惯的最终译文
+
+在 JSON 输出中，只返回第 3 步的最终译文。不要输出中间推理步骤。
+"""
+
+_COT_ADDON_EN = """
+## Translation Process (Chain-of-Thought)
+
+For each text entry, internally follow these three steps before outputting the final translation:
+1. **Literal translation**: Translate word-by-word faithfully, preserving all placeholders and punctuation
+2. **Review**: Check terminology consistency (refer to glossary), placeholder integrity, grammar naturalness
+3. **Localization**: Based on the review, output the final natural, fluent translation in the target language
+
+In the JSON output, only return the step 3 final translation. Do not output intermediate reasoning steps.
+"""
+
+
 def build_system_prompt(
     genre: str = "adult",
     glossary_text: str = "",
     project_name: Optional[str] = None,
     lang_config: object = None,
     engine_profile: object = None,
+    cot: bool = False,
 ) -> str:
     """构建系统提示词
 
@@ -196,6 +224,8 @@ def build_system_prompt(
     engine_profile: 引擎配置（EngineProfile 实例，可选）。
       - None → Ren'Py 默认路径（现有行为不变）
       - 非 None → 追加引擎专属 prompt addon
+
+    cot: 启用 CoT 思维链翻译（直译→校正→意译）。
     """
     # 判断是否走中文路径（默认 + zh + zh-tw）
     lang_code = getattr(lang_config, 'code', 'zh') if lang_config else 'zh'
@@ -210,6 +240,11 @@ def build_system_prompt(
         addon = _ENGINE_PROMPT_ADDONS.get(addon_key, '')
         if addon:
             base = base.rstrip() + "\n\n" + addon.strip() + "\n"
+
+    # 追加 CoT 思维链说明
+    if cot:
+        cot_addon = _COT_ADDON_ZH if lang_code in ("zh", "zh-tw") else _COT_ADDON_EN
+        base = base.rstrip() + "\n" + cot_addon.strip() + "\n"
 
     return base
 
@@ -469,6 +504,7 @@ TLMODE_SYSTEM_PROMPT = """\
 def build_tl_system_prompt(
     glossary_text: str = "",
     genre: str = "adult",
+    cot: bool = False,
 ) -> str:
     """构建 tl-mode 系统提示词。"""
     style_block = _STYLES.get(genre, STYLE_GENERAL)
@@ -476,10 +512,13 @@ def build_tl_system_prompt(
         glossary_block = f"## 术语表（请保持翻译一致）\n{glossary_text}"
     else:
         glossary_block = ""
-    return TLMODE_SYSTEM_PROMPT.format(
+    base = TLMODE_SYSTEM_PROMPT.format(
         style_block=style_block,
         glossary_block=glossary_block,
     )
+    if cot:
+        base = base.rstrip() + "\n" + _COT_ADDON_ZH.strip() + "\n"
+    return base
 
 
 def build_tl_user_prompt(chunk_text: str, entry_count: int) -> str:

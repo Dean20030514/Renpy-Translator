@@ -292,6 +292,7 @@ def translate_file(
         genre=genre,
         glossary_text=glossary.to_prompt_text(),
         project_name=project_name,
+        cot=getattr(args, 'cot', False),
     )
 
     # 加载已完成的翻译（断点续传，只加载一次避免重复）

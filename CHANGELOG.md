@@ -33,6 +33,7 @@
 | 第十二轮 阶段四 | 文档 + 发布 | start_launcher.py 新增模式 8/9（RPG Maker / CSV）+ 全部文档更新 + 里程碑 M4 达成 |
 | 第十二轮 结构整理 | 项目目录重构 | 根目录 .py 27→17：测试→tests/ + 工具→tools/ + 引擎抽象→engines/ 包合并 + import 路径更新 |
 | 第十二轮 GUI | 图形界面 + 打包 | gui.py Tkinter GUI（3 Tab + 内嵌日志 + 命令预览 + 配置加载）+ build.py PyInstaller 打包（32MB 单文件 .exe） |
+| 第十三轮 | 四项功能优化 | pipeline 集成 review.html + font_config.json 可配置 + tl/none 覆盖模板（不修改 gui.rpy）+ CoT 思维链翻译（`--cot`） |
 
 ---
 
@@ -811,6 +812,20 @@
 | 170 | Tkinter GUI 启动器：3 Tab 分页（基本设置 + 翻译设置动态引擎面板 + 高级设置）、引擎选择联动面板切换、API key 隐藏（Entry show="*" + 命令预览 ****）、命令预览实时更新、内嵌 ScrolledText 日志（queue.Queue 线程安全轮询）、subprocess 后台执行 + kill 停止、配置加载/保存（JSON）、工具菜单（Dry-run 摘要弹窗 + 升级扫描）、DPI 适配 | `gui.py`（新增） | ~753 |
 | 171 | PyInstaller 打包脚本：29 个 hidden-import + 资源文件打包 → 单文件 .exe（32MB） | `build.py`（新增） | ~100 |
 | 172 | .gitignore 新增 build/dist/*.spec 排除 | `.gitignore` | +4 行 |
+
+---
+
+## 第十三轮：四项功能优化
+
+### 新增功能
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 173 | `_run_final_report()` 中 TranslationDB merge 后自动调用 `generate_review_html()` 生成 `review.html` 校对报告 | `one_click_pipeline.py` | pipeline 产物新增 review.html |
+| 174 | `load_font_config(config_path)` + `font_config.json` 支持 `gui_overrides`（字号/布局参数）；`apply_font_patch()` 新增 `font_config_path` 可选参数；`--font-config` CLI 参数 | `font_patch.py`, `main.py` | 字体补丁可配置化 |
+| 175 | tl/none 覆盖模板：`_apply_tl_game_patches()` 不再直接修改 gui.rpy，改为生成 `tl/<lang>/none_overlay.rpy`（`translate None python:` 运行时覆盖字体）；支持 font_config.json gui_overrides | `tl_translator.py` | gui.rpy 不被修改，游戏更新安全 |
+| 176 | CoT 思维链翻译模式：`--cot` CLI flag；`_COT_ADDON_ZH` / `_COT_ADDON_EN` 双语 addon（直译→校正→意译三步）；`build_system_prompt(cot=)` + `build_tl_system_prompt(cot=)` 参数化 | `prompts.py`, `main.py`, `direct_translator.py`, `tl_translator.py` | 可选质量增强（费用 +30-50%） |
+| 177 | `font_config.example.json` 示例配置文件 | 新增 | 用户模板 |
 
 ---
 
