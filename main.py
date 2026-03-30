@@ -187,6 +187,11 @@ def main():
                         help="输出详细调试信息（DEBUG 级别）")
     parser.add_argument("--quiet", action="store_true",
                         help="仅输出警告和错误（WARNING 级别）")
+    parser.add_argument("--no-clean-rpyc", action="store_true",
+                        help="跳过 tl-mode 翻译后的 .rpyc 缓存清理")
+    parser.add_argument("--engine", default="auto",
+                        choices=["auto", "renpy", "rpgmaker", "csv", "jsonl"],
+                        help="游戏引擎类型 (默认: auto 自动检测)")
     parser.add_argument("--config", default="", metavar="PATH",
                         help="配置文件路径（默认自动查找 renpy_translate.json）")
 
@@ -255,12 +260,23 @@ def main():
         logger.error("[ERROR] --retranslate 和 --tl-mode 互斥，不能同时使用")
         sys.exit(1)
 
-    if tl_mode:
-        run_tl_pipeline(args)
-    elif args.retranslate:
-        run_retranslate_pipeline(args)
+    engine_arg = getattr(args, "engine", "auto")
+    if engine_arg in ("auto", "renpy"):
+        # Ren'Py 路径：保持现有行为完全不变
+        if tl_mode:
+            run_tl_pipeline(args)
+        elif args.retranslate:
+            run_retranslate_pipeline(args)
+        else:
+            run_pipeline(args)
     else:
-        run_pipeline(args)
+        # 非 Ren'Py 引擎路由
+        from engine_detector import resolve_engine as _resolve_engine
+        engine = _resolve_engine(engine_arg, Path(args.game_dir))
+        if engine is None:
+            logger.error(f"[ERROR] 无法创建引擎: {engine_arg}")
+            sys.exit(1)
+        engine.run(args)
 
 
 if __name__ == "__main__":

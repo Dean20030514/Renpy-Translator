@@ -52,17 +52,22 @@ def run(cmd: list[str]) -> int:
 
 def main() -> int:
     print("=" * 60)
-    print("RenPy 汉化统一启动器")
+    print("多引擎游戏汉化统一启动器")
     print("=" * 60)
+    print("── Ren'Py ──")
     print("1. 主流程翻译（从头开始）")
     print("2. 主流程翻译（断点续跑）")
     print("3. 仅扫描与费用估算（Dry-run）")
     print("4. 一键流水线（试跑+闸门+全量+漏翻增量）")
     print("5. tl-mode 翻译（从头开始）")
     print("6. tl-mode 翻译（断点续跑）")
+    print("── 其他引擎 ──")
+    print("8. RPG Maker MV/MZ 翻译")
+    print("9. CSV/JSONL 通用格式翻译")
+    print("── 工具 ──")
     print("7. Ren'Py 7→8 升级扫描（检测 Python 2 / 旧 API 问题）")
 
-    mode = ask("\n输入模式 [1-7]（默认4）: ", "4")
+    mode = ask("\n输入模式 [1-9]（默认4）: ", "4")
     if mode == "7":
         scan_dir = ask("游戏 game 目录路径: ")
         if not scan_dir:
@@ -125,6 +130,44 @@ def main() -> int:
             "--tl-mode",
             "--tl-lang", tl_lang,
             *extra,
+        ]
+        return run(cmd)
+
+    # ── 模式 8: RPG Maker MV/MZ ──
+    if mode == "8":
+        workers = ask("并发线程数（默认 3）: ", "3")
+        cmd = [
+            py, "main.py",
+            "--engine", "rpgmaker",
+            "--game-dir", game_dir,
+            "--output-dir", output_dir,
+            "--provider", provider,
+            "--api-key", api_key,
+            "--model", model,
+            "--genre", genre,
+            "--workers", workers,
+            "--rpm", rpm,
+            "--rps", rps,
+        ]
+        return run(cmd)
+
+    # ── 模式 9: CSV/JSONL 通用格式 ──
+    if mode == "9":
+        engine = ask("格式类型 [csv/jsonl]（默认 csv）: ", "csv").lower()
+        if engine not in ("csv", "jsonl"):
+            engine = "csv"
+        workers = ask("并发线程数（默认 3）: ", "3")
+        cmd = [
+            py, "main.py",
+            "--engine", engine,
+            "--game-dir", game_dir,
+            "--output-dir", output_dir,
+            "--provider", provider,
+            "--api-key", api_key,
+            "--model", model,
+            "--workers", workers,
+            "--rpm", rpm,
+            "--rps", rps,
         ]
         return run(cmd)
 

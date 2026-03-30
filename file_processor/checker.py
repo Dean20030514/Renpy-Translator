@@ -54,14 +54,19 @@ _PLACEHOLDER_ORDER_REGEX = re.compile(
 )
 
 
-def _extract_placeholder_sequence(text: str) -> list[str]:
+def _extract_placeholder_sequence(text: str,
+                                  regex: "re.Pattern | None" = None) -> list[str]:
     """按从左到右顺序提取文本中的占位符序列，用于顺序一致性校验。
 
     使用 PLACEHOLDER_ORDER_PATTERNS 对应的联合正则，finditer 保证出现顺序。
     例如：'{color=#f00}[name]{/color}' -> ['{color=#f00}', '[name]', '{/color}']
+
+    Args:
+        regex: 自定义占位符正则。None 时使用默认 Ren'Py 模式。
     """
+    r = regex or _PLACEHOLDER_ORDER_REGEX
     out: list[str] = []
-    for m in _PLACEHOLDER_ORDER_REGEX.finditer(text):
+    for m in r.finditer(text):
         # 取第一个非空分组即为当前匹配的占位符
         for g in m.groups():
             if g is not None:
@@ -75,19 +80,32 @@ _PLACEHOLDER_PROTECT_PREFIX = "__RENPY_PH_"
 _PLACEHOLDER_PROTECT_SUFFIX = "__"
 
 
-def protect_placeholders(text: str) -> tuple[str, list[tuple[str, str]]]:
+def protect_placeholders(text: str,
+                         patterns: "list[str] | None" = None,
+                         ) -> tuple[str, list[tuple[str, str]]]:
     """将文本中的占位符替换为唯一令牌，供发往 API 时使用。
 
     使用与 PLACEHOLDER_ORDER_PATTERNS 相同的模式提取占位符，按首次出现顺序去重后，
     对同一占位符的每一次出现均替换（全局替换）。例如 "[name] says hi to [name]" 中
     两个 [name] 都会变为 __RENPY_PH_0__。
+
+    Args:
+        patterns: 自定义占位符正则列表（从 EngineProfile.placeholder_patterns 传入）。
+            None 时使用默认 Ren'Py 模式，保持向后兼容。
     Returns:
         (替换后的文本, mapping: [(token, original), ...])
     """
     if not text.strip():
         return text, []
+    # 选择占位符正则：自定义模式 or 默认 Ren'Py 模式
+    if patterns is not None:
+        regex = re.compile("|".join(f"({p})" for p in patterns)) if patterns else None
+        if regex is None:
+            return text, []
+    else:
+        regex = _PLACEHOLDER_ORDER_REGEX
     matches: list[tuple[int, int, str]] = []
-    for m in _PLACEHOLDER_ORDER_REGEX.finditer(text):
+    for m in regex.finditer(text):
         for g in m.groups():
             if g is not None:
                 matches.append((m.start(), m.end(), g))
@@ -169,11 +187,15 @@ def check_response_chunk(chunk_content: str, translations: list[dict]) -> list[s
     return warnings
 
 
-def check_response_item(item: dict, line_offset: int = 0) -> list[str]:
+def check_response_item(item: dict, line_offset: int = 0,
+                        placeholder_re: "re.Pattern | None" = None) -> list[str]:
     """轻量 ResponseChecker：对单条 API 返回的翻译做本地校验，不调 API。
 
     检查：原文非空时译文非空、占位符集合一致、必要字段存在。
     任一不通过则返回非空列表，调用方应丢弃该条（不写入译文，保留原文计漏翻）。
+
+    Args:
+        placeholder_re: 自定义占位符正则。None 时使用默认 Ren'Py 模式。
     Returns:
         警告信息列表，空表示通过。
     """
@@ -191,8 +213,8 @@ def check_response_item(item: dict, line_offset: int = 0) -> list[str]:
     if not zh:
         warnings.append(f"行 {line}: 译文为空")
         return warnings
-    orig_placeholders = set(_extract_placeholder_sequence(original))
-    zh_placeholders = set(_extract_placeholder_sequence(zh))
+    orig_placeholders = set(_extract_placeholder_sequence(original, regex=placeholder_re))
+    zh_placeholders = set(_extract_placeholder_sequence(zh, regex=placeholder_re))
     if orig_placeholders != zh_placeholders:
         missing = orig_placeholders - zh_placeholders
         extra = zh_placeholders - orig_placeholders

@@ -1,8 +1,8 @@
-# Ren'Py 汉化工具
+# 多引擎游戏汉化工具
 
-一个纯 Python 的 Ren'Py 游戏自动汉化工具，通过 LLM API 将 `.rpy` 脚本翻译为简体中文。
+一个纯 Python 的游戏自动汉化工具，支持 **Ren'Py**、**RPG Maker MV/MZ**、**CSV/JSONL 通用格式**，通过 LLM API 翻译为简体中文。
 
-**零依赖**（纯标准库）| **五大 LLM 提供商** | **50+ 项翻译校验** | **断点续传** | **并发翻译**
+**零依赖**（纯标准库）| **五大 LLM 提供商** | **多引擎自动检测** | **50+ 项翻译校验** | **断点续传** | **并发翻译**
 
 ---
 
@@ -13,11 +13,12 @@
 - **占位符保护**：`[var]`、`{tag}`、`%(name)s` 等 Ren'Py 语法标记在翻译前替换为安全令牌，翻译后精确还原
 - **密度自适应**：低对话密度文件自动切换定向翻译模式，避免 AI 注意力被代码稀释
 - **术语一致性**：自动提取角色名、支持外部词典、翻译记忆自动学习、锁定术语 + 禁翻片段
-- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 50+ 项结构校验 → chunk 自动重试
+- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 50+ 项结构校验 → chunk 自动重试（截断时自动拆分）
 - **漏翻归因分析**：每条未翻译行自动归因（AI 未返回 / Checker 丢弃 / 回写失败）
-- **日志分级控制**：`--verbose` 输出 DEBUG 详情，`--quiet` 仅输出 WARNING 及以上
+- **日志分级控制**：`--verbose` 输出 DEBUG 详情（dry-run 时含每文件密度/费用明细 + 直方图），`--quiet` 仅输出 WARNING 及以上
 - **AI 自动术语抽取**：试跑阶段后 AI 自动从译文中提取高频术语补充词典
 - **Ren'Py 7→8 show 修复**：自动为空 ATL 块的 `show` 语句补加冒号（RENPY-020 规则）
+- **多引擎支持**：Ren'Py（direct/tl/retranslate 三模式）+ RPG Maker MV/MZ（事件指令+数据库+System）+ CSV/JSONL 通用格式，`--engine auto` 自动检测
 
 ---
 
@@ -46,6 +47,9 @@ START.bat
 ```bash
 # 扫描文件、估算 token 和费用（不调用 API，无需 API key）
 python main.py --game-dir "E:\Games\MyGame" --provider xai --dry-run
+
+# 详细分析：每文件对话密度 + 翻译策略 + 密度分布直方图 + 术语预览
+python main.py --game-dir "E:\Games\MyGame" --provider xai --dry-run --verbose
 ```
 
 ---
@@ -105,6 +109,7 @@ python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
 - 回填精度远高于 direct-mode（行号定位 vs 文本匹配）
 - 引号剥离保护：AI 有时返回带外层引号的译文，回填前自动剥离，防止 `""text""` 格式错误
 - StringEntry 四层 fallback 匹配（精确 → strip → 去占位符令牌 → 转义规范化）
+- 翻译后自动清理修改过的 `.rpyc` 缓存（强制 Ren'Py 重编译），可用 `--no-clean-rpyc` 禁用
 
 ### Retranslate（补翻模式）
 
@@ -116,6 +121,40 @@ python main.py --game-dir "E:\Games\MyGame" --output-dir "E:\Games\MyGame" \
 ```
 
 每条残留英文行附带 ±3 行上下文，构建 ≤20 行的小 chunk，发送专用 prompt（每行标注 `>>>` 必须翻译）。原地回写，自动 `.bak` 备份。
+
+### CSV/JSONL 通用格式
+
+用任何外部工具（Translator++、VNTextPatch、GARbro 等）导出为 CSV/JSONL，用本工具做 AI 翻译，再用原工具回灌。**一天覆盖所有引擎**。
+
+```bash
+# CSV 翻译（单文件）
+python main.py --engine csv --game-dir texts.csv --provider xai --api-key KEY
+
+# CSV 翻译（整个目录）
+python main.py --engine csv --game-dir /path/to/csvs/ --provider xai --api-key KEY
+
+# JSONL 翻译
+python main.py --engine jsonl --game-dir texts.jsonl --provider xai --api-key KEY
+```
+
+**支持格式**：CSV（含 TSV）、JSONL、JSON 数组。列名自动匹配（original/source/text/en 等别名），支持 UTF-8 BOM。输出为 `translations_zh.csv` 或 `translations_zh.jsonl`。
+
+### RPG Maker MV/MZ
+
+自动检测 RPG Maker 游戏目录，提取对话（401/405 事件指令合并）、选项（102）、数据库（角色/物品/技能等 8 种 JSON）、系统文本（System.json）。
+
+```bash
+# 自动检测引擎（RPG Maker MV 或 MZ）
+python main.py --engine auto --game-dir "E:\Games\RPGMakerGame" --provider xai --api-key KEY
+
+# 显式指定引擎
+python main.py --engine rpgmaker --game-dir "E:\Games\RPGMakerGame" --provider xai --api-key KEY
+
+# dry-run 预估
+python main.py --engine rpgmaker --game-dir "E:\Games\RPGMakerGame" --provider xai --dry-run
+```
+
+**注意**：翻译后需手动安装中文字体到 `www/fonts/` 目录，工具会在翻译完成后给出提示。
 
 ---
 
@@ -183,17 +222,19 @@ python renpy_upgrade_tool.py ./game --fix --backup
 
 ## 中文交互启动器
 
-`START.bat` 提供 7 种模式的中文菜单，适合不想记命令行参数的用户：
+`START.bat` 提供 9 种模式的中文菜单，适合不想记命令行参数的用户：
 
 | 模式 | 说明 |
 |------|------|
-| 1 | 主流程翻译（从头开始） |
-| 2 | 主流程翻译（断点续跑） |
-| 3 | 仅扫描与费用估算（Dry-run） |
-| 4 | 一键流水线（试跑 + 闸门 + 全量 + 补翻） |
-| 5 | tl-mode 翻译（从头开始） |
-| 6 | tl-mode 翻译（断点续跑） |
+| 1 | Ren'Py 主流程翻译（从头开始） |
+| 2 | Ren'Py 主流程翻译（断点续跑） |
+| 3 | Ren'Py 仅扫描与费用估算（Dry-run） |
+| 4 | Ren'Py 一键流水线（试跑 + 闸门 + 全量 + 补翻） |
+| 5 | Ren'Py tl-mode 翻译（从头开始） |
+| 6 | Ren'Py tl-mode 翻译（断点续跑） |
 | 7 | Ren'Py 7→8 升级扫描 |
+| 8 | RPG Maker MV/MZ 翻译 |
+| 9 | CSV/JSONL 通用格式翻译 |
 
 ---
 

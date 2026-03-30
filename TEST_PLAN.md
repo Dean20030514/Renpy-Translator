@@ -10,7 +10,8 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator | 66 | 否 |
+| `test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator | 70 | 否 |
+| `test_engines.py` | 引擎抽象层测试 | EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine / EngineBase / CSVEngine / generic_pipeline / checker 参数化 / prompts addon / RPGMakerMVEngine / glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
@@ -31,7 +32,7 @@
 
 ## 二、已覆盖的测试用例
 
-### test_all.py（36 个单元测试）
+### test_all.py（70 个单元测试）
 
 | # | 函数 | 覆盖模块 | 测试内容 |
 |---|------|----------|----------|
@@ -101,6 +102,10 @@
 | 64 | `test_prompt_zh_unchanged` | prompts | 中文 prompt 零变更回归（基线对比） |
 | 65 | `test_prompt_ja_generic` | prompts | 日语通用英文模板内容验证 |
 | 66 | `test_validator_lang_config` | validator | W442 使用 lang_config 参数化检测 |
+| 67 | `test_should_retry_truncation` | direct_translator | 截断检测：returned < expected*0.5 触发 needs_split + 边界（returned=0、expected=0） |
+| 68 | `test_should_retry_normal` | direct_translator | 正常返回不重试 + 丢弃率过高重试不拆分 |
+| 69 | `test_split_chunk_basic` | direct_translator | chunk 二分后行数守恒 + line_offset 正确 |
+| 70 | `test_split_chunk_at_empty_line` | direct_translator | 优先在空行处拆分验证 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 

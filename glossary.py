@@ -90,6 +90,66 @@ class Glossary:
                     # 不自动翻译角色名 — 只做记录，由 prompt 中提示 AI
                     pass
 
+    def scan_rpgmaker_database(self, game_dir) -> None:
+        """从 RPG Maker data/ 目录提取角色名和系统术语。
+
+        读取 Actors.json 提取角色名（name, nickname），
+        读取 System.json 提取系统术语（terms.basic, terms.commands, terms.params）。
+        """
+        import json as _json
+        game_dir = Path(game_dir)
+
+        # 定位 data 目录（MV: www/data/, MZ: data/）
+        data_dir = None
+        for candidate in [game_dir / "www" / "data", game_dir / "data"]:
+            if candidate.is_dir():
+                data_dir = candidate
+                break
+        if data_dir is None:
+            return
+
+        # Actors.json → characters
+        actors_path = data_dir / "Actors.json"
+        if actors_path.is_file():
+            try:
+                actors = _json.loads(actors_path.read_text(encoding="utf-8"))
+                if isinstance(actors, list):
+                    with self._lock:
+                        for actor in actors:
+                            if not actor or not isinstance(actor, dict):
+                                continue
+                            name = (actor.get("name") or "").strip()
+                            nickname = (actor.get("nickname") or "").strip()
+                            if name and len(name) > 1:
+                                self.characters[name.lower()] = name
+                            if nickname and len(nickname) > 1 and nickname != name:
+                                self.characters[nickname.lower()] = nickname
+                    logger.debug(f"[RPGM] Actors.json: {len(self.characters)} 个角色名")
+            except (OSError, _json.JSONDecodeError) as e:
+                logger.debug(f"[RPGM] 读取 Actors.json 失败: {e}")
+
+        # System.json → terms
+        system_path = data_dir / "System.json"
+        if system_path.is_file():
+            try:
+                system = _json.loads(system_path.read_text(encoding="utf-8"))
+                terms = system.get("terms") or {}
+                added = 0
+                with self._lock:
+                    for arr_name in ("basic", "commands", "params"):
+                        arr = terms.get(arr_name) or []
+                        if isinstance(arr, list):
+                            for val in arr:
+                                if val and isinstance(val, str) and val.strip() and len(val) > 1:
+                                    key = val.strip()
+                                    if key not in self.terms:
+                                        self.terms[key] = ""  # 空译名，由 AI 翻译
+                                        added += 1
+                if added:
+                    logger.debug(f"[RPGM] System.json: 新增 {added} 条系统术语")
+            except (OSError, _json.JSONDecodeError) as e:
+                logger.debug(f"[RPGM] 读取 System.json 失败: {e}")
+
     def load_dict(self, filepath: str) -> None:
         """加载外部词典（支持 CSV 和 JSONL 格式）
 

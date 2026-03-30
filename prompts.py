@@ -147,11 +147,39 @@ def _load_text_if_exists(path: Path) -> str:
     return ""
 
 
+# ============================================================
+# 引擎专属 prompt 附加说明
+# ============================================================
+
+_ENGINE_PROMPT_ADDONS: dict[str, str] = {
+    "rpgmaker": """
+## RPG Maker Special Variables
+The text may contain RPG Maker control codes that MUST be preserved exactly:
+- \\V[n] — game variable (displays a number or text)
+- \\N[n] — character name reference
+- \\P[n] — party member name
+- \\C[n] — color change (\\C[0] resets to default)
+- \\G — currency unit
+- \\{ and \\} — increase/decrease font size
+- \\! — wait for player input
+- \\. and \\| — pause (short/long)
+- \\> and \\< — instant display on/off
+Do NOT translate, modify, or remove any of these codes.
+""",
+    "generic": """
+## Translation Format
+Return a JSON array where each object has "id" matching the input and a translation field.
+Preserve any placeholder tokens (e.g., __RENPY_PH_0__) exactly as they appear.
+""",
+}
+
+
 def build_system_prompt(
     genre: str = "adult",
     glossary_text: str = "",
     project_name: Optional[str] = None,
     lang_config: object = None,
+    engine_profile: object = None,
 ) -> str:
     """构建系统提示词
 
@@ -164,13 +192,26 @@ def build_system_prompt(
     lang_config: 目标语言配置（LanguageConfig 实例）。
       - None 或 code in ("zh", "zh-tw") → 使用现有中文模板（零变更保证）
       - 其他语言 → 使用英文通用模板
+
+    engine_profile: 引擎配置（EngineProfile 实例，可选）。
+      - None → Ren'Py 默认路径（现有行为不变）
+      - 非 None → 追加引擎专属 prompt addon
     """
     # 判断是否走中文路径（默认 + zh + zh-tw）
     lang_code = getattr(lang_config, 'code', 'zh') if lang_config else 'zh'
     if lang_code in ("zh", "zh-tw"):
-        return _build_chinese_system_prompt(genre, glossary_text, project_name, lang_config)
+        base = _build_chinese_system_prompt(genre, glossary_text, project_name, lang_config)
     else:
-        return _build_generic_system_prompt(genre, glossary_text, project_name, lang_config)
+        base = _build_generic_system_prompt(genre, glossary_text, project_name, lang_config)
+
+    # 追加引擎专属说明（仅非 Ren'Py 引擎）
+    if engine_profile is not None:
+        addon_key = getattr(engine_profile, 'prompt_addon_key', '')
+        addon = _ENGINE_PROMPT_ADDONS.get(addon_key, '')
+        if addon:
+            base = base.rstrip() + "\n\n" + addon.strip() + "\n"
+
+    return base
 
 
 def _build_chinese_system_prompt(

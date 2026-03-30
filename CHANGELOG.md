@@ -26,6 +26,11 @@
 | 第十一轮 阶段六 | 类型注解 | 全部公共 API 返回/参数注解 + py.typed PEP 561 + CI mypy informational |
 | 第十一轮 阶段七 | 目标语言参数化 | LanguageConfig dataclass + 4 预置语言 + 文字检测 + resolve_translation_field + 测试 60→63 |
 | 第十一轮 阶段八 | Prompt + Validator 多语言 | 中文/英文 prompt 分支 + W442 参数化 + 中文零变更验证 + 测试 63→66 |
+| 第十二轮 | 阶段零四项优化 | chunk 截断自动拆分重试 + pipeline main() 拆分 + .rpyc 精确清理 + dry-run verbose 增强 + 测试 66→70 |
+| 第十二轮 阶段一 | 引擎抽象层骨架 | EngineProfile + TranslatableUnit + EngineBase ABC + EngineDetector + RenPyEngine 薄包装 + `--engine` CLI + 引擎测试 25 个 |
+| 第十二轮 阶段二 | CSV/JSONL + 通用流水线 | CSVEngine（CSV/TSV/JSONL/JSON 读写）+ generic_pipeline（6 阶段通用翻译）+ checker/prompts 参数化适配 + 引擎测试 25→47 |
+| 第十二轮 阶段三 | RPG Maker MV/MZ | RPGMakerMVEngine（事件指令 401/405 合并 + 102 选项 + 8 种数据库 + System.json）+ glossary.scan_rpgmaker_database + 引擎测试 47→62 |
+| 第十二轮 阶段四 | 文档 + 发布 | start_launcher.py 新增模式 8/9（RPG Maker / CSV）+ 全部文档更新 + 里程碑 M4 达成 |
 
 ---
 
@@ -665,6 +670,121 @@
 | 140 | `_GENERIC_SYSTEM_PROMPT_TEMPLATE` 英文通用模板（含动态 `{field}` JSON 字段名 + 语言指令 + 风格注释） | `prompts.py` | ja/ko 支持 |
 | 141 | `validate_translation` + `_check_quality_heuristics` 新增 `lang_config` 参数：W442 使用 `target_script_detector` + `min_target_ratio` 参数化 | `file_processor/validator.py` | W442 多语言 |
 | 142 | 新增 3 个测试（63→66）：中文 prompt 零变更回归 / 日语通用模板内容验证 / validator lang_config 参数化 | `test_all.py` | 测试覆盖 |
+
+---
+
+## 第十二轮：阶段零四项优化
+
+> 对应 EXPANSION_PLAN.md §1「当前 Ren'Py 工具优化」，在多引擎扩展之前落地四项低风险高价值改进。
+
+### 新增功能
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 143 | chunk 截断自动拆分重试：`_should_retry` 返回 `(should, needs_split)` 元组，`returned < expected * 0.5` 触发截断检测；`_split_chunk` 三级拆分（label/screen 边界 > 空行 > 二等分）；`_translate_chunk_with_retry` 拆分后分别翻译再合并，单层不递归 | `direct_translator.py` | 大 chunk 截断时翻译完整度提升 |
+| 144 | tl-mode .rpyc 精确清理：`_clean_rpyc` 新增 `modified_files` 参数，只删除本次修改的 .rpy 对应的 .rpyc；`run_tl_pipeline` 收集 `modified_rpy_files` 集合 | `tl_translator.py` | 精确清理而非全目录 |
+| 145 | `--no-clean-rpyc` CLI 参数：禁用 tl-mode 翻译后的 .rpyc 缓存清理 | `main.py` | 新增 CLI 参数 |
+| 146 | dry-run verbose 增强：`--verbose` 时输出每文件对话行数/密度/策略/费用 + 密度分布直方图 + 术语扫描预览 | `direct_translator.py` | 仅 verbose 模式新增输出 |
+
+### 增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 147 | `one_click_pipeline.py` main() 拆分：提取 `_run_pilot_phase` / `_run_full_translation_phase` / `_run_tl_mode_phase` 三个阶段函数，main() 从 ~280 行缩减到 ~113 行纯编排 | `one_click_pipeline.py` | 纯重构，零行为变更 |
+
+### 测试
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 148 | 新增 4 个测试（66→70）：`test_should_retry_truncation`（截断检测 + 边界 returned=0/expected=0）/ `test_should_retry_normal`（正常+丢弃率过高）/ `test_split_chunk_basic`（行数守恒+offset）/ `test_split_chunk_at_empty_line`（空行拆分优先） | `test_all.py` | 测试覆盖 |
+
+---
+
+## 第十二轮 阶段一：引擎抽象层骨架
+
+> 对应 EXPANSION_PLAN.md §2「引擎抽象层设计」+ §9 阶段一里程碑 M1。
+
+### 新增文件
+
+| # | 描述 | 文件 | 行数 |
+|---|------|------|------|
+| 149 | `EngineProfile` 数据类（9 字段 + 占位符/skip 编译方法）+ `TranslatableUnit` 数据类（8 字段）+ `EngineBase` ABC（4 抽象 + 3 可选方法）+ 内置 Profile 常量（RENPY / RPGMAKER_MV / CSV）+ `ENGINE_PROFILES` 注册表 | `engine_base.py`（新增） | ~202 |
+| 150 | `EngineType` 枚举（6 值）+ `detect_engine_type` 目录特征扫描（5 级优先：Ren'Py > MV > MZ > VXAce > Unknown）+ `create_engine` 延迟导入工厂 + `resolve_engine` CLI 路由 + 未识别时 top 10 扩展名诊断 | `engine_detector.py`（新增） | ~160 |
+| 151 | `RenPyEngine` 薄包装：`detect()` 检查 .rpy/.rpa、`run()` 路由到三条管线（延迟导入 + try-except）、`extract_texts()`/`write_back()` 抛 NotImplementedError | `engines/renpy_engine.py`（新增） | ~74 |
+| 152 | 引擎实现包声明 | `engines/__init__.py`（新增） | ~3 |
+
+### 修改文件
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 153 | `--engine` CLI 参数（auto/renpy/rpgmaker/csv/jsonl）；路由：auto/renpy 走原路径零改动，其他走 `resolve_engine()` | `main.py` | 向后兼容，默认行为不变 |
+
+### 测试
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 154 | 新增 `test_engines.py`（25 个测试）：EngineProfile 编译 6 + TranslatableUnit 默认值 3 + 引擎检测 10 + RenPyEngine 5 + EngineBase dry_run 1 | `test_engines.py`（新增） | 引擎抽象层全覆盖 |
+
+---
+
+## 第十二轮 阶段二：CSV/JSONL + 通用翻译流水线
+
+> 对应 EXPANSION_PLAN.md §4-§6 阶段二里程碑 M2。
+
+### 新增文件
+
+| # | 描述 | 文件 | 行数 |
+|---|------|------|------|
+| 155 | 通用翻译流水线（6 阶段：提取→初始化→分块→并发翻译→回写→报告）+ GenericChunk 数据类 + build_generic_chunks 按 file_path 分组拆块 + translation_db 断点恢复 + RPG Maker 术语扫描钩子 + 原子进度写入 | `generic_pipeline.py`（新增） | ~414 |
+| 156 | CSVEngine（CSV/TSV/JSONL/JSON 读写）：列名别名自动匹配（original/source/text/en 等 6 组）+ UTF-8 BOM + 多行 CSV 值安全读取 + 目录批量扫描 + 按源格式分流回写 | `engines/csv_engine.py`（新增） | ~317 |
+
+### 修改文件
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 157 | `protect_placeholders` 新增 `patterns` 参数；`check_response_item` 新增 `placeholder_re` 参数；`_extract_placeholder_sequence` 新增 `regex` 参数。全部默认 None 走 Ren'Py 模式 | `file_processor/checker.py` | 向后兼容 |
+| 158 | `_ENGINE_PROMPT_ADDONS` 字典（rpgmaker/generic 两条 addon）+ `build_system_prompt` 新增 `engine_profile` 参数；None 时零变更 | `prompts.py` | 向后兼容 |
+
+### 测试
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 159 | 新增 22 个引擎测试（25→47）：CSV 提取 5 + JSONL 3 + 回写 2 + 目录扫描 1 + 分块 3 + 匹配 2 + patcher 参数化 2 + checker 参数化 2 + prompts addon 2 | `test_engines.py` | 引擎测试覆盖 |
+
+---
+
+## 第十二轮 阶段三：RPG Maker MV/MZ 引擎
+
+> 对应 EXPANSION_PLAN.md §3 阶段三里程碑 M3。
+
+### 新增文件
+
+| # | 描述 | 文件 | 行数 |
+|---|------|------|------|
+| 160 | RPGMakerMVEngine：目录定位（MV www/data/ vs MZ data/）+ 事件指令提取（401/405 连续合并、102 选项遍历、402 When、320/324 改名）+ 8 种数据库文件提取（_DB_FIELDS 配置表）+ System.json 提取（简单字段 + 数组 + terms.*）+ JSON path 导航回写（_navigate_to_node + _patch_by_json_path）+ 对话块拆分回写（行数不匹配处理）+ 紧凑 JSON 输出 + 字体安装提示 | `engines/rpgmaker_engine.py`（新增） | ~636 |
+
+### 修改文件
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 161 | `scan_rpgmaker_database(game_dir)` 新增：从 Actors.json 提取角色名（name/nickname）+ 从 System.json 提取系统术语（terms.basic/commands/params）；线程安全 | `glossary.py` | 新增方法，现有行为不变 |
+
+### 测试
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 162 | 新增 15 个 RPG Maker 测试（47→62）：检测 3 + 目录定位 1 + 事件指令 4（401 合并/102 选项/405 滚动/320 改名）+ 数据库 1 + System 1 + 回写 2 + JSON path 2 + glossary 1 | `test_engines.py` | 引擎测试覆盖 |
+
+---
+
+## 第十二轮 阶段四：文档 + 发布
+
+> 对应 EXPANSION_PLAN.md §9 阶段四里程碑 M4。
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 163 | start_launcher.py 新增模式 8（RPG Maker MV/MZ 翻译）和模式 9（CSV/JSONL 通用格式翻译）；菜单标题改为「多引擎游戏汉化统一启动器」；分类显示（Ren'Py / 其他引擎 / 工具） | `start_launcher.py` | 新增菜单选项 |
+| 164 | README/CHANGELOG/TEST_PLAN/.cursor_prompt/EXPANSION_PLAN 全部文档已在各阶段增量更新完成 | 多文件 | 文档齐全 |
 
 ---
 

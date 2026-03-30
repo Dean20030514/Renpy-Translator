@@ -954,6 +954,222 @@ def _run_retranslate_phase(
     return result
 
 
+def _run_tl_mode_phase(
+    project_root: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    tl_lang: str,
+    args: argparse.Namespace,
+    api_key: str,
+    report: dict,
+    propagate_fn,
+) -> None:
+    """tl-mode 流水线：跳过试跑，直接全量 tl 翻译。"""
+    _print("\n=== tl-mode 流水线 ===")
+    _print(f"[TL] 语言目录: tl/{tl_lang}/")
+    report["stages"]["pilot"] = {"skipped": True, "reason": "tl-mode 不需要试跑"}
+
+    _print("\n=== Stage 1/2: tl-mode 全量翻译 ===")
+    propagate_fn(stage2_translated)
+    run_main(
+        game_dir=project_root,
+        output_dir=stage2_translated,
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        genre=args.genre,
+        workers=args.workers,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        max_chunk_tokens=args.max_chunk_tokens,
+        max_response_tokens=args.max_response_tokens,
+        log_file=pipeline_root / "tl_mode.log",
+        resume=False,
+        dict_paths=args.dict,
+        excludes=args.exclude,
+        copy_assets=args.copy_assets,
+        target_lang=args.target_lang,
+        stage="full",
+        min_dialogue_density=args.min_dialogue_density,
+        tl_mode=True,
+        tl_lang=tl_lang,
+    )
+
+    tl_report_path = stage2_translated / "tl_mode_report.json"
+    if tl_report_path.exists():
+        try:
+            tl_report_data = json.loads(tl_report_path.read_text(encoding="utf-8"))
+            report["stages"]["tl_mode"] = tl_report_data
+        except (OSError, json.JSONDecodeError) as e:
+            report["stages"]["tl_mode"] = {"error": f"无法读取 tl_mode_report.json: {e}"}
+    else:
+        report["stages"]["tl_mode"] = {"note": "tl_mode_report.json 未生成"}
+
+    report["stages"]["retranslate"] = {"skipped": True, "reason": "tl-mode 精度 99.97%，无需补翻"}
+    _print("\n=== Stage 2/2: 报告与打包 ===")
+
+
+def _run_pilot_phase(
+    scan_root: Path,
+    pilot_input: Path,
+    pilot_output: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    args: argparse.Namespace,
+    api_key: str,
+    report: dict,
+    propagate_fn,
+) -> None:
+    """Stage 1: 试跑批次 + 闸门评估 + AI 术语提取。
+
+    Raises: StageError if structural errors found
+    """
+    pilot_files = pick_pilot_files(scan_root, args.pilot_count)
+    if not pilot_files:
+        raise StageError("未找到任何 .rpy 文件")
+    copy_subset_to_input(scan_root, pilot_files, pilot_input)
+    propagate_fn(pilot_output)
+
+    run_main(
+        game_dir=pilot_input,
+        output_dir=pilot_output,
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        genre=args.genre,
+        workers=args.workers,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        max_chunk_tokens=args.max_chunk_tokens,
+        max_response_tokens=args.max_response_tokens,
+        log_file=pipeline_root / "pilot.log",
+        resume=False,
+        dict_paths=args.dict,
+        excludes=args.exclude,
+        copy_assets=args.copy_assets,
+        target_lang=args.target_lang,
+        stage="pilot",
+        min_dialogue_density=args.min_dialogue_density,
+    )
+
+    pilot_translated_root = resolve_scan_root(pilot_output)
+    gate1 = evaluate_gate(resolve_scan_root(pilot_input), pilot_translated_root)
+    report["stages"]["pilot"] = {
+        "files": len(pilot_files),
+        "gate": gate1,
+    }
+
+    _print(
+        "[GATE-PILOT] "
+        f"errors={gate1['errors']} "
+        f"warnings={gate1['warnings']} "
+        f"untranslated={gate1['untranslated_total']} "
+        f"ratio={gate1['untranslated_ratio']:.4f} "
+        f"len_warns={gate1['len_ratio_warnings']} "
+        f"len_ratio={gate1['len_ratio_warning_ratio']:.4f} "
+        f"ph_order_warns={gate1['placeholder_order_warnings']}"
+    )
+    if gate1["errors"] > 0:
+        raise StageError("试跑批次未通过：存在结构错误")
+    pilot_ratio_exceeded = gate1["untranslated_ratio"] > args.gate_max_untranslated_ratio
+    report["stages"]["pilot"]["ratio_exceeded"] = pilot_ratio_exceeded
+    if pilot_ratio_exceeded:
+        _print("[WARN ] 试跑漏翻占比超阈值，继续执行全量与增量轮再做最终判定")
+
+    # 试跑后自动术语表提取
+    try:
+        from glossary import Glossary as _Glossary
+        pilot_glossary = _Glossary()
+        pilot_glossary_path = pilot_output / "glossary.json"
+        pilot_glossary.load(str(pilot_glossary_path))
+
+        pilot_db_path = pilot_output / "translation_db.json"
+        if pilot_db_path.exists():
+            pilot_db = TranslationDB(pilot_db_path)
+            pilot_db.load()
+            new_terms = pilot_glossary.extract_terms_from_translations(pilot_db.entries)
+            if new_terms:
+                added = pilot_glossary.auto_add_terms(new_terms)
+                pilot_glossary.save(str(pilot_glossary_path))
+                stage2_glossary_path = stage2_translated / "glossary.json"
+                stage2_glossary_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(pilot_glossary_path), str(stage2_glossary_path))
+                report["stages"]["pilot"]["auto_terms_extracted"] = len(new_terms)
+                report["stages"]["pilot"]["auto_terms_added"] = added
+                _print(f"[GLOSS] 从试跑结果自动提取 {len(new_terms)} 条术语，新增 {added} 条")
+            else:
+                _print("[GLOSS] 试跑结果中未发现可自动提取的术语")
+    except Exception as e:
+        _print(f"[WARN ] 自动术语提取失败（不影响后续流程）: {e}")
+
+
+def _run_full_translation_phase(
+    project_root: Path,
+    scan_root: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    args: argparse.Namespace,
+    api_key: str,
+    report: dict,
+    propagate_fn,
+) -> None:
+    """Stage 2: 全量批处理 + 闸门评估。
+
+    Raises: StageError if structural errors found
+    """
+    propagate_fn(stage2_translated)
+    run_main(
+        game_dir=project_root,
+        output_dir=stage2_translated,
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        genre=args.genre,
+        workers=args.workers,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        max_chunk_tokens=args.max_chunk_tokens,
+        max_response_tokens=args.max_response_tokens,
+        log_file=pipeline_root / "full.log",
+        resume=False,
+        dict_paths=args.dict,
+        excludes=args.exclude,
+        copy_assets=args.copy_assets,
+        target_lang=args.target_lang,
+        stage="full",
+        min_dialogue_density=args.min_dialogue_density,
+    )
+
+    full_translated_root = resolve_scan_root(stage2_translated)
+    gate2 = evaluate_gate(scan_root, full_translated_root)
+    report["stages"]["full"] = {"gate": gate2}
+    try:
+        full_report_path = stage2_translated / "report.json"
+        if full_report_path.exists():
+            full_report = json.loads(full_report_path.read_text(encoding="utf-8"))
+            report["stages"]["full"]["checker_dropped"] = int(full_report.get("total_checker_dropped", 0))
+            report["stages"]["full"]["chunk_stats"] = full_report.get("chunk_stats", {})
+        else:
+            report["stages"]["full"]["checker_dropped"] = 0
+    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+        report["stages"]["full"]["checker_dropped"] = 0
+    _print(
+        "[GATE-FULL] "
+        f"errors={gate2['errors']} "
+        f"warnings={gate2['warnings']} "
+        f"untranslated={gate2['untranslated_total']} "
+        f"ratio={gate2['untranslated_ratio']:.4f} "
+        f"len_warns={gate2['len_ratio_warnings']} "
+        f"len_ratio={gate2['len_ratio_warning_ratio']:.4f} "
+        f"ph_order_warns={gate2['placeholder_order_warnings']}"
+    )
+    if gate2["errors"] > 0:
+        raise StageError("全量批处理未通过：存在结构错误")
+
+
 def _run_final_report(
     scan_root: Path,
     stage2_translated: Path,
@@ -1198,199 +1414,30 @@ def main() -> None:
     }
 
     if use_tl_mode:
-        # ── tl-mode 流水线：跳过试跑和补翻，直接全量 tl 翻译 ──
-        _print("\n=== tl-mode 流水线 ===")
-        _print(f"[TL] 语言目录: tl/{tl_lang}/")
-        report["stages"]["pilot"] = {"skipped": True, "reason": "tl-mode 不需要试跑"}
-
-        # Stage: tl-mode 全量翻译
-        _print("\n=== Stage 1/2: tl-mode 全量翻译 ===")
-        _propagate_system_terms(stage2_translated)
-        run_main(
-            game_dir=project_root,
-            output_dir=stage2_translated,
-            provider=args.provider,
-            api_key=api_key,
-            model=args.model,
-            genre=args.genre,
-            workers=args.workers,
-            rpm=args.rpm,
-            rps=args.rps,
-            timeout=args.timeout,
-            max_chunk_tokens=args.max_chunk_tokens,
-            max_response_tokens=args.max_response_tokens,
-            log_file=pipeline_root / "tl_mode.log",
-            resume=False,
-            dict_paths=args.dict,
-            excludes=args.exclude,
-            copy_assets=args.copy_assets,
-            target_lang=args.target_lang,
-            stage="full",
-            min_dialogue_density=args.min_dialogue_density,
-            tl_mode=True,
-            tl_lang=tl_lang,
+        _run_tl_mode_phase(
+            project_root, stage2_translated, pipeline_root, tl_lang,
+            args, api_key, report, _propagate_system_terms,
         )
-
-        # 读取 tl-mode 报告
-        tl_report_path = stage2_translated / "tl_mode_report.json"
-        if tl_report_path.exists():
-            try:
-                tl_report_data = json.loads(tl_report_path.read_text(encoding="utf-8"))
-                report["stages"]["tl_mode"] = tl_report_data
-            except (OSError, json.JSONDecodeError) as e:
-                report["stages"]["tl_mode"] = {"error": f"无法读取 tl_mode_report.json: {e}"}
-        else:
-            report["stages"]["tl_mode"] = {"note": "tl_mode_report.json 未生成"}
-
-        report["stages"]["retranslate"] = {"skipped": True, "reason": "tl-mode 精度 99.97%，无需补翻"}
-
-        # Stage: 报告与打包
-        _print("\n=== Stage 2/2: 报告与打包 ===")
-
     else:
-        # ── direct-mode 流水线（原有四阶段） ──
-
-        # Stage 1: pilot
+        # ── direct-mode 流水线（四阶段） ──
         _print("\n=== Stage 1/4: 试跑批次 ===")
-        pilot_files = pick_pilot_files(scan_root, args.pilot_count)
-        if not pilot_files:
-            raise StageError("未找到任何 .rpy 文件")
-        copy_subset_to_input(scan_root, pilot_files, pilot_input)
-        _propagate_system_terms(pilot_output)
-
-        run_main(
-            game_dir=pilot_input,
-            output_dir=pilot_output,
-            provider=args.provider,
-            api_key=api_key,
-            model=args.model,
-            genre=args.genre,
-            workers=args.workers,
-            rpm=args.rpm,
-            rps=args.rps,
-            timeout=args.timeout,
-            max_chunk_tokens=args.max_chunk_tokens,
-            max_response_tokens=args.max_response_tokens,
-            log_file=pipeline_root / "pilot.log",
-            resume=False,
-            dict_paths=args.dict,
-            excludes=args.exclude,
-            copy_assets=args.copy_assets,
-            target_lang=args.target_lang,
-            stage="pilot",
-            min_dialogue_density=args.min_dialogue_density,
+        _run_pilot_phase(
+            scan_root, pilot_input, pilot_output, stage2_translated,
+            pipeline_root, args, api_key, report, _propagate_system_terms,
         )
 
-        pilot_translated_root = resolve_scan_root(pilot_output)
-        gate1 = evaluate_gate(resolve_scan_root(pilot_input), pilot_translated_root)
-        report["stages"]["pilot"] = {
-            "files": len(pilot_files),
-            "gate": gate1,
-        }
-
-        _print(
-            "[GATE-PILOT] "
-            f"errors={gate1['errors']} "
-            f"warnings={gate1['warnings']} "
-            f"untranslated={gate1['untranslated_total']} "
-            f"ratio={gate1['untranslated_ratio']:.4f} "
-            f"len_warns={gate1['len_ratio_warnings']} "
-            f"len_ratio={gate1['len_ratio_warning_ratio']:.4f} "
-            f"ph_order_warns={gate1['placeholder_order_warnings']}"
-        )
-        if gate1["errors"] > 0:
-            raise StageError("试跑批次未通过：存在结构错误")
-        pilot_ratio_exceeded = gate1["untranslated_ratio"] > args.gate_max_untranslated_ratio
-        report["stages"]["pilot"]["ratio_exceeded"] = pilot_ratio_exceeded
-        if pilot_ratio_exceeded:
-            _print("[WARN ] 试跑漏翻占比超阈值，继续执行全量与增量轮再做最终判定")
-
-        # 试跑后自动术语表提取：从 pilot 翻译结果中提取高频专有名词
-        try:
-            from glossary import Glossary as _Glossary
-            pilot_glossary = _Glossary()
-            pilot_glossary_path = pilot_output / "glossary.json"
-            pilot_glossary.load(str(pilot_glossary_path))
-
-            pilot_db_path = pilot_output / "translation_db.json"
-            if pilot_db_path.exists():
-                pilot_db = TranslationDB(pilot_db_path)
-                pilot_db.load()
-                new_terms = pilot_glossary.extract_terms_from_translations(pilot_db.entries)
-                if new_terms:
-                    added = pilot_glossary.auto_add_terms(new_terms)
-                    pilot_glossary.save(str(pilot_glossary_path))
-                    # 同步到全量阶段的输出目录
-                    stage2_glossary_path = stage2_translated / "glossary.json"
-                    stage2_glossary_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(pilot_glossary_path), str(stage2_glossary_path))
-                    report["stages"]["pilot"]["auto_terms_extracted"] = len(new_terms)
-                    report["stages"]["pilot"]["auto_terms_added"] = added
-                    _print(f"[GLOSS] 从试跑结果自动提取 {len(new_terms)} 条术语，新增 {added} 条")
-                else:
-                    _print("[GLOSS] 试跑结果中未发现可自动提取的术语")
-        except Exception as e:
-            _print(f"[WARN ] 自动术语提取失败（不影响后续流程）: {e}")
-
-        # Stage 2: full batch
         _print("\n=== Stage 2/4: 全量批处理 ===")
-        _propagate_system_terms(stage2_translated)
-        run_main(
-            game_dir=project_root,
-            output_dir=stage2_translated,
-            provider=args.provider,
-            api_key=api_key,
-            model=args.model,
-            genre=args.genre,
-            workers=args.workers,
-            rpm=args.rpm,
-            rps=args.rps,
-            timeout=args.timeout,
-            max_chunk_tokens=args.max_chunk_tokens,
-            max_response_tokens=args.max_response_tokens,
-            log_file=pipeline_root / "full.log",
-            resume=False,
-            dict_paths=args.dict,
-            excludes=args.exclude,
-            copy_assets=args.copy_assets,
-            target_lang=args.target_lang,
-            stage="full",
-            min_dialogue_density=args.min_dialogue_density,
+        _run_full_translation_phase(
+            project_root, scan_root, stage2_translated, pipeline_root,
+            args, api_key, report, _propagate_system_terms,
         )
 
-        full_translated_root = resolve_scan_root(stage2_translated)
-        gate2 = evaluate_gate(scan_root, full_translated_root)
-        report["stages"]["full"] = {"gate": gate2}
-        try:
-            full_report_path = stage2_translated / "report.json"
-            if full_report_path.exists():
-                full_report = json.loads(full_report_path.read_text(encoding="utf-8"))
-                report["stages"]["full"]["checker_dropped"] = int(full_report.get("total_checker_dropped", 0))
-                report["stages"]["full"]["chunk_stats"] = full_report.get("chunk_stats", {})
-            else:
-                report["stages"]["full"]["checker_dropped"] = 0
-        except (OSError, json.JSONDecodeError, KeyError, ValueError):
-            report["stages"]["full"]["checker_dropped"] = 0
-        _print(
-            "[GATE-FULL] "
-            f"errors={gate2['errors']} "
-            f"warnings={gate2['warnings']} "
-            f"untranslated={gate2['untranslated_total']} "
-            f"ratio={gate2['untranslated_ratio']:.4f} "
-            f"len_warns={gate2['len_ratio_warnings']} "
-            f"len_ratio={gate2['len_ratio_warning_ratio']:.4f} "
-            f"ph_order_warns={gate2['placeholder_order_warnings']}"
-        )
-        if gate2["errors"] > 0:
-            raise StageError("全量批处理未通过：存在结构错误")
-
-        # Stage 3: 漏翻补翻轮 (retranslate — 原地补翻，不覆盖已有翻译)
         _print("\n=== Stage 3/4: 漏翻补翻轮 ===")
+        full_translated_root = resolve_scan_root(stage2_translated)
         report["stages"]["retranslate"] = _run_retranslate_phase(
             full_translated_root, stage2_translated, pipeline_root, args, api_key,
         )
 
-        # Stage 4: final gate (direct-mode)
         _print("\n=== Stage 4/4: 最终自动闸门 ===")
 
     # ── 共享的最终闸门与报告（direct-mode 和 tl-mode 共用） ──

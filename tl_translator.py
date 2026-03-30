@@ -83,19 +83,28 @@ _LANG_BUTTON_SNIPPET = '''
 '''
 
 
-def _clean_rpyc(game_dir: Path) -> None:
-    """Safely delete .rpyc files to force Ren'Py recompilation.
+def _clean_rpyc(game_dir: Path, modified_files: "set[str] | None" = None) -> None:
+    """Delete .rpyc cache files to force Ren'Py recompilation.
 
-    CRITICAL: Only deletes files whose extension is exactly '.rpyc'.
-    Each file is validated before deletion to prevent accidental data loss.
+    Args:
+        game_dir: Game root directory.
+        modified_files: If provided, only delete .rpyc for these .rpy relative paths.
+            Otherwise fall back to full recursive cleanup.
     """
     count = 0
-    for rpyc in game_dir.rglob("*.rpyc"):
-        if rpyc.is_file() and rpyc.suffix == ".rpyc":
-            rpyc.unlink()
-            count += 1
+    if modified_files:
+        for rpy_rel in modified_files:
+            rpyc = game_dir / (rpy_rel + "c")  # .rpy → .rpyc
+            if rpyc.is_file() and rpyc.suffix == ".rpyc":
+                rpyc.unlink()
+                count += 1
+    else:
+        for rpyc in game_dir.rglob("*.rpyc"):
+            if rpyc.is_file() and rpyc.suffix == ".rpyc":
+                rpyc.unlink()
+                count += 1
     if count:
-        logger.info(f"[TL-CLEAN] 删除 {count} 个 .rpyc 缓存文件")
+        logger.info(f"[RPYC] 已清理 {count} 个缓存文件")
 
 
 def _apply_tl_game_patches(game_dir: Path, tl_lang: str) -> None:
@@ -467,6 +476,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                       f"{rel_path} chunk {ci}/{total}: {e}")
 
     # ── 3. 匹配 + 回填（串行，保证文件写入安全） ──
+    modified_rpy_files: set[str] = set()
 
     for rel_path, (file_path, entries, _total_chunks) in file_meta.items():
         ft = file_translations.get(rel_path, {})
@@ -541,6 +551,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             modified_content = fill_translation(file_path, matched_entries)
             Path(file_path).write_text(modified_content, encoding="utf-8")
             total_filled += len(matched_entries)
+            modified_rpy_files.add(rel_path)
             logger.debug(f"  [FILL] 回填 {len(matched_entries)} 条到 {rel_path}")
 
         progress.mark_file_done(rel_path)
@@ -593,6 +604,10 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                 modified = fill_translation(fpath, r_matched)
                 Path(fpath).write_text(modified, encoding="utf-8")
                 total_filled += len(r_matched)
+                try:
+                    modified_rpy_files.add(str(Path(fpath).relative_to(game_dir)))
+                except ValueError:
+                    pass  # 无法计算相对路径时跳过精确清理
                 logger.debug(f"  [TL-RETRY] 回填 {len(r_matched)} 条到 "
                       f"{Path(fpath).name}")
 
@@ -601,7 +616,8 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     postprocess_tl_directory(tl_dir, tl_lang)
 
     # ── 4d. 清理 rpyc 缓存（强制 Ren'Py 重编译） ──
-    _clean_rpyc(game_dir)
+    if not getattr(args, "no_clean_rpyc", False):
+        _clean_rpyc(game_dir, modified_rpy_files if modified_rpy_files else None)
 
     # ── 5. 保存 & 报告 ──
     glossary.save(str(glossary_path))

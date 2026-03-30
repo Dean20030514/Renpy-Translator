@@ -1043,6 +1043,79 @@ def test_validator_lang_config():
     print("[OK] validator_lang_config")
 
 
+def test_should_retry_truncation():
+    """_should_retry 截断检测：returned < expected * 0.5 → needs_split"""
+    from direct_translator import _should_retry
+    from translation_utils import ChunkResult
+    # 正常情况
+    cr_ok = ChunkResult(part=1, expected=10, returned=8)
+    should, split = _should_retry(cr_ok)
+    assert not should, "should not retry normal result"
+    # 截断情况
+    cr_trunc = ChunkResult(part=1, expected=20, returned=5)
+    should, split = _should_retry(cr_trunc)
+    assert should and split, "should retry with split on truncation"
+    # API 错误
+    cr_err = ChunkResult(part=1, error="timeout")
+    should, split = _should_retry(cr_err)
+    assert should and not split, "API error: retry without split"
+    # 边界：expected>0, returned=0（完全无输出）
+    cr_zero = ChunkResult(part=1, expected=10, returned=0)
+    should, split = _should_retry(cr_zero)
+    assert should and split, "zero returned should trigger split"
+    # 边界：expected=0, returned=0（空 chunk）
+    cr_empty = ChunkResult(part=1, expected=0, returned=0)
+    should, split = _should_retry(cr_empty)
+    assert not should, "empty chunk should not retry"
+    print("[OK] should_retry_truncation")
+
+
+def test_should_retry_normal():
+    """_should_retry 正常和丢弃率过高"""
+    from direct_translator import _should_retry
+    from translation_utils import ChunkResult
+    # 正常返回
+    cr = ChunkResult(part=1, expected=10, returned=10, dropped_count=0)
+    should, split = _should_retry(cr)
+    assert not should and not split
+    # 丢弃率过高（需满足 MIN_DROPPED_FOR_WARNING=3 + ratio>0.3）
+    cr_drop = ChunkResult(part=1, expected=10, returned=10, dropped_count=5)
+    should, split = _should_retry(cr_drop)
+    assert should and not split, "high drop rate should retry without split"
+    print("[OK] should_retry_normal")
+
+
+def test_split_chunk_basic():
+    """_split_chunk 基本拆分：行数守恒"""
+    from direct_translator import _split_chunk
+    lines = [f"line {i}\n" for i in range(20)]
+    chunk = {"content": "".join(lines), "line_offset": 0, "part": 1, "total": 1}
+    a, b = _split_chunk(chunk)
+    total_a = len(a["content"].splitlines())
+    total_b = len(b["content"].splitlines())
+    assert total_a + total_b == 20, f"line count mismatch: {total_a} + {total_b} != 20"
+    assert a["line_offset"] == 0
+    assert b["line_offset"] == total_a
+    print("[OK] split_chunk_basic")
+
+
+def test_split_chunk_at_empty_line():
+    """_split_chunk 优先在空行处拆分"""
+    from direct_translator import _split_chunk
+    lines = []
+    for i in range(20):
+        if i == 10:
+            lines.append("\n")  # 空行在中间
+        else:
+            lines.append(f"    dialogue line {i}\n")
+    chunk = {"content": "".join(lines), "line_offset": 0, "part": 1, "total": 1}
+    a, b = _split_chunk(chunk)
+    # 拆分应该发生在空行处（index 10 之后，即 line 11）
+    a_lines = a["content"].splitlines()
+    assert len(a_lines) == 11, f"expected 11 lines in chunk_a, got {len(a_lines)}"
+    print("[OK] split_chunk_at_empty_line")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -1113,7 +1186,12 @@ if __name__ == '__main__':
     test_prompt_zh_unchanged()
     test_prompt_ja_generic()
     test_validator_lang_config()
+    # F: chunk 拆分重试测试
+    test_should_retry_truncation()
+    test_should_retry_normal()
+    test_split_chunk_basic()
+    test_split_chunk_at_empty_line()
     print()
     print("=" * 40)
-    print(f"ALL 66 TESTS PASSED")
+    print(f"ALL 70 TESTS PASSED")
     print("=" * 40)

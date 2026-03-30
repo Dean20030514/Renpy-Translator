@@ -28,6 +28,7 @@ from file_processor import (
     protect_placeholders,
     check_response_chunk,
     _count_translatable_lines_in_chunk,
+    _find_block_boundaries,
     SKIP_FILES_FOR_TRANSLATION,
 )
 from glossary import Glossary
@@ -105,24 +106,117 @@ def _translate_chunk(ctx: TranslationContext, chunk: dict) -> ChunkResult:
     )
 
 
-def _should_retry(cr: ChunkResult) -> bool:
-    """判断 chunk 是否需要重试：API 错误或丢弃率过高。"""
+def _should_retry(cr: ChunkResult) -> tuple[bool, bool]:
+    """判断 chunk 是否需要重试。
+
+    Returns: (should_retry, needs_split)
+        needs_split=True 表示应拆分后重试而非原样重试（疑似输出截断）。
+    """
     if cr.error:
-        return True
+        return True, False
     if cr.returned > 0 and cr.dropped_count >= MIN_DROPPED_FOR_WARNING and cr.dropped_count / cr.returned > CHECKER_DROP_RATIO_THRESHOLD:
-        return True
-    return False
+        return True, False
+    # 截断检测：返回条数 < 期望的 50%，强烈暗示 AI 输出被截断
+    if cr.expected > 0 and cr.returned < cr.expected * 0.5:
+        return True, True
+    return False, False
+
+
+def _split_chunk(chunk: dict) -> tuple[dict, dict]:
+    """将 chunk 二分为两个子 chunk。
+
+    拆分点优先级：label/screen 边界 > 空行 > 直接二等分。
+    只做一层拆分（不递归），避免复杂度爆炸。
+    """
+    lines = chunk["content"].splitlines(keepends=True)
+    total_lines = len(lines)
+    if total_lines < 2:
+        # 无法拆分，返回原 chunk 和空 chunk
+        empty = {"content": "", "line_offset": chunk["line_offset"] + total_lines,
+                 "part": chunk["part"], "total": chunk["total"]}
+        return chunk, empty
+
+    mid = total_lines // 2
+    search_start = max(1, mid - total_lines // 4)
+    search_end = min(total_lines - 1, mid + total_lines // 4)
+    best_split = mid  # fallback: 直接二等分
+
+    # 优先级 1：label/screen/init 边界
+    boundaries = _find_block_boundaries(lines)
+    found_boundary = False
+    for b in boundaries:
+        if search_start <= b <= search_end:
+            best_split = b
+            found_boundary = True
+            break
+
+    if not found_boundary:
+        # 优先级 2：空行（从中间向外搜索）
+        for i in range(mid, search_end):
+            if not lines[i].strip():
+                best_split = i + 1
+                break
+        else:
+            for i in range(mid - 1, search_start - 1, -1):
+                if not lines[i].strip():
+                    best_split = i + 1
+                    break
+
+    content_a = "".join(lines[:best_split])
+    content_b = "".join(lines[best_split:])
+    base_offset = chunk["line_offset"]
+
+    chunk_a = {
+        "content": content_a,
+        "line_offset": base_offset,
+        "part": chunk["part"],
+        "total": chunk["total"],
+    }
+    if "prev_context" in chunk:
+        chunk_a["prev_context"] = chunk["prev_context"]
+
+    chunk_b = {
+        "content": content_b,
+        "line_offset": base_offset + best_split,
+        "part": chunk["part"],
+        "total": chunk["total"],
+    }
+    # chunk_b 的上下文 = chunk_a 末尾 5 行
+    context_lines = lines[max(0, best_split - 5):best_split]
+    chunk_b["prev_context"] = "".join(context_lines)
+
+    return chunk_a, chunk_b
 
 
 def _translate_chunk_with_retry(ctx: TranslationContext, chunk: dict, max_retries: int = 1) -> ChunkResult:
-    """带自动重试的 chunk 翻译。"""
+    """带自动重试的 chunk 翻译。截断时自动拆分重试。"""
     cr = _translate_chunk(ctx, chunk)
     for attempt in range(max_retries):
-        if not _should_retry(cr):
+        should, needs_split = _should_retry(cr)
+        if not should:
             break
-        reason = cr.error or f"丢弃率过高 ({cr.dropped_count}/{cr.returned})"
-        logger.debug(f"    [RETRY] 块 {chunk['part']}: {reason}，第 {attempt + 1} 次重试")
-        cr = _translate_chunk(ctx, chunk)
+
+        if needs_split:
+            # 截断：拆分 chunk 后分别翻译，合并结果
+            logger.debug(f"    [SPLIT] 块 {chunk['part']}: 返回 {cr.returned}/{cr.expected}，"
+                         f"疑似截断，拆分重试")
+            chunk_a, chunk_b = _split_chunk(chunk)
+            cr_a = _translate_chunk(ctx, chunk_a)
+            cr_b = _translate_chunk(ctx, chunk_b) if chunk_b["content"] else ChunkResult(part=chunk["part"])
+            cr = ChunkResult(
+                part=chunk["part"],
+                kept=cr_a.kept + cr_b.kept,
+                chunk_warnings=cr_a.chunk_warnings + cr_b.chunk_warnings,
+                dropped_count=cr_a.dropped_count + cr_b.dropped_count,
+                expected=cr_a.expected + cr_b.expected,
+                returned=cr_a.returned + cr_b.returned,
+                dropped_items=cr_a.dropped_items + cr_b.dropped_items,
+            )
+            break  # 拆分只做一层
+        else:
+            reason = cr.error or f"丢弃率过高 ({cr.dropped_count}/{cr.returned})"
+            logger.debug(f"    [RETRY] 块 {chunk['part']}: {reason}，第 {attempt + 1} 次重试")
+            cr = _translate_chunk(ctx, chunk)
     return cr
 
 
@@ -598,6 +692,51 @@ def _translate_file_targeted(
     return len(unique), all_warnings, total_checker_dropped, chunk_stats_list
 
 
+# ============================================================
+# dry-run verbose 辅助函数
+# ============================================================
+
+def _compute_file_dialogue_stats(filepath: Path) -> tuple[int, float]:
+    """返回 (对话行数, 密度)，用于 dry-run 详情。"""
+    from retranslator import calculate_dialogue_density
+    content = read_file(filepath)
+    density = calculate_dialogue_density(content)
+    from one_click_pipeline import _is_user_visible_string_line
+    dlg_count = sum(1 for line in content.splitlines()
+                    if _is_user_visible_string_line(line))
+    return dlg_count, density
+
+
+def _print_density_histogram(densities: list[float]) -> None:
+    """输出文字版对话密度分布直方图。"""
+    if not densities:
+        return
+    buckets = [0] * 5  # [0-20%, 20-40%, 40-60%, 60-80%, 80-100%]
+    labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
+    for d in densities:
+        idx = min(int(d * 5), 4)
+        buckets[idx] += 1
+    max_count = max(buckets) if buckets else 1
+    logger.info("\n对话密度分布:")
+    for label, count in zip(labels, buckets):
+        bar_len = count * 30 // max_count if max_count else 0
+        bar = "#" * bar_len
+        logger.info(f"  {label:>8s} | {bar:<30s} {count}")
+
+
+def _print_term_scan_preview(glossary) -> None:
+    """输出术语扫描结果预览。"""
+    n_chars = len(getattr(glossary, 'characters', {}))
+    n_terms = len(getattr(glossary, 'terms', {}))
+    n_locked = len(getattr(glossary, 'locked_terms', []))
+    n_notrans = len(getattr(glossary, 'no_translate', []))
+    logger.info(f"\n术语扫描预览:")
+    logger.info(f"  角色名: {n_chars} 个")
+    logger.info(f"  术语表: {n_terms} 条" + (f"（其中锁定 {n_locked} 条）" if n_locked else ""))
+    if n_notrans:
+        logger.info(f"  禁翻片段: {n_notrans} 条")
+
+
 def run_pipeline(args: argparse.Namespace) -> None:
     """运行完整翻译流水线"""
     game_dir = Path(args.game_dir)
@@ -819,6 +958,30 @@ def run_pipeline(args: argparse.Namespace) -> None:
             low = est_cost * 0.6
             high = est_cost * 1.5
             logger.info(f"   (推理 token 波动大，实际范围约 ${low:.2f} ~ ${high:.2f})")
+        # ---- verbose 增强详情 ----
+        if getattr(args, 'verbose', False) and file_stats:
+            logger.info("\n" + "=" * 60)
+            logger.info("[DRY-RUN] 详细分析（--verbose）")
+            logger.info("=" * 60)
+
+            densities = []
+            min_density = getattr(args, 'min_dialogue_density', 0.20) or 0.20
+            for rel, tok, _size, n_chunks in file_stats:
+                fpath = game_dir / rel
+                try:
+                    dlg_count, density = _compute_file_dialogue_stats(fpath)
+                except Exception:
+                    dlg_count, density = 0, 0.0
+                densities.append(density)
+                strategy = "定向" if density < min_density else "全文"
+                est_file_cost = ((tok + sys_prompt_overhead) * price_in +
+                                 int(tok * 0.6) * price_out) / 1_000_000
+                logger.info(f"  {rel}: {dlg_count} 对话行, 密度 {density*100:.1f}%, "
+                            f"~${est_file_cost:.4f}, 策略={strategy}")
+
+            _print_density_histogram(densities)
+            _print_term_scan_preview(glossary)
+
         logger.info("\n去掉 --dry-run 参数开始实际翻译。")
         return
 
