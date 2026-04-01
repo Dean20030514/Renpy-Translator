@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""pipeline.stages -- Pipeline stage functions for the one-click pipeline."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import time
+from pathlib import Path
+
+from file_processor import read_file
+from translation_db import TranslationDB
+from font_patch import resolve_font, apply_font_patch
+
+from pipeline.helpers import (
+    _print,
+    resolve_scan_root,
+    list_rpy_files,
+    pick_pilot_files,
+    copy_subset_to_input,
+    run_main,
+    package_output,
+)
+from pipeline.gate import (
+    evaluate_gate,
+    collect_files_with_untranslated,
+    collect_strings_stats,
+    attribute_untranslated,
+    write_report_summary_md,
+)
+
+
+def _run_retranslate_phase(
+    full_translated_root: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    args: argparse.Namespace,
+    api_key: str,
+) -> dict:
+    """Stage 3: 漏翻补翻轮。返回 report["stages"]["retranslate"] 数据。"""
+    untranslated_files = collect_files_with_untranslated(full_translated_root)
+    result: dict = {"candidate_files": len(untranslated_files)}
+
+    if not untranslated_files:
+        _print("[INFO] 全量阶段无漏翻文件，跳过补翻")
+        result["skipped"] = True
+        result["checker_dropped"] = 0
+        return result
+
+    from main import (
+        retranslate_file as _retranslate_file,
+        find_untranslated_lines as _find_untranslated_lines,
+        ProgressTracker as _ProgressTracker,
+    )
+    from api_client import APIClient as _APIClient, APIConfig as _APIConfig
+    from glossary import Glossary as _Glossary
+
+    rt_config = _APIConfig(
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        temperature=0.1,
+        max_response_tokens=args.max_response_tokens,
+    )
+    rt_client = _APIClient(rt_config)
+
+    rt_glossary = _Glossary()
+    rt_glossary_path = stage2_translated / "glossary.json"
+    rt_glossary.load(str(rt_glossary_path))
+    if args.dict:
+        for dp in args.dict:
+            rt_glossary.load_dict(dp)
+
+    rt_progress = _ProgressTracker(pipeline_root / "retranslate_progress.json")
+    rt_progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
+    rt_progress.save()
+
+    rt_db = TranslationDB(pipeline_root / "retranslate_db.json")
+    rt_run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+
+    # 用 find_untranslated_lines 精确扫描漏翻行
+    rpy_files_all = sorted(list_rpy_files(full_translated_root))
+    files_to_rt: list[tuple[Path, int]] = []
+    total_ut = 0
+    for f in rpy_files_all:
+        ut = _find_untranslated_lines(read_file(f))
+        if ut:
+            files_to_rt.append((f, len(ut)))
+            total_ut += len(ut)
+
+    _print(f"[SCAN] 发现 {total_ut} 行漏翻，分布在 {len(files_to_rt)} 个文件中")
+
+    rt_total_translated = 0
+    rt_total_warnings: list[str] = []
+    rt_quality: dict[str, list[dict]] = {}
+
+    for idx, (rpy_path, n_ut) in enumerate(files_to_rt, 1):
+        rel = rpy_path.relative_to(full_translated_root)
+        _print(f"  [{idx}/{len(files_to_rt)}] {rel} ({n_ut} 行)")
+        try:
+            count, warnings = _retranslate_file(
+                rpy_path,
+                full_translated_root,
+                full_translated_root,
+                rt_client,
+                rt_glossary,
+                rt_progress,
+                rt_quality,
+                genre=args.genre,
+                translation_db=rt_db,
+                run_id=rt_run_id,
+                stage="retranslate",
+                provider=rt_config.provider,
+                model=rt_config.model,
+            )
+            rt_total_translated += count
+            rt_total_warnings.extend(warnings)
+        except KeyboardInterrupt:
+            rt_glossary.save(str(rt_glossary_path))
+            rt_progress.save()
+            rt_db.save()
+            raise
+        except Exception as e:
+            _print(f"  [ERROR] {rel}: {e}")
+            rt_total_warnings.append(str(e))
+
+        if idx % 5 == 0:
+            rt_glossary.save(str(rt_glossary_path))
+
+    rt_glossary.save(str(rt_glossary_path))
+    rt_db.save()
+
+    _print(f"[RETRANSLATE] 补翻完成: {rt_total_translated} 条, "
+           f"API 用量: {rt_client.usage.summary()}")
+
+    result.update({
+        "mode": "retranslate",
+        "retranslated_files": len(files_to_rt),
+        "total_untranslated_scanned": total_ut,
+        "total_translated": rt_total_translated,
+        "total_warnings": len(rt_total_warnings),
+        "api_requests": rt_client.usage.total_requests,
+        "input_tokens": rt_client.usage.total_input_tokens,
+        "output_tokens": rt_client.usage.total_output_tokens,
+        "estimated_cost_usd": round(rt_client.usage.estimated_cost, 4),
+        "checker_dropped": 0,
+    })
+    return result
+
+
+def _run_tl_mode_phase(
+    project_root: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    tl_lang: str,
+    args: argparse.Namespace,
+    api_key: str,
+    report: dict,
+    propagate_fn,
+) -> None:
+    """tl-mode 流水线：跳过试跑，直接全量 tl 翻译。"""
+    _print("\n=== tl-mode 流水线 ===")
+    _print(f"[TL] 语言目录: tl/{tl_lang}/")
+    report["stages"]["pilot"] = {"skipped": True, "reason": "tl-mode 不需要试跑"}
+
+    _print("\n=== Stage 1/2: tl-mode 全量翻译 ===")
+    propagate_fn(stage2_translated)
+    run_main(
+        game_dir=project_root,
+        output_dir=stage2_translated,
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        genre=args.genre,
+        workers=args.workers,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        max_chunk_tokens=args.max_chunk_tokens,
+        max_response_tokens=args.max_response_tokens,
+        log_file=pipeline_root / "tl_mode.log",
+        resume=False,
+        dict_paths=args.dict,
+        excludes=args.exclude,
+        copy_assets=args.copy_assets,
+        target_lang=args.target_lang,
+        stage="full",
+        min_dialogue_density=args.min_dialogue_density,
+        tl_mode=True,
+        tl_lang=tl_lang,
+    )
+
+    tl_report_path = stage2_translated / "tl_mode_report.json"
+    if tl_report_path.exists():
+        try:
+            tl_report_data = json.loads(tl_report_path.read_text(encoding="utf-8"))
+            report["stages"]["tl_mode"] = tl_report_data
+        except (OSError, json.JSONDecodeError) as e:
+            report["stages"]["tl_mode"] = {"error": f"无法读取 tl_mode_report.json: {e}"}
+    else:
+        report["stages"]["tl_mode"] = {"note": "tl_mode_report.json 未生成"}
+
+    report["stages"]["retranslate"] = {"skipped": True, "reason": "tl-mode 精度 99.97%，无需补翻"}
+    _print("\n=== Stage 2/2: 报告与打包 ===")
+
+
+def _run_pilot_phase(
+    scan_root: Path,
+    pilot_input: Path,
+    pilot_output: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    args: argparse.Namespace,
+    api_key: str,
+    report: dict,
+    propagate_fn,
+) -> None:
+    """Stage 1: 试跑批次 + 闸门评估 + AI 术语提取。
+
+    Raises: StageError if structural errors found
+    """
+    from one_click_pipeline import StageError
+
+    pilot_files = pick_pilot_files(scan_root, args.pilot_count)
+    if not pilot_files:
+        raise StageError("未找到任何 .rpy 文件")
+    copy_subset_to_input(scan_root, pilot_files, pilot_input)
+    propagate_fn(pilot_output)
+
+    run_main(
+        game_dir=pilot_input,
+        output_dir=pilot_output,
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        genre=args.genre,
+        workers=args.workers,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        max_chunk_tokens=args.max_chunk_tokens,
+        max_response_tokens=args.max_response_tokens,
+        log_file=pipeline_root / "pilot.log",
+        resume=False,
+        dict_paths=args.dict,
+        excludes=args.exclude,
+        copy_assets=args.copy_assets,
+        target_lang=args.target_lang,
+        stage="pilot",
+        min_dialogue_density=args.min_dialogue_density,
+    )
+
+    pilot_translated_root = resolve_scan_root(pilot_output)
+    gate1 = evaluate_gate(resolve_scan_root(pilot_input), pilot_translated_root)
+    report["stages"]["pilot"] = {
+        "files": len(pilot_files),
+        "gate": gate1,
+    }
+
+    _print(
+        "[GATE-PILOT] "
+        f"errors={gate1['errors']} "
+        f"warnings={gate1['warnings']} "
+        f"untranslated={gate1['untranslated_total']} "
+        f"ratio={gate1['untranslated_ratio']:.4f} "
+        f"len_warns={gate1['len_ratio_warnings']} "
+        f"len_ratio={gate1['len_ratio_warning_ratio']:.4f} "
+        f"ph_order_warns={gate1['placeholder_order_warnings']}"
+    )
+    if gate1["errors"] > 0:
+        raise StageError("试跑批次未通过：存在结构错误")
+    pilot_ratio_exceeded = gate1["untranslated_ratio"] > args.gate_max_untranslated_ratio
+    report["stages"]["pilot"]["ratio_exceeded"] = pilot_ratio_exceeded
+    if pilot_ratio_exceeded:
+        _print("[WARN ] 试跑漏翻占比超阈值，继续执行全量与增量轮再做最终判定")
+
+    # 试跑后自动术语表提取
+    try:
+        from glossary import Glossary as _Glossary
+
+        pilot_glossary = _Glossary()
+        pilot_glossary_path = pilot_output / "glossary.json"
+        pilot_glossary.load(str(pilot_glossary_path))
+
+        pilot_db_path = pilot_output / "translation_db.json"
+        if pilot_db_path.exists():
+            pilot_db = TranslationDB(pilot_db_path)
+            pilot_db.load()
+            new_terms = pilot_glossary.extract_terms_from_translations(pilot_db.entries)
+            if new_terms:
+                added = pilot_glossary.auto_add_terms(new_terms)
+                pilot_glossary.save(str(pilot_glossary_path))
+                stage2_glossary_path = stage2_translated / "glossary.json"
+                stage2_glossary_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(pilot_glossary_path), str(stage2_glossary_path))
+                report["stages"]["pilot"]["auto_terms_extracted"] = len(new_terms)
+                report["stages"]["pilot"]["auto_terms_added"] = added
+                _print(f"[GLOSS] 从试跑结果自动提取 {len(new_terms)} 条术语，新增 {added} 条")
+            else:
+                _print("[GLOSS] 试跑结果中未发现可自动提取的术语")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        _print(f"[WARN ] 自动术语提取失败（不影响后续流程）: {e}")
+
+
+def _run_full_translation_phase(
+    project_root: Path,
+    scan_root: Path,
+    stage2_translated: Path,
+    pipeline_root: Path,
+    args: argparse.Namespace,
+    api_key: str,
+    report: dict,
+    propagate_fn,
+) -> None:
+    """Stage 2: 全量批处理 + 闸门评估。
+
+    Raises: StageError if structural errors found
+    """
+    from one_click_pipeline import StageError
+
+    propagate_fn(stage2_translated)
+    run_main(
+        game_dir=project_root,
+        output_dir=stage2_translated,
+        provider=args.provider,
+        api_key=api_key,
+        model=args.model,
+        genre=args.genre,
+        workers=args.workers,
+        rpm=args.rpm,
+        rps=args.rps,
+        timeout=args.timeout,
+        max_chunk_tokens=args.max_chunk_tokens,
+        max_response_tokens=args.max_response_tokens,
+        log_file=pipeline_root / "full.log",
+        resume=False,
+        dict_paths=args.dict,
+        excludes=args.exclude,
+        copy_assets=args.copy_assets,
+        target_lang=args.target_lang,
+        stage="full",
+        min_dialogue_density=args.min_dialogue_density,
+    )
+
+    full_translated_root = resolve_scan_root(stage2_translated)
+    gate2 = evaluate_gate(scan_root, full_translated_root)
+    report["stages"]["full"] = {"gate": gate2}
+    try:
+        full_report_path = stage2_translated / "report.json"
+        if full_report_path.exists():
+            full_report = json.loads(full_report_path.read_text(encoding="utf-8"))
+            report["stages"]["full"]["checker_dropped"] = int(full_report.get("total_checker_dropped", 0))
+            report["stages"]["full"]["chunk_stats"] = full_report.get("chunk_stats", {})
+        else:
+            report["stages"]["full"]["checker_dropped"] = 0
+    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+        report["stages"]["full"]["checker_dropped"] = 0
+    _print(
+        "[GATE-FULL] "
+        f"errors={gate2['errors']} "
+        f"warnings={gate2['warnings']} "
+        f"untranslated={gate2['untranslated_total']} "
+        f"ratio={gate2['untranslated_ratio']:.4f} "
+        f"len_warns={gate2['len_ratio_warnings']} "
+        f"len_ratio={gate2['len_ratio_warning_ratio']:.4f} "
+        f"ph_order_warns={gate2['placeholder_order_warnings']}"
+    )
+    if gate2["errors"] > 0:
+        raise StageError("全量批处理未通过：存在结构错误")
+
+
+def _run_final_report(
+    scan_root: Path,
+    stage2_translated: Path,
+    project_out_root: Path,
+    pipeline_root: Path,
+    pilot_output: Path,
+    args: argparse.Namespace,
+    report: dict,
+    t0: float,
+) -> bool:
+    """最终闸门、归因分析、报告生成、打包。返回是否通过。"""
+    full_translated_root = resolve_scan_root(stage2_translated)
+    gate3 = evaluate_gate(scan_root, full_translated_root)
+    report["stages"]["final_gate"] = gate3
+    _print(
+        "[GATE-FINAL] "
+        f"errors={gate3['errors']} "
+        f"warnings={gate3['warnings']} "
+        f"untranslated={gate3['untranslated_total']} "
+        f"ratio={gate3['untranslated_ratio']:.4f} "
+        f"len_warns={gate3['len_ratio_warnings']} "
+        f"len_ratio={gate3['len_ratio_warning_ratio']:.4f} "
+        f"ph_order_warns={gate3['placeholder_order_warnings']}"
+    )
+
+    # Strings 翻译统计视图
+    try:
+        strings_stats = collect_strings_stats(full_translated_root)
+        report["stages"]["strings_stats"] = strings_stats
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        _print(f"[WARN ] 收集 strings 统计时出错: {e}")
+
+    ok = gate3["errors"] == 0 and gate3["untranslated_ratio"] <= args.gate_max_untranslated_ratio
+
+    # 打包前自动字体补丁（可选）
+    if getattr(args, "patch_font", False):
+        resources_fonts = Path(__file__).resolve().parent.parent / "resources" / "fonts"
+        font_path = resolve_font(resources_fonts, args.font_file or None)
+        if font_path:
+            output_game = resolve_scan_root(stage2_translated)
+            apply_font_patch(output_game, scan_root, font_path)
+
+    report["stages"]["package"] = {}
+    package_path = package_output(stage2_translated, args.package_name)
+    report["stages"]["package"]["zip"] = str(package_path)
+
+    report["success"] = ok
+    report["elapsed_seconds"] = round(time.time() - t0, 2)
+
+    report_path = project_out_root / "pipeline_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 合并各阶段 translation_db.json
+    project_db = None
+    try:
+        project_db = TranslationDB(project_out_root / "translation_db.json")
+        project_db.load()
+        db_paths_to_merge = [
+            pilot_output / "translation_db.json",
+            stage2_translated / "translation_db.json",
+            pipeline_root / "retranslate_db.json",
+        ]
+        for db_path in db_paths_to_merge:
+            if not db_path.exists():
+                continue
+            sub_db = TranslationDB(db_path)
+            sub_db.load()
+            project_db.add_entries(sub_db.entries)
+        project_db.save()
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        _print(f"[WARN ] 合并 translation_db.json 失败: {e}")
+
+    # 漏翻归因分析
+    try:
+        if project_db and project_db.entries:
+            attribution = attribute_untranslated(full_translated_root, project_db)
+        else:
+            attribution = {
+                "total": 0, "ai_missing": 0, "checker_dropped": 0,
+                "write_fail": 0, "unknown": 0, "db_entries_count": 0,
+                "note": "translation_db 为空，无法逐行归因",
+            }
+        report["stages"]["attribution"] = attribution
+        if attribution["total"] > 0:
+            _print(
+                f"[ATTRIBUTION] 漏翻归因: 总计 {attribution['total']} | "
+                f"AI未返回 {attribution['ai_missing']} "
+                f"({attribution['ai_missing'] / attribution['total'] * 100:.1f}%) | "
+                f"Checker丢弃 {attribution['checker_dropped']} "
+                f"({attribution['checker_dropped'] / attribution['total'] * 100:.1f}%) | "
+                f"回写失败 {attribution['write_fail']} "
+                f"({attribution['write_fail'] / attribution['total'] * 100:.1f}%) | "
+                f"未知 {attribution['unknown']} "
+                f"({attribution['unknown'] / attribution['total'] * 100:.1f}%)"
+            )
+        else:
+            _print("[ATTRIBUTION] 无漏翻条目需要归因")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        _print(f"[WARN ] 漏翻归因分析失败: {e}")
+
+    # HTML 校对报告
+    try:
+        from review_generator import generate_review_html
+        db_merged_path = project_out_root / "translation_db.json"
+        if db_merged_path.exists():
+            review_path = project_out_root / "review.html"
+            review_count = generate_review_html(db_merged_path, review_path)
+            report["stages"]["review_html"] = {"path": str(review_path), "entries": review_count}
+            _print(f"[REVIEW] 生成校对报告: {review_path} ({review_count} 条)")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        _print(f"[WARN ] 生成 review.html 失败: {e}")
+
+    # 结构化 Markdown 概要
+    try:
+        write_report_summary_md(
+            project_out_root=project_out_root,
+            report=report,
+            gate_max_untranslated_ratio=args.gate_max_untranslated_ratio,
+        )
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
+        _print(f"[WARN ] 生成 report_summary.md 失败: {e}")
+
+    # 重新写入 pipeline_report.json（归因分析等后续数据已追加到 report dict）
+    try:
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        _print(f"[WARN ] 写入 pipeline_report.json 失败: {e}")
+
+    _print(f"\n[REPORT] {report_path}")
+    return ok

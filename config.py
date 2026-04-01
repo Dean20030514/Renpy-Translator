@@ -44,6 +44,27 @@ DEFAULTS: dict[str, Any] = {
 # 配置文件搜索名
 CONFIG_FILENAME = "renpy_translate.json"
 
+# 配置值校验 schema：type / choices / min / max
+_CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
+    "provider": {"type": str, "choices": ["xai", "grok", "openai", "deepseek", "claude", "gemini"]},
+    "model": {"type": str},
+    "workers": {"type": int, "min": 1, "max": 64},
+    "rpm": {"type": int, "min": 0},
+    "rps": {"type": int, "min": 0},
+    "timeout": {"type": (int, float), "min": 1},
+    "temperature": {"type": (int, float), "min": 0, "max": 2},
+    "max_chunk_tokens": {"type": int, "min": 100, "max": 200000},
+    "max_response_tokens": {"type": int, "min": 100},
+    "min_dialogue_density": {"type": (int, float), "min": 0, "max": 1},
+    "genre": {"type": str, "choices": ["adult", "visual_novel", "rpg", "general"]},
+    "target_lang": {"type": str},
+    "api_key_env": {"type": str},
+    "api_key_file": {"type": str},
+    "tl_lang": {"type": str},
+    "exclude": {"type": list},
+    "dict": {"type": list},
+}
+
 
 class Config:
     """配置管理器：配置文件 + CLI 参数合并。
@@ -80,9 +101,67 @@ class Config:
                     if isinstance(data, dict):
                         self._file_config = data
                         logger.info(f"[CONFIG] 已加载配置文件: {p}")
+                        self.validate()
                         return
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"[CONFIG] 配置文件解析失败: {p}: {e}")
+
+    def validate(self) -> list[str]:
+        """校验 _file_config 中的值，返回警告列表（同时 log.warning）。
+
+        不会拒绝加载，只记录警告，方便用户排查错误配置。
+        """
+        warnings: list[str] = []
+        for key, value in self._file_config.items():
+            # 未知键
+            if key not in _CONFIG_SCHEMA and key not in DEFAULTS:
+                msg = f"[CONFIG] 未知配置项: '{key}'"
+                warnings.append(msg)
+                logger.warning(msg)
+                continue
+
+            schema = _CONFIG_SCHEMA.get(key)
+            if schema is None:
+                # 在 DEFAULTS 中但不在 schema 中（如 output_dir），跳过
+                continue
+
+            # 类型检查
+            expected_type = schema["type"]
+            if not isinstance(value, expected_type):
+                msg = (
+                    f"[CONFIG] '{key}' 类型错误: "
+                    f"期望 {expected_type}, 实际 {type(value).__name__}"
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+                continue  # 类型不对则跳过范围检查
+
+            # choices 检查
+            if "choices" in schema and value not in schema["choices"]:
+                msg = (
+                    f"[CONFIG] '{key}' 值无效: '{value}', "
+                    f"可选值: {schema['choices']}"
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+
+            # min / max 范围检查
+            if "min" in schema and value < schema["min"]:
+                msg = (
+                    f"[CONFIG] '{key}' 值过小: {value}, "
+                    f"最小值: {schema['min']}"
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+            if "max" in schema and value > schema["max"]:
+                msg = (
+                    f"[CONFIG] '{key}' 值过大: {value}, "
+                    f"最大值: {schema['max']}"
+                )
+                warnings.append(msg)
+                logger.warning(msg)
+
+        return warnings
 
     def get(self, key: str, default: Any = None) -> Any:
         """三层合并：CLI(非None) > 配置文件 > DEFAULTS > default。

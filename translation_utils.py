@@ -102,9 +102,26 @@ class ProgressTracker:
         tmp = self.path.with_suffix('.tmp')
         try:
             tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
-            os.replace(str(tmp), str(self.path))
+            # Windows 上 os.replace 可能因杀毒软件/索引服务短暂锁文件而失败，重试几次
+            last_err: BaseException | None = None
+            for attempt in range(5):
+                try:
+                    os.replace(str(tmp), str(self.path))
+                    return
+                except PermissionError as e:
+                    last_err = e
+                    time.sleep(0.1 * (attempt + 1))
+            # 重试全部失败，尝试回退方案：直接写目标文件
+            try:
+                self.path.write_text(
+                    json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
+                tmp.unlink(missing_ok=True)
+                return
+            except OSError:
+                pass
+            if last_err:
+                raise last_err
         except BaseException:
-            # 确保 os.replace 失败时不残留 .tmp 文件
             try:
                 tmp.unlink(missing_ok=True)
             except OSError:
@@ -151,6 +168,65 @@ class ProgressTracker:
         with self._lock:
             self.data.setdefault("stats", {})[key] = value
             self._save_unlocked()
+
+
+# ============================================================
+# 会话级翻译缓存
+# ============================================================
+
+class TranslationCache:
+    """会话级翻译缓存，避免重复 API 调用。
+
+    线程安全。缓存 key 为原文文本，value 为译文。
+    同一原文被翻译为相同结果 ≥2 次后视为高置信度。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cache: dict[str, str] = {}      # original -> zh
+        self._count: dict[str, int] = {}       # original -> 命中/写入次数
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, original: str) -> str | None:
+        """查询缓存。返回译文或 None。"""
+        with self._lock:
+            zh = self._cache.get(original)
+            if zh is not None:
+                self._hits += 1
+            else:
+                self._misses += 1
+            return zh
+
+    def put(self, original: str, zh: str) -> None:
+        """写入缓存。如果已有相同 original，更新译文并增加计数。"""
+        with self._lock:
+            self._cache[original] = zh
+            self._count[original] = self._count.get(original, 0) + 1
+
+    def confidence(self, original: str) -> int:
+        """返回某条原文的翻译置信度（被翻译/确认的次数）。"""
+        with self._lock:
+            return self._count.get(original, 0)
+
+    def get_high_confidence_entries(self, min_count: int = 2) -> dict[str, str]:
+        """返回置信度 ≥ min_count 的所有缓存条目。"""
+        with self._lock:
+            return {
+                k: v for k, v in self._cache.items()
+                if self._count.get(k, 0) >= min_count
+            }
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+    def stats(self) -> str:
+        with self._lock:
+            total = self._hits + self._misses
+            rate = self._hits / total * 100 if total else 0
+            return f"缓存: {len(self._cache)} 条, 命中 {self._hits}/{total} ({rate:.1f}%)"
 
 
 # ============================================================

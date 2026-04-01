@@ -34,6 +34,63 @@
 | 第十二轮 结构整理 | 项目目录重构 | 根目录 .py 27→17：测试→tests/ + 工具→tools/ + 引擎抽象→engines/ 包合并 + import 路径更新 |
 | 第十二轮 GUI | 图形界面 + 打包 | gui.py Tkinter GUI（3 Tab + 内嵌日志 + 命令预览 + 配置加载）+ build.py PyInstaller 打包（32MB 单文件 .exe） |
 | 第十三轮 | 四项功能优化 | pipeline 集成 review.html + font_config.json 可配置 + tl/none 覆盖模板（不修改 gui.rpy）+ CoT 思维链翻译（`--cot`） |
+| 第十四轮 | 全面优化（Ren'Py 专项） | 五阶段升级：基础重构 + 代码健壮性 + 性能优化 + 翻译质量 + 用户体验 |
+
+---
+
+## 第十四轮：全面优化（Ren'Py 专项）
+
+> **目标**：专注 Ren'Py 翻译链路，从代码结构、健壮性、性能、翻译质量、用户体验五个维度全面提升。
+
+### Phase 0: 基础重构
+
+**功能**：
+- 新建 `renpy_text_utils.py`：从 `one_click_pipeline.py` 提取 `_is_user_visible_string_line` 等 5 个公共函数，消除 `direct_translator` / `retranslator` 对 pipeline 的反向依赖
+- 新建 `pipeline/` 包：将 `one_click_pipeline.py`（1472 行）拆分为 `pipeline/helpers.py` + `pipeline/gate.py` + `pipeline/stages.py`，原文件保留为薄 facade
+- 新建 `direct_translator_dryrun.py`：提取 dry-run 分析逻辑（密度直方图、术语预览、文件统计）
+- `glossary.py`: `import string` 移至模块顶部
+
+### Phase 1: 代码健壮性
+
+**修复**：
+- 收窄 10+ 处裸 `except Exception`：静默异常改为 `(OSError, ValueError, UnicodeDecodeError)` + debug 日志；主循环改为具体异常类型；保留 API 调用层的宽泛 catch-all
+- `config.py` 新增 `validate()` 方法：类型检查、范围校验、未知键告警（不拒绝，仅 warning）
+- `gui.py._stop()` 改为优雅终止：先发送 `CTRL_C_EVENT`（让子进程保存进度），等待 5 秒后才 kill
+
+### Phase 2: 性能优化
+
+**功能**：
+- `TranslationCache`：线程安全的会话级翻译缓存（original → zh），支持置信度跟踪和命中率统计
+- token 估算改进：按字符类别分别估算（英文单词按词长、CJK 按 1.5x、标点按 1/3），取代简单的 ascii//4 + non_ascii//2
+- 线程池背压：`Semaphore(workers * 2)` 限制并发提交数，避免大文件一次性提交所有 future
+- 占位符处理缓存：`protect_placeholders()` 结果按 text hash 缓存，避免相同文本重复正则匹配
+- 术语库内存上限：`memory` dict 设 10000 条上限，超出后按频次淘汰低频条目
+
+### Phase 3: 翻译质量
+
+**功能**：
+- 跨 chunk 上下文传递（验证已有实现）：第 2 个 chunk 起附带前 5 行作为上文参考
+- 术语一致性主动执行：`get_consistent_translation()` 返回高置信度已有翻译；高频 memory 条目（count≥3）在 prompt 中升级为"确定翻译（必须遵循）"
+- 新增 3 条验证规则：
+  - `E250_CONTROL_TAG_DAMAGED`：`{w}` / `{p}` / `{nw}` / `{fast}` / `{cps=N}` 控制标签损坏
+  - `W460_POSSIBLE_OVERTRANSLATION`：Ren'Py 关键字（label/screen/define 等）被翻译成中文
+  - `W470_CONSECUTIVE_PUNCTUATION`：连续中文标点（。。、！！）
+
+### Phase 4: 用户体验
+
+**功能**：
+- GUI 进度条：`ttk.Progressbar` + 百分比标签，解析 CLI 输出的 `[N/M]` 格式更新
+- 自适应日志轮询：有数据时 50ms、无数据时 200ms，每次最多处理 50 条
+- 日志显示性能：超过 5000 行自动裁剪至 3000 行
+- CLI 优雅终止：注册 SIGTERM 处理器，收到信号后设中断标志、保存进度
+
+### 技术指标
+
+- 代码行数：~12000 行核心代码
+- 测试数量：71 + 62 + 13 = 146 测试
+- 新增模块：`renpy_text_utils.py` / `direct_translator_dryrun.py` / `pipeline/` 包
+- 零依赖原则：保持仅 Python 标准库
+- 向后兼容：所有现有 CLI 参数、配置文件、import 路径不变
 
 ---
 

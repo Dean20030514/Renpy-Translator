@@ -10,11 +10,13 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `tests/test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator | 70 | 否 |
+| `tests/test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator / config validation | 71 | 否 |
 | `tests/test_engines.py` | 引擎抽象层测试 | EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine / EngineBase / CSVEngine / generic_pipeline / checker 参数化 / prompts addon / RPGMakerMVEngine / glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
+
+> **自动化测试总计**：71 + 62 + 13 = **146** 个用例（不含 tl_parser 内建 75 断言）。
 
 > **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
@@ -34,7 +36,7 @@
 
 ## 二、已覆盖的测试用例
 
-### test_all.py（70 个单元测试）
+### test_all.py（71 个单元测试）
 
 | # | 函数 | 覆盖模块 | 测试内容 |
 |---|------|----------|----------|
@@ -108,6 +110,7 @@
 | 68 | `test_should_retry_normal` | direct_translator | 正常返回不重试 + 丢弃率过高重试不拆分 |
 | 69 | `test_split_chunk_basic` | direct_translator | chunk 二分后行数守恒 + line_offset 正确 |
 | 70 | `test_split_chunk_at_empty_line` | direct_translator | 优先在空行处拆分验证 |
+| 71 | `test_config_validation` | config.py | Config.validate() 类型检查/范围校验/未知键告警（4 子场景） |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -383,7 +386,7 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 1. 单元测试（36 个）
+# 1. 单元测试（71 个）
 python test_all.py
 
 # 2. 冒烟测试（13 个）
@@ -395,7 +398,7 @@ python tl_parser.py
 
 全部通过预期输出：
 ```
-ALL 66 TESTS PASSED          (test_all.py)
+ALL 71 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
 All 75 assertions passed.     (tl_parser.py)
 ```
@@ -453,6 +456,10 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | glossary.extract_terms 连字符人名 | Mary-Jane 提取 | 1（test_all #51） |
 | glossary._memory_count 信心度 | count=1 不输出 / count=2 输出 | 1（test_all #52） |
 | file_processor.protect_placeholders 控制标签 | {w}/{p}/{nw}/{fast}/{cps=N}/{done} 保护+还原 | 1（test_all #53） |
+| config.Config.validate | 类型/范围/未知键校验 | 1（test_all #71，4 子场景） |
+| file_processor.validator E250/W460/W470 | 控制标签损坏 / 过度翻译 / 连续标点 | 集成于 validate_translation |
+| translation_utils.TranslationCache | get/put/confidence/stats/thread_safety | 集成测试验证 |
+| glossary.get_consistent_translation / _evict_low_frequency | 术语一致性 / 内存淘汰 | 集成测试验证 |
 
 ### 覆盖不足（需补充）
 

@@ -8,11 +8,15 @@ import csv
 import json
 import logging
 import re
+import string
 import threading
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+MAX_MEMORY_ENTRIES = 10000  # 翻译记忆最大条目数
 
 
 class Glossary:
@@ -265,7 +269,6 @@ class Glossary:
                 if original.strip().isdigit():
                     continue
                 # 跳过纯标点符号
-                import string
                 if all(c in string.punctuation + string.whitespace for c in original):
                     continue
                 # 跳过已在固定术语表中的条目（避免重复）
@@ -273,6 +276,27 @@ class Glossary:
                     continue
                 self.memory[original] = zh
                 self._memory_count[original] = self._memory_count.get(original, 0) + 1
+
+            # 超过上限时淘汰低频条目
+            if len(self.memory) > MAX_MEMORY_ENTRIES:
+                self._evict_low_frequency()
+
+    def _evict_low_frequency(self) -> None:
+        """淘汰低频翻译记忆条目，保留高频条目。必须在持有 _lock 时调用。"""
+        target = MAX_MEMORY_ENTRIES * 3 // 4  # 淘汰到 75%
+        # 按计数升序排列，淘汰低频
+        sorted_keys = sorted(self._memory_count, key=lambda k: self._memory_count.get(k, 0))
+        to_remove = len(self.memory) - target
+        for key in sorted_keys[:to_remove]:
+            self.memory.pop(key, None)
+            self._memory_count.pop(key, None)
+
+    def get_consistent_translation(self, original: str) -> str | None:
+        """返回置信度 ≥2 的已有翻译，用于术语一致性检查。"""
+        with self._lock:
+            if original in self.memory and self._memory_count.get(original, 0) >= 2:
+                return self.memory[original]
+            return None
 
     def extract_terms_from_translations(self, translations: list[dict], min_freq: int = 3) -> dict[str, str]:
         """从翻译结果中自动提取高频专有名词（人名/地名），返回 {en: zh} 词典。
@@ -406,20 +430,38 @@ class Glossary:
             for s in sorted(self.no_translate):
                 parts.append(f"- {s}")
 
-        # 只包含部分翻译记忆（避免 prompt 太长）
+        # 翻译记忆：分高置信度（必须遵循）和普通参考
         if self.memory:
-            # 取出现 ≥ 2 次且较长的条目（信心度过滤），限制总字符数
-            representative = sorted(
+            # 高置信度（count ≥ 3）：作为必须遵循的翻译约束
+            mandatory = sorted(
                 [(en, zh) for en, zh in self.memory.items()
-                 if len(en) > 10 and self._memory_count.get(en, 1) >= 2],
+                 if len(en) > 10 and self._memory_count.get(en, 1) >= 3],
                 key=lambda x: self._memory_count.get(x[0], 1),
                 reverse=True
             )
-            if representative:
-                parts.append("\n### 翻译参考（请保持一致）")
-                char_budget = 3000
+            if mandatory:
+                parts.append("\n### 确定翻译（必须严格遵循，保持跨文件一致）")
+                char_budget = 1500
                 used = 0
-                for en, zh in representative:
+                for en, zh in mandatory:
+                    entry = f'- "{en}" → "{zh}"'
+                    if used + len(entry) > char_budget:
+                        break
+                    parts.append(entry)
+                    used += len(entry)
+
+            # 普通参考（count ≥ 2 但 < 3）：作为翻译参考
+            reference = sorted(
+                [(en, zh) for en, zh in self.memory.items()
+                 if len(en) > 10 and self._memory_count.get(en, 1) == 2],
+                key=lambda x: len(x[0]),
+                reverse=True
+            )
+            if reference:
+                parts.append("\n### 翻译参考（请尽量保持一致）")
+                char_budget = 1500
+                used = 0
+                for en, zh in reference:
                     entry = f'- "{en}" → "{zh}"'
                     if used + len(entry) > char_budget:
                         break

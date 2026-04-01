@@ -357,7 +357,13 @@ class APIClient:
         # grok reasoning 模型可能有 reasoning_content
         if not content and msg.get("reasoning_content"):
             reasoning = msg["reasoning_content"]
-            bracket_start = reasoning.rfind('[{"line"')
+            # 尝试多种 JSON 数组开头模式（direct-mode: [{"line", tl-mode: [{"id"）
+            bracket_start = -1
+            for pattern in ('[{"line"', '[{"id"', '[{"original"', '[{'):
+                pos = reasoning.rfind(pattern)
+                if pos >= 0:
+                    bracket_start = pos
+                    break
             if bracket_start >= 0:
                 bracket_end = reasoning.rfind(']')
                 if bracket_end > bracket_start:
@@ -464,9 +470,24 @@ class APIClient:
             if results:
                 return results
 
+        # 5b. tl-mode: {"id": "xxx", "original": "...", "zh": "..."}
+        obj_re_tl = re.compile(
+            r'\{\s*"id"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"original"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"zh"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}'
+        )
+        matches_tl = obj_re_tl.findall(text)
+        if matches_tl:
+            results = []
+            for m in matches_tl:
+                try:
+                    results.append(json.loads(m))
+                except json.JSONDecodeError:
+                    continue
+            if results:
+                return results
+
         # 6. 尝试容忍字段顺序变化（部分模型可能调换字段顺序）
         obj_re2 = re.compile(
-            r'\{[^{}]*"line"\s*:\s*\d+[^{}]*"zh"\s*:\s*"(?:[^"\\]|\\.)*"[^{}]*\}'
+            r'\{[^{}]*"(?:line|id)"\s*:\s*(?:\d+|"[^"]*")[^{}]*"zh"\s*:\s*"(?:[^"\\]|\\.)*"[^{}]*\}'
         )
         matches2 = obj_re2.findall(text)
         if matches2:
@@ -474,7 +495,7 @@ class APIClient:
             for m in matches2:
                 try:
                     obj = json.loads(m)
-                    if 'line' in obj and 'zh' in obj:
+                    if ('line' in obj or 'id' in obj) and 'zh' in obj:
                         results.append(obj)
                 except json.JSONDecodeError:
                     continue

@@ -2,7 +2,7 @@
 
 一个纯 Python 的游戏自动汉化工具，支持 **Ren'Py**、**RPG Maker MV/MZ**、**CSV/JSONL 通用格式**，通过 LLM API 翻译为简体中文。
 
-**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **50+ 项翻译校验** | **断点续传** | **并发翻译**
+**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译**
 
 ---
 
@@ -13,7 +13,7 @@
 - **占位符保护**：`[var]`、`{tag}`、`%(name)s` 等 Ren'Py 语法标记在翻译前替换为安全令牌，翻译后精确还原
 - **密度自适应**：低对话密度文件自动切换定向翻译模式，避免 AI 注意力被代码稀释
 - **术语一致性**：自动提取角色名、支持外部词典、翻译记忆自动学习、锁定术语 + 禁翻片段
-- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 50+ 项结构校验 → chunk 自动重试（截断时自动拆分）
+- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 55+ 项结构校验 → chunk 自动重试（截断时自动拆分）
 - **漏翻归因分析**：每条未翻译行自动归因（AI 未返回 / Checker 丢弃 / 回写失败）
 - **日志分级控制**：`--verbose` 输出 DEBUG 详情（dry-run 时含每文件密度/费用明细 + 直方图），`--quiet` 仅输出 WARNING 及以上
 - **AI 自动术语抽取**：试跑阶段后 AI 自动从译文中提取高频术语补充词典
@@ -21,6 +21,8 @@
 - **多引擎支持**：Ren'Py（direct/tl/retranslate 三模式）+ RPG Maker MV/MZ（事件指令+数据库+System）+ CSV/JSONL 通用格式，`--engine auto` 自动检测
 - **CoT 思维链翻译**：`--cot` 启用直译→校正→意译三步流程，提升长难句和文化改编质量
 - **字体配置可定制**：`--font-config font_config.json` 自定义字号/布局参数，tl-mode 使用 `translate None` 覆盖模板（不修改 gui.rpy）
+- **会话级翻译缓存**：相同原文自动命中缓存，减少重复 API 调用，跨文件术语一致性自动保障
+- **GUI 增强**：实时进度条、自适应轮询（50/200ms）、日志自动裁剪（5000→3000 行）、优雅终止（保存进度后退出）
 
 ---
 
@@ -279,6 +281,8 @@ python renpy_upgrade_tool.py ./game --fix --backup
 │  glossary.py          术语表 + 翻译记忆 + 锁定/禁翻          │
 │  translation_db.py    翻译元数据 JSON 存储                    │
 │  font_patch.py        字体补丁（gui.*_font 改写）             │
+│  renpy_text_utils.py   Ren'Py 文本分析公共函数               │
+│  pipeline/             一键流水线拆分包（helpers/gate/stages） │
 ├──────────────────────────────────────────────────────────────┤
 │  工具层                                                       │
 │  renpy_upgrade_tool.py  Ren'Py 7→8 升级扫描 + 自动修复       │
@@ -287,7 +291,7 @@ python renpy_upgrade_tool.py ./game --fix --backup
 │  patch_font_now.py      独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
 │  测试层                                                       │
-│  test_all.py            综合模块测试（66 用例）               │
+│  test_all.py            综合模块测试（71 用例）               │
 │  tests/smoke_test.py    冒烟测试（13 用例）                   │
 │  test_single.py         单文件端到端测试                      │
 └──────────────────────────────────────────────────────────────┘
@@ -306,9 +310,11 @@ start_launcher.py
   │    ├── translation_db.py    翻译元数据记录
   │    └── font_patch.py        可选字体补丁
   │
-  ├─ one_click_pipeline.py（模式 4）
+  ├─ one_click_pipeline.py（模式 4）→ 委托 pipeline/ 包
+  │    ├── pipeline/helpers.py  公共工具（日志/路径/归因）
+  │    ├── pipeline/gate.py     闸门评估（file_processor 校验）
+  │    ├── pipeline/stages.py   四阶段执行（pilot→gate→full→retranslate）
   │    ├── 调用 main.py（subprocess，分阶段执行）
-  │    ├── file_processor/      闸门校验
   │    ├── translation_db.py    漏翻归因分析
   │    ├── font_patch.py        打包前字体补丁
   │    └── main.py imports      retranslate_file（补翻阶段）
@@ -339,7 +345,7 @@ start_launcher.py
 - 不通过 → 丢弃该条，保留原文（宁可漏翻也不误翻）
 - **chunk 自动重试**：API 错误或高丢弃率（drop rate 超阈值）时自动重试 1 次
 
-### validate_translation（回写后校验，50+ 项）
+### validate_translation（回写后校验，55+ 项）
 
 | 类别 | 检查内容 | Error/Warning Code |
 |------|----------|-------------------|
@@ -348,10 +354,13 @@ start_launcher.py
 | 标签 | `{tag}` 配对不一致 | E220 |
 | 菜单 | `{#id}` 标识符不一致 | E230 |
 | 格式 | `%(name)s` 占位符不一致 | E240 |
+| 转义 | 转义序列不一致 | E250 |
 | 顺序 | 占位符顺序偏差 | W251 |
 | 术语 | 锁定术语未使用 / 禁翻片段被改 | E411 / E420 |
 | 长度 | 译文长度比例异常 | W430 |
 | 风格 | 模型自述 / 标点混用 / 中文占比低 | W440 / W441 / W442 |
+| 缓存 | 缓存命中译文与原文不匹配 | W460 |
+| 一致性 | 相同原文不同译文 | W470 |
 
 ### 漏翻归因分析
 
@@ -591,7 +600,7 @@ MIT License — 详见 [LICENSE](LICENSE)。
 
 ```bash
 # 快速验证（< 5 秒，无需 API）
-python test_all.py           # 66 个单元+集成测试
+python test_all.py           # 71 个单元+集成测试
 python tests/smoke_test.py   # 13 个校验规则冒烟测试
 python tl_parser.py --test   # 75 个解析器断言
 ```
@@ -711,3 +720,17 @@ UnicodeDecodeError: 'utf-8' codec can't decode byte ...
 - 确认文件路径正确（错误路径会显示 `[WARN] 词典文件不存在` 警告）
 - CSV 格式：首行必须是 `english,chinese` 表头
 - JSONL 格式：每行一个 `{"en": "...", "zh": "..."}` 对象
+
+---
+
+## 版本历史
+
+详见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 第十四轮：全面优化（Ren'Py 专项）
+
+- **基础重构**：新建 `renpy_text_utils.py` 公共函数模块 + `pipeline/` 包拆分（helpers/gate/stages）+ dry-run 逻辑提取
+- **代码健壮性**：收窄 10+ 处裸 `except`、`config.validate()` 类型/范围校验、GUI 优雅终止
+- **性能优化**：会话级翻译缓存（相同原文自动命中）、GUI 自适应轮询（50/200ms）、日志裁剪（5000→3000 行）
+- **翻译质量**：新增 E250（转义序列）/ W460（缓存一致性）/ W470（相同原文不同译文）校验规则，校验总数 55+
+- **用户体验**：GUI 实时进度条、优雅终止（保存进度后退出）、测试用例 66→71

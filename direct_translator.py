@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import signal
 import shutil
 import sys
 import time
@@ -240,6 +241,7 @@ def translate_file(
     provider: str = "",
     model: str = "",
     min_dialogue_density: float = 0.20,
+    cot: bool = False,
 ) -> tuple[int, list[str], int, list[dict]]:
     """翻译单个 RPY 文件
 
@@ -292,7 +294,7 @@ def translate_file(
         genre=genre,
         glossary_text=glossary.to_prompt_text(),
         project_name=project_name,
-        cot=getattr(args, 'cot', False),
+        cot=cot,
     )
 
     # 加载已完成的翻译（断点续传，只加载一次避免重复）
@@ -314,8 +316,16 @@ def translate_file(
 
     if workers > 1 and len(pending_chunks) > 1:
         # 并发翻译多个 chunk
+        _backpressure = threading.Semaphore(workers * 2)
+
+        def _submit_with_backpressure(pool, fn, *args):
+            _backpressure.acquire()
+            future = pool.submit(fn, *args)
+            future.add_done_callback(lambda _: _backpressure.release())
+            return future
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_translate_chunk_with_retry, ctx, c): c for c in pending_chunks}
+            futures = {_submit_with_backpressure(executor, _translate_chunk_with_retry, ctx, c): c for c in pending_chunks}
             for future in concurrent.futures.as_completed(futures):
                 cr = future.result()
                 chunk_stats_list.append({"chunk_idx": cr.part, "expected": cr.expected, "returned": cr.returned, "dropped": cr.dropped_count})
@@ -529,7 +539,7 @@ def _translate_file_targeted(
     - 输出到 output_dir（可能与 game_dir 不同）
     - 返回值与 translate_file 一致的 4-tuple
     """
-    from one_click_pipeline import _is_user_visible_string_line
+    from renpy_text_utils import _is_user_visible_string_line
 
     all_lines = content.splitlines()
 
@@ -693,53 +703,26 @@ def _translate_file_targeted(
     return len(unique), all_warnings, total_checker_dropped, chunk_stats_list
 
 
-# ============================================================
-# dry-run verbose 辅助函数
-# ============================================================
-
-def _compute_file_dialogue_stats(filepath: Path) -> tuple[int, float]:
-    """返回 (对话行数, 密度)，用于 dry-run 详情。"""
-    from retranslator import calculate_dialogue_density
-    content = read_file(filepath)
-    density = calculate_dialogue_density(content)
-    from one_click_pipeline import _is_user_visible_string_line
-    dlg_count = sum(1 for line in content.splitlines()
-                    if _is_user_visible_string_line(line))
-    return dlg_count, density
-
-
-def _print_density_histogram(densities: list[float]) -> None:
-    """输出文字版对话密度分布直方图。"""
-    if not densities:
-        return
-    buckets = [0] * 5  # [0-20%, 20-40%, 40-60%, 60-80%, 80-100%]
-    labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
-    for d in densities:
-        idx = min(int(d * 5), 4)
-        buckets[idx] += 1
-    max_count = max(buckets) if buckets else 1
-    logger.info("\n对话密度分布:")
-    for label, count in zip(labels, buckets):
-        bar_len = count * 30 // max_count if max_count else 0
-        bar = "#" * bar_len
-        logger.info(f"  {label:>8s} | {bar:<30s} {count}")
-
-
-def _print_term_scan_preview(glossary) -> None:
-    """输出术语扫描结果预览。"""
-    n_chars = len(getattr(glossary, 'characters', {}))
-    n_terms = len(getattr(glossary, 'terms', {}))
-    n_locked = len(getattr(glossary, 'locked_terms', []))
-    n_notrans = len(getattr(glossary, 'no_translate', []))
-    logger.info(f"\n术语扫描预览:")
-    logger.info(f"  角色名: {n_chars} 个")
-    logger.info(f"  术语表: {n_terms} 条" + (f"（其中锁定 {n_locked} 条）" if n_locked else ""))
-    if n_notrans:
-        logger.info(f"  禁翻片段: {n_notrans} 条")
+# ---- dry-run verbose 辅助函数（实现已迁移到 direct_translator_dryrun.py）----
+from direct_translator_dryrun import (  # noqa: F401,E402
+    _compute_file_dialogue_stats,
+    _print_density_histogram,
+    _print_term_scan_preview,
+)
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
     """运行完整翻译流水线"""
+    # SIGTERM 优雅终止支持（非 Windows 平台；Windows 使用 GUI 发送的 CTRL_C_EVENT）
+    _interrupted = threading.Event()
+
+    def _sigterm_handler(signum, frame):
+        _interrupted.set()
+        logger.info("[SIGTERM] 收到终止信号，正在保存进度...")
+
+    if hasattr(signal, 'SIGTERM'):
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+
     game_dir = Path(args.game_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -971,7 +954,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 fpath = game_dir / rel
                 try:
                     dlg_count, density = _compute_file_dialogue_stats(fpath)
-                except Exception:
+                except (OSError, ValueError, UnicodeDecodeError):
+                    logger.debug(f"dry-run 文件统计失败: {fpath}", exc_info=True)
                     dlg_count, density = 0, 0.0
                 densities.append(density)
                 strategy = "定向" if density < min_density else "全文"
@@ -1014,6 +998,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
     progress_bar = ProgressBar(total_files) if show_progress_bar and total_files > 0 else None
 
     for i, rpy_path in enumerate(rpy_files, 1):
+        # SIGTERM 中断检查
+        if _interrupted.is_set():
+            logger.info("[SIGTERM] 翻译中断，已保存进度。使用 --resume 继续。")
+            break
+
         rel = rpy_path.relative_to(game_dir)
         done_count = len(progress.data.get("completed_files", []))
         pct = done_count / total_files * 100 if total_files > 0 else 0
@@ -1053,6 +1042,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 provider=config.provider,
                 model=config.model,
                 min_dialogue_density=getattr(args, "min_dialogue_density", 0.20),
+                cot=getattr(args, "cot", False),
             )
             total_translated += count
             total_checker_dropped += checker_dropped
@@ -1072,7 +1062,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 logger.debug(f"中断时保存 translation_db 失败: {e}")
             logger.info("[中断] 进度已保存，可用 --resume 继续")
             sys.exit(1)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
             msg = f"文件 {rel} 处理失败: {e}"
             logger.error(f"  [ERROR] {msg}")
             total_warnings.append(msg)

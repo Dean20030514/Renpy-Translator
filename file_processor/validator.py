@@ -329,6 +329,72 @@ def _check_quality_heuristics(
     return issues
 
 
+# Ren'Py 控制标签正则（必须原样保留的文本标签）
+_CONTROL_TAG_RE = re.compile(r'\{(?:w|p|nw|fast|cps=\d+)\}')
+
+# Ren'Py 关键字/标识符（不应出现中文翻译的位置）
+_RENPY_CODE_KEYWORDS = {
+    "label", "screen", "init", "define", "default", "transform", "style",
+    "python", "image", "jump", "call", "return", "pass", "show", "hide",
+    "scene", "with", "play", "stop", "queue", "if", "elif", "else",
+    "for", "while", "menu", "nvl", "window",
+}
+
+
+def _check_control_tags_and_keywords(
+    orig: str, trans: str, line_num: int,
+) -> list[dict]:
+    """检查控制标签保留、过度翻译、连续标点等问题。"""
+    issues: list[dict] = []
+
+    # E250: 控制标签损坏（{w}, {p}, {nw}, {fast}, {cps=N} 必须原样保留）
+    orig_tags = _CONTROL_TAG_RE.findall(orig)
+    if orig_tags:
+        trans_tags = _CONTROL_TAG_RE.findall(trans)
+        for tag in orig_tags:
+            if tag not in trans_tags:
+                issues.append({
+                    "level": "error",
+                    "code": "E250_CONTROL_TAG_DAMAGED",
+                    "line": line_num,
+                    "message": f"Ren'Py 控制标签 {tag} 在译文中缺失或被修改"
+                })
+                break  # 同一行只报一次
+
+    # W460: 可能过度翻译（Ren'Py 关键字出现了中文翻译）
+    # 仅在行首出现的关键字后跟中文时触发
+    orig_stripped = orig.strip()
+    trans_stripped = trans.strip()
+    if orig_stripped != trans_stripped:
+        for kw in _RENPY_CODE_KEYWORDS:
+            if orig_stripped.startswith(kw + " ") or orig_stripped.startswith(kw + ":"):
+                # 原文以关键字开头，检查译文是否把关键字翻译了
+                if not trans_stripped.startswith(kw + " ") and not trans_stripped.startswith(kw + ":"):
+                    # 译文不再以该关键字开头，可能被翻译了
+                    cn_in_prefix = any('\u4e00' <= c <= '\u9fff' for c in trans_stripped[:len(kw) + 5])
+                    if cn_in_prefix:
+                        issues.append({
+                            "level": "warning",
+                            "code": "W460_POSSIBLE_OVERTRANSLATION",
+                            "line": line_num,
+                            "message": f"Ren'Py 关键字 '{kw}' 可能被过度翻译"
+                        })
+                        break
+
+    # W470: 连续标点（。。、！！、？？等）
+    trans_text = _extract_first_quoted_text(trans) or ""
+    if trans_text:
+        if re.search(r'[。！？]{2,}', trans_text):
+            issues.append({
+                "level": "warning",
+                "code": "W470_CONSECUTIVE_PUNCTUATION",
+                "line": line_num,
+                "message": "译文存在连续中文标点（如 。。、！！），建议简化"
+            })
+
+    return issues
+
+
 # ============================================================
 # 主校验入口
 # ============================================================
@@ -378,6 +444,7 @@ def validate_translation(
         issues.extend(_check_quality_heuristics(
             orig, trans, i, len_ratio_lower, len_ratio_upper, lang_config,
         ))
+        issues.extend(_check_control_tags_and_keywords(orig, trans, i))
 
     # 统计
     errors = sum(1 for i in issues if i['level'] == 'error')

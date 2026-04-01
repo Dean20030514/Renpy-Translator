@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -43,6 +44,13 @@ _PROVIDERS = list(_PROVIDER_DEFAULTS.keys())
 _ENGINES = ["auto", "renpy", "rpgmaker", "csv", "jsonl"]
 _GENRES = ["adult", "visual_novel", "rpg", "general"]
 
+# 进度日志匹配模式，例如 [3/50] (6%) 或 [3/50]
+_RE_PROGRESS = re.compile(r'\[(\d+)/(\d+)\](?:\s*\((\d+)%\))?')
+
+# 日志裁剪阈值
+MAX_LOG_LINES = 5000
+TRIM_TO = 3000
+
 
 class App:
     def __init__(self) -> None:
@@ -69,10 +77,11 @@ class App:
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self.root)
-        tool_menu = tk.Menu(menubar, tearoff=0)
-        tool_menu.add_command(label="仅扫描估费（Dry-run）", command=self._run_dry_run)
-        tool_menu.add_command(label="Ren'Py 7→8 升级扫描", command=self._run_upgrade_scan)
-        menubar.add_cascade(label="工具", menu=tool_menu)
+        tool_menu = tk.Menu(menubar, tearoff=0, font=("", 10))
+        tool_menu.add_command(label="  仅扫描估费（Dry-run，无需 API Key）  ", command=self._run_dry_run)
+        tool_menu.add_separator()
+        tool_menu.add_command(label="  Ren'Py 7→8 升级扫描（检测旧 API 问题）  ", command=self._run_upgrade_scan)
+        menubar.add_cascade(label=" \u2630 工具 ", menu=tool_menu)
         self.root.config(menu=menubar)
 
     # ============================================================
@@ -346,6 +355,16 @@ class App:
         self.lbl_status = ttk.Label(btn_frame, text="状态: 空闲", foreground="gray")
         self.lbl_status.pack(side=tk.RIGHT, padx=10)
 
+        # 进度条
+        self.progress_frame = ttk.Frame(bottom)
+        self.progress_frame.pack(fill=tk.X, padx=8, pady=2)
+
+        self.progress_bar = ttk.Progressbar(self.progress_frame, mode='determinate', maximum=100)
+        self.progress_bar.pack(fill=tk.X, side=tk.LEFT, expand=True, padx=(0, 8))
+
+        self.lbl_progress = ttk.Label(self.progress_frame, text="")
+        self.lbl_progress.pack(side=tk.RIGHT)
+
         # 日志
         self.log_text = scrolledtext.ScrolledText(bottom, height=12, state="disabled",
                                                    wrap=tk.WORD, font=("Consolas", 9))
@@ -471,7 +490,7 @@ class App:
         try:
             cmd = self._build_command()
             self.var_preview.set(self._mask_api_key(cmd))
-        except Exception:
+        except (ValueError, TypeError, AttributeError):
             self.var_preview.set("")
 
     # ============================================================
@@ -515,21 +534,26 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _poll_log(self) -> None:
-        while True:
-            try:
-                item = self._log_queue.get_nowait()
-                if isinstance(item, tuple) and item[0] == "__RC__":
-                    self._on_finished(item[1])
-                    continue
-                self._append_log(item)
-            except queue.Empty:
-                break
-        self.root.after(100, self._poll_log)
+    def _parse_progress(self, text: str) -> None:
+        """从日志行中解析进度信息并更新进度条。"""
+        m = _RE_PROGRESS.search(text)
+        if m:
+            current, total = int(m.group(1)), int(m.group(2))
+            if m.group(3):
+                pct = int(m.group(3))
+            else:
+                pct = int(current / total * 100) if total > 0 else 0
+            self.progress_bar['value'] = pct
+            self.lbl_progress.config(text=f"{current}/{total} ({pct}%)")
 
     def _append_log(self, text: str) -> None:
         self.log_text.config(state="normal")
         self.log_text.insert(tk.END, text)
+        # 日志裁剪：超过阈值时删除早期行
+        line_count = int(self.log_text.index('end-1c').split('.')[0])
+        if line_count > MAX_LOG_LINES:
+            trim_end = line_count - TRIM_TO
+            self.log_text.delete("1.0", f"{trim_end}.0")
         self.log_text.see(tk.END)
         self.log_text.config(state="disabled")
 
@@ -541,6 +565,8 @@ class App:
         if returncode == 0:
             self.lbl_status.config(text=f"状态: 完成 ({elapsed:.1f}s)", foreground="green")
             self._append_log(f"\n[完成] 耗时 {elapsed:.1f} 秒\n")
+            self.progress_bar['value'] = 100
+            self.lbl_progress.config(text="完成")
         else:
             self.lbl_status.config(text=f"状态: 错误 (code={returncode})", foreground="red")
             self._append_log(f"\n[错误] 退出码 {returncode}，耗时 {elapsed:.1f} 秒\n")
@@ -548,13 +574,23 @@ class App:
     def _stop(self) -> None:
         if self.process:
             try:
-                self.process.kill()
+                # Windows: 发送 CTRL_C_EVENT 让子进程的 KeyboardInterrupt 触发进度保存
+                import signal
+                if hasattr(signal, 'CTRL_C_EVENT'):
+                    self.process.send_signal(signal.CTRL_C_EVENT)
+                else:
+                    self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
             except OSError:
                 pass
             self.lbl_status.config(text="状态: 已停止", foreground="orange")
-            self._append_log("\n[已停止] 进程被终止\n")
+            self._append_log("\n[已停止] 进程被终止（已尝试保存进度）\n")
             self.btn_start.config(state="normal")
             self.btn_stop.config(state="disabled")
+            self.lbl_progress.config(text="已停止")
 
     def _clear_log(self) -> None:
         self.log_text.config(state="normal")
@@ -600,19 +636,41 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _poll_log_extended(self) -> None:
-        """扩展轮询：处理 dry-run 结果。"""
-        # 在 _poll_log 中处理 __DRYRUN__ sentinel
-
     def _run_upgrade_scan(self) -> None:
+        """工具菜单入口：弹出目录选择对话框后执行升级扫描。"""
         scan_dir = filedialog.askdirectory(title="选择游戏 game 目录")
         if not scan_dir:
             return
+        self._run_upgrade_scan_on_game_dir(scan_dir)
+
+    def _run_upgrade_scan_on_game_dir(self, scan_dir: str) -> None:
+        """执行 Ren'Py 7→8 升级扫描（工具菜单和翻译模式共用）。"""
         do_fix = messagebox.askyesno("自动修复", "是否自动修复发现的问题？\n（会创建 .bak 备份）")
-        cmd = [sys.executable, "renpy_upgrade_tool.py", scan_dir, "--backup"]
-        if do_fix:
-            cmd.append("--fix")
-        self._run_command(cmd)
+
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.lbl_status.config(text="状态: 升级扫描中...", foreground="blue")
+        self._start_time = time.time()
+
+        def worker():
+            try:
+                import io
+                import contextlib
+                from renpy_upgrade_tool import run_scan
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    results, file_count = run_scan(
+                        scan_dir, fix=do_fix, backup=True,
+                    )
+                output = buf.getvalue()
+                for line in output.splitlines(keepends=True):
+                    self._log_queue.put(line)
+                self._log_queue.put(("__RC__", 0))
+            except Exception as e:
+                self._log_queue.put(f"\n[ERROR] {e}\n")
+                self._log_queue.put(("__RC__", 1))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ============================================================
     # 配置加载 / 保存
@@ -685,44 +743,13 @@ class App:
             self._update_preview()
 
     def run(self) -> None:
-        # 需要在 _poll_log 中处理 __DRYRUN__
-        original_poll = self._poll_log
-
-        def extended_poll():
-            while True:
-                try:
-                    item = self._log_queue.get_nowait()
-                    if isinstance(item, tuple):
-                        if item[0] == "__RC__":
-                            self._on_finished(item[1])
-                            continue
-                        elif item[0] == "__DRYRUN__":
-                            lines, rc = item[1], item[2]
-                            self._on_finished(rc)
-                            if rc == 0:
-                                # 提取摘要
-                                summary = []
-                                for line in lines:
-                                    if "剩余文件" in line or "估计费用" in line or "API 调用" in line or "估计输入" in line:
-                                        summary.append(line.strip())
-                                if summary:
-                                    messagebox.showinfo("Dry-run 摘要", "\n".join(summary))
-                            continue
-                    self._append_log(item)
-                except queue.Empty:
-                    break
-            self.root.after(100, extended_poll)
-
-        # 替换轮询函数
-        self.root.after_cancel(self._poll_id) if hasattr(self, '_poll_id') else None
-        self._poll_id_ext = self.root.after(100, extended_poll)
         self.root.mainloop()
-
-    # 重写 _poll_log 保存 after ID
     def _poll_log(self) -> None:
-        while True:
+        got_data = False
+        for _ in range(50):
             try:
                 item = self._log_queue.get_nowait()
+                got_data = True
                 if isinstance(item, tuple):
                     if item[0] == "__RC__":
                         self._on_finished(item[1])
@@ -738,10 +765,13 @@ class App:
                             if summary:
                                 messagebox.showinfo("Dry-run 摘要", "\n".join(summary))
                         continue
+                if isinstance(item, str):
+                    self._parse_progress(item)
                 self._append_log(item)
             except queue.Empty:
                 break
-        self._poll_id = self.root.after(100, self._poll_log)
+        interval = 50 if got_data else 200
+        self._poll_id = self.root.after(interval, self._poll_log)
 
 
 def main() -> None:

@@ -138,29 +138,61 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str,
     else:
         logger.info(f"[TL-PATCH] 字体已存在: {font_name}")
 
-    # 2. Generate none_overlay.rpy（覆盖模板，不修改 gui.rpy）
+    # 2. 直接修改所有 gui.rpy 中的字体定义（define gui.*_font = "..."）
+    #    这是最可靠的方式——style 系统在 init 阶段绑定字体，translate None python 太晚
+    font_pattern = re.compile(
+        r'^(\s*define\s+gui\.\w+_font\s*=\s*)["\']([^"\']*)["\'](\s*)$',
+        re.MULTILINE,
+    )
+    gui_files = list(game_dir.rglob("gui.rpy"))
+    for gui_rpy in gui_files:
+        text = gui_rpy.read_text(encoding="utf-8")
+        new_text, count = font_pattern.subn(
+            lambda m: m.group(1) + '"' + font_name + '"' + m.group(3),
+            text,
+        )
+        if count > 0:
+            # 备份原文件（首次）
+            bak = gui_rpy.with_suffix(".rpy.font_bak")
+            if not bak.exists():
+                shutil.copy2(gui_rpy, bak)
+            gui_rpy.write_text(new_text, encoding="utf-8")
+            rel = gui_rpy.relative_to(game_dir.parent) if game_dir.parent else gui_rpy
+            logger.info(f"[TL-PATCH] 修改字体: {rel} ({count} 处 gui.*_font → {font_name})")
+
+    # 如果有 font_config.json，应用额外的 gui_overrides
+    config = load_font_config(font_config_path)
+    overrides = config.get("gui_overrides", {})
+    if overrides:
+        for gui_rpy in gui_files:
+            text = gui_rpy.read_text(encoding="utf-8")
+            size_count = 0
+            for var_name, value in overrides.items():
+                var_pat = re.compile(
+                    rf'^(\s*define\s+{re.escape(var_name)}\s*=\s*)[\d.]+(\s*)$',
+                    re.MULTILINE,
+                )
+                text, n = var_pat.subn(rf'\g<1>{value}\2', text)
+                size_count += n
+            if size_count > 0:
+                gui_rpy.write_text(text, encoding="utf-8")
+                logger.info(f"[TL-PATCH] 应用 font_config 覆盖: {gui_rpy.name} ({size_count} 处)")
+
+    # 3. 生成 none_overlay.rpy 作为翻译激活时的额外保障
     tl_dir = game_dir / "tl" / tl_lang
     tl_dir.mkdir(parents=True, exist_ok=True)
 
     overlay_lines = [
-        "# none_overlay.rpy — 自动生成的字体覆盖模板，请勿手动编辑",
-        "# 使用 translate None python: 在运行时覆盖字体设置",
+        "# none_overlay.rpy — 自动生成的字体覆盖模板",
+        "# 作为 gui.rpy 直接修改的补充保障",
         "",
         "translate None python:",
         f'    gui.text_font = "{font_name}"',
         f'    gui.name_text_font = "{font_name}"',
         f'    gui.interface_text_font = "{font_name}"',
+        f'    gui.button_text_font = "{font_name}"',
+        f'    gui.choice_button_text_font = "{font_name}"',
     ]
-
-    # 如果有 font_config.json，追加 gui_overrides
-    config = load_font_config(font_config_path)
-    overrides = config.get("gui_overrides", {})
-    if overrides:
-        overlay_lines.append("")
-        overlay_lines.append("    # font_config.json gui_overrides")
-        for var_name, value in overrides.items():
-            overlay_lines.append(f"    {var_name} = {value}")
-
     overlay_rpy = tl_dir / "none_overlay.rpy"
     overlay_rpy.write_text("\n".join(overlay_lines) + "\n", encoding="utf-8")
     logger.info(f"[TL-PATCH] 生成覆盖模板: {overlay_rpy.relative_to(game_dir.parent)}")
@@ -451,36 +483,62 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     ctx = TranslationContext(client=client, system_prompt=system_prompt, rel_path="")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        future_map: dict[concurrent.futures.Future, tuple] = {}
-        for rel_path, ci, chunk_text, chunk_entries in all_chunk_tasks:
-            total = file_meta[rel_path][2]
-            fut = pool.submit(
-                _translate_one_tl_chunk, ctx, rel_path, ci, chunk_text, chunk_entries,
-            )
-            future_map[fut] = (rel_path, ci, len(chunk_entries), total)
+        pending_futures: dict[concurrent.futures.Future, tuple] = {}
+        task_iter = iter(all_chunk_tasks)
+        total_tasks = len(all_chunk_tasks)
+        tasks_exhausted = False
 
-        for fut in concurrent.futures.as_completed(future_map):
-            rel_path, ci, _entry_count, total = future_map[fut]
+        def _submit_next() -> bool:
+            """提交下一个任务到线程池。返回 False 表示已无更多任务。"""
+            nonlocal tasks_exhausted
+            if tasks_exhausted:
+                return False
             try:
-                rp, _chunk_idx, kept_items, dropped, warnings = fut.result()
-                with _lock:
-                    file_translations.setdefault(rp, {}).update(kept_items)
-                    total_checker_dropped += dropped
-                    total_warnings.extend(warnings)
-                    _completed[0] += 1
-                    n_completed = _completed[0]
-                    n_kept = len(kept_items)
-                logger.info(f"  [{n_completed}/{len(all_chunk_tasks)}] {rp} "
-                     f"chunk {ci}/{total}: 保留 {n_kept} 条"
-                     + (f", 丢弃 {dropped} 条" if dropped else ""))
-                progress.mark_chunk_done(rp, ci, [])
-            except Exception as e:
-                with _lock:
-                    total_warnings.append(f"{rel_path} chunk {ci}: {e}")
-                    _completed[0] += 1
-                    n_completed = _completed[0]
-                logger.error(f"  [{n_completed}/{len(all_chunk_tasks)}] [ERROR] "
-                      f"{rel_path} chunk {ci}/{total}: {e}")
+                rp, ci, text, entries = next(task_iter)
+                t = file_meta[rp][2]
+                fut = pool.submit(
+                    _translate_one_tl_chunk, ctx, rp, ci, text, entries,
+                )
+                pending_futures[fut] = (rp, ci, len(entries), t)
+                return True
+            except StopIteration:
+                tasks_exhausted = True
+                return False
+
+        # 初始提交：填满线程池
+        for _ in range(min(workers * 2, total_tasks)):
+            _submit_next()
+
+        # 主循环：等待完成 → 收集结果 → 提交下一个
+        while pending_futures:
+            done, _ = concurrent.futures.wait(
+                pending_futures, return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for fut in done:
+                rel_path, ci, _entry_count, total = pending_futures.pop(fut)
+                try:
+                    rp, _chunk_idx, kept_items, dropped, warnings = fut.result()
+                    with _lock:
+                        file_translations.setdefault(rp, {}).update(kept_items)
+                        total_checker_dropped += dropped
+                        total_warnings.extend(warnings)
+                        _completed[0] += 1
+                        n_completed = _completed[0]
+                        n_kept = len(kept_items)
+                    logger.info(f"  [{n_completed}/{total_tasks}] {rp} "
+                         f"chunk {ci}/{total}: 保留 {n_kept} 条"
+                         + (f", 丢弃 {dropped} 条" if dropped else ""))
+                    progress.mark_chunk_done(rp, ci, [])
+                except Exception as e:
+                    with _lock:
+                        total_warnings.append(f"{rel_path} chunk {ci}: {e}")
+                        _completed[0] += 1
+                        n_completed = _completed[0]
+                    logger.error(f"  [{n_completed}/{total_tasks}] [ERROR] "
+                          f"{rel_path} chunk {ci}/{total}: {e}")
+
+                # 每完成一个就补提交一个（背压）
+                _submit_next()
 
     # ── 3. 匹配 + 回填（串行，保证文件写入安全） ──
     modified_rpy_files: set[str] = set()

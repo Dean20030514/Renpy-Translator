@@ -80,6 +80,14 @@ _PLACEHOLDER_PROTECT_PREFIX = "__RENPY_PH_"
 _PLACEHOLDER_PROTECT_SUFFIX = "__"
 
 
+_placeholder_cache: dict[int, tuple[str, list[tuple[str, str]]]] = {}
+
+
+def clear_placeholder_cache() -> None:
+    """Clear the placeholder cache (useful for testing)."""
+    _placeholder_cache.clear()
+
+
 def protect_placeholders(text: str,
                          patterns: "list[str] | None" = None,
                          ) -> tuple[str, list[tuple[str, str]]]:
@@ -95,8 +103,20 @@ def protect_placeholders(text: str,
     Returns:
         (替换后的文本, mapping: [(token, original), ...])
     """
+    # Cache lookup — only for default patterns (patterns is None)
+    if patterns is None:
+        cache_key = hash(text)
+        cached = _placeholder_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    _use_cache = patterns is None
+
     if not text.strip():
-        return text, []
+        rv = text, []
+        if _use_cache:
+            _placeholder_cache[cache_key] = rv
+        return rv
     # 选择占位符正则：自定义模式 or 默认 Ren'Py 模式
     if patterns is not None:
         regex = re.compile("|".join(f"({p})" for p in patterns)) if patterns else None
@@ -111,7 +131,10 @@ def protect_placeholders(text: str,
                 matches.append((m.start(), m.end(), g))
                 break
     if not matches:
-        return text, []
+        rv = text, []
+        if _use_cache:
+            _placeholder_cache[cache_key] = rv
+        return rv
     # 按首次出现顺序去重
     ordered: list[str] = []
     seen: set[str] = set()
@@ -132,7 +155,10 @@ def protect_placeholders(text: str,
     result = text
     for start, end, token in replacements:
         result = result[:start] + token + result[end:]
-    return result, mapping
+    rv = result, mapping
+    if _use_cache:
+        _placeholder_cache[cache_key] = rv
+    return rv
 
 
 def restore_placeholders(text: str, mapping: list[tuple[str, str]]) -> str:

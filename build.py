@@ -26,13 +26,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 def main() -> int:
     # 收集所有需要打包的 Python 模块（非测试、非工具）
     hidden_imports = [
-        "api_client", "config", "direct_translator", "file_processor",
+        "api_client", "config", "direct_translator", "direct_translator_dryrun",
+        "file_processor",
         "file_processor.splitter", "file_processor.patcher",
         "file_processor.checker", "file_processor.validator",
         "font_patch", "glossary", "lang_config", "main",
         "one_click_pipeline", "prompts", "retranslator", "review_generator",
-        "renpy_upgrade_tool", "start_launcher", "tl_parser", "tl_translator",
+        "renpy_upgrade_tool", "renpy_text_utils", "start_launcher",
+        "tl_parser", "tl_translator",
         "translation_db", "translation_utils",
+        "pipeline", "pipeline.helpers", "pipeline.gate", "pipeline.stages",
         "engines", "engines.engine_base", "engines.engine_detector",
         "engines.generic_pipeline", "engines.renpy_engine",
         "engines.rpgmaker_engine", "engines.csv_engine",

@@ -76,7 +76,7 @@ def load_font_config(config_path: "Path | None") -> dict:
         return {}
     try:
         return _json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
+    except (OSError, _json.JSONDecodeError, ValueError) as e:
         logger.warning(f"font_config 加载失败: {e}")
         return {}
 

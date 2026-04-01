@@ -12,11 +12,45 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+_WORD_RE = re.compile(r'[a-zA-Z]+')
+
+
 def estimate_tokens(text: str) -> int:
-    """粗略估算 token 数（英文 ~4 字符/token，中文 ~2 字符/token）"""
-    ascii_count = sum(1 for c in text if ord(c) < 128)
-    non_ascii = len(text) - ascii_count
-    return ascii_count // 4 + non_ascii // 2 + 1
+    """估算 token 数。
+
+    相比简单的 ascii//4 + non_ascii//2，本实现按字符类别分别估算：
+    - 英文单词：按词长估算（短词 1 token，长词按 ~4 字符/token）
+    - CJK 字符：约 1.5 tokens/字（更接近实际 tokenizer 的统计均值）
+    - 标点/空白：约 1/3 token
+    - 其他非 ASCII：约 1/2 token
+    """
+    if not text:
+        return 0
+
+    # 英文单词 token 数
+    words = _WORD_RE.findall(text)
+    word_tokens = sum(max(1, (len(w) + 2) // 4) for w in words)
+    word_chars = sum(len(w) for w in words)
+
+    # 逐字符分类统计（跳过已统计的英文字母部分）
+    cjk = 0
+    other_non_ascii = 0
+    non_alpha_ascii = 0
+    for c in text:
+        cp = ord(c)
+        if cp < 128:
+            if not c.isalpha():
+                non_alpha_ascii += 1
+        elif '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7af':
+            cjk += 1
+        else:
+            other_non_ascii += 1
+
+    cjk_tokens = int(cjk * 1.5)
+    punct_tokens = max(1, non_alpha_ascii // 3) if non_alpha_ascii else 0
+    other_tokens = other_non_ascii // 2
+
+    return word_tokens + cjk_tokens + punct_tokens + other_tokens + 1
 
 
 def _find_block_boundaries(lines: list[str]) -> list[int]:

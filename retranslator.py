@@ -42,7 +42,7 @@ def calculate_dialogue_density(content: str) -> float:
     高密度文件 → 整文件翻译（AI 自主识别）；
     低密度文件 → 定向翻译（工具指定哪些行翻译）。
     """
-    from one_click_pipeline import _is_user_visible_string_line
+    from renpy_text_utils import _is_user_visible_string_line
 
     non_empty = 0
     dialogue = 0
@@ -68,7 +68,7 @@ def find_untranslated_lines(content: str) -> list[tuple[int, str]]:
     Returns:
         [(0-based_line_index, quoted_english_text), ...]
     """
-    from one_click_pipeline import _is_user_visible_string_line
+    from renpy_text_utils import _is_user_visible_string_line
 
     # screen 属性关键字——引号后紧跟这些词说明是 UI 布局行而非对话
     _SCREEN_ATTR_KW = {"xalign", "yalign", "xpos", "ypos", "xsize", "ysize",

@@ -1,8 +1,8 @@
 # 多引擎翻译工具扩展方案
 
-> 基于「多引擎游戏汉化工具」当前状态（第十二轮全部完成、~10200 行核心代码、70+62 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
+> 基于「多引擎游戏汉化工具」当前状态（第十四轮全部完成、~12000 行核心代码、71+62+13=146 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
 >
-> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包。后续路线见 §8。
+> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包 + 第十四轮 Ren'Py 专项五阶段优化。后续路线见 §8。
 
 ---
 
@@ -94,6 +94,8 @@
 **涉及文件**：`direct_translator.py`（`run_pipeline` 的 dry-run 分支）
 
 **风险**：零。dry-run 不调用 API，不修改文件。
+
+> **第十四轮补充**：第十四轮在此基础上做了进一步的 Ren'Py 专项五阶段优化：基础重构（pipeline/ 包 + renpy_text_utils.py）→ 代码健壮性（except 收窄 + 配置校验 + GUI 优雅终止）→ 性能优化（TranslationCache + token 估算改进 + 背压机制）→ 翻译质量（E250/W460/W470 新规则 + 术语一致性主动执行）→ 用户体验（GUI 进度条 + 自适应轮询 + 日志裁剪 + SIGTERM 处理）。详见 CHANGELOG.md 第十四轮。
 
 ---
 

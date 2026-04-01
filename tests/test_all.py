@@ -625,7 +625,7 @@ def test_translation_db_roundtrip():
 
 def test_is_untranslated_dialogue():
     """测试 one_click_pipeline._is_untranslated_dialogue 辅助函数"""
-    from one_click_pipeline import _is_untranslated_dialogue
+    from renpy_text_utils import _is_untranslated_dialogue
     # 纯英文长文本 → 应判定为未翻译
     assert _is_untranslated_dialogue("This is a long English sentence that should be detected as untranslated.")
     # 含中文 → 不应判定
@@ -1120,6 +1120,67 @@ def test_split_chunk_at_empty_line():
     print("[OK] split_chunk_at_empty_line")
 
 
+def test_config_validation():
+    """配置文件 schema 校验：类型/范围/未知键"""
+    from pathlib import Path as _Path
+    from config import Config
+    import tempfile, os, json, logging
+
+    # --- 1. 合法配置无警告 ---
+    tmpdir = tempfile.mkdtemp()
+    cfg_path = _Path(tmpdir) / "renpy_translate.json"
+    cfg_path.write_text(json.dumps({
+        "workers": 4, "rpm": 30, "temperature": 0.5, "provider": "openai"
+    }), encoding="utf-8")
+    try:
+        cfg = Config(game_dir=_Path(tmpdir), cli_args=None)
+        warns = cfg.validate()
+        assert warns == [], f"expected no warnings, got {warns}"
+    finally:
+        cfg_path.unlink()
+        os.rmdir(tmpdir)
+    print("[OK] config_validation: valid config")
+
+    # --- 2. 类型错误 ---
+    tmpdir = tempfile.mkdtemp()
+    cfg_path = _Path(tmpdir) / "renpy_translate.json"
+    cfg_path.write_text(json.dumps({"workers": "abc"}), encoding="utf-8")
+    try:
+        cfg = Config(game_dir=_Path(tmpdir), cli_args=None)
+        warns = cfg.validate()
+        assert any("类型错误" in w for w in warns), f"expected type error warning, got {warns}"
+    finally:
+        cfg_path.unlink()
+        os.rmdir(tmpdir)
+    print("[OK] config_validation: type error")
+
+    # --- 3. 范围越界 ---
+    tmpdir = tempfile.mkdtemp()
+    cfg_path = _Path(tmpdir) / "renpy_translate.json"
+    cfg_path.write_text(json.dumps({"workers": 999}), encoding="utf-8")
+    try:
+        cfg = Config(game_dir=_Path(tmpdir), cli_args=None)
+        warns = cfg.validate()
+        assert any("值过大" in w for w in warns), f"expected range warning, got {warns}"
+    finally:
+        cfg_path.unlink()
+        os.rmdir(tmpdir)
+    print("[OK] config_validation: range violation")
+
+    # --- 4. 未知键 ---
+    tmpdir = tempfile.mkdtemp()
+    cfg_path = _Path(tmpdir) / "renpy_translate.json"
+    cfg_path.write_text(json.dumps({"totally_unknown_key": 123}), encoding="utf-8")
+    try:
+        cfg = Config(game_dir=_Path(tmpdir), cli_args=None)
+        warns = cfg.validate()
+        assert any("未知配置项" in w for w in warns), f"expected unknown key warning, got {warns}"
+    finally:
+        cfg_path.unlink()
+        os.rmdir(tmpdir)
+    print("[OK] config_validation: unknown key")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -1195,7 +1256,9 @@ if __name__ == '__main__':
     test_should_retry_normal()
     test_split_chunk_basic()
     test_split_chunk_at_empty_line()
+    # G: 配置 schema 校验
+    test_config_validation()
     print()
     print("=" * 40)
-    print(f"ALL 70 TESTS PASSED")
+    print(f"ALL 71 TESTS PASSED")
     print("=" * 40)
