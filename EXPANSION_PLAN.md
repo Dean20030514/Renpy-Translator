@@ -1,8 +1,8 @@
 # 多引擎翻译工具扩展方案
 
-> 基于「多引擎游戏汉化工具」当前状态（第十四轮全部完成、~12000 行核心代码、71+62+13=146 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
+> 基于「多引擎游戏汉化工具」当前状态（第十六轮全部完成、~12400 行核心代码、87+62+13=162 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
 >
-> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包 + 第十四轮 Ren'Py 专项五阶段优化。后续路线见 §8。
+> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包 + 第十四轮 Ren'Py 专项五阶段优化 + 第十六轮 screen 裸英文翻译（`--tl-screen`）。后续路线见 §8。
 
 ---
 
@@ -96,6 +96,10 @@
 **风险**：零。dry-run 不调用 API，不修改文件。
 
 > **第十四轮补充**：第十四轮在此基础上做了进一步的 Ren'Py 专项五阶段优化：基础重构（pipeline/ 包 + renpy_text_utils.py）→ 代码健壮性（except 收窄 + 配置校验 + GUI 优雅终止）→ 性能优化（TranslationCache + token 估算改进 + 背压机制）→ 翻译质量（E250/W460/W470 新规则 + 术语一致性主动执行）→ 用户体验（GUI 进度条 + 自适应轮询 + 日志裁剪 + SIGTERM 处理）。详见 CHANGELOG.md 第十四轮。
+>
+> **第十五轮补充**：新增 `fix_nvl_translation_ids` / `fix_nvl_ids_directory`，自动修正 Ren'Py 8.6+ 生成的 say-only 翻译块 ID 为 7.x nvl+say 哈希，解决含 `nvl clear` 的翻译静默失败。已集成到 `run_tl_pipeline` 后处理链。测试 71→75。详见 CHANGELOG.md 第十五轮。
+>
+> **第十六轮补充**：新增 `screen_translator.py`（~420 行），翻译 screen 定义中 Ren'Py tl 框架无法提取的裸英文字符串（`text "..."`/`textbutton "..."`/`tt.Action("...")`）。通过 `--tl-screen` 参数启用，可与 `--tl-mode` 联用。同时修复 `_clean_rpyc`/`delete_rpyc_files`/资源复制中 `.rpymc` 缓存清理遗漏。测试 75→86。详见 CHANGELOG.md 第十六轮。
 
 ---
 

@@ -84,7 +84,10 @@ _LANG_BUTTON_SNIPPET = '''
 
 
 def _clean_rpyc(game_dir: Path, modified_files: "set[str] | None" = None) -> None:
-    """Delete .rpyc cache files to force Ren'Py recompilation.
+    """Delete Ren'Py cache files to force recompilation.
+
+    Cleans: .rpyc (compiled scripts), .rpymc (compiled modules),
+    .rpyb (bytecode cache in game/cache/).
 
     Args:
         game_dir: Game root directory.
@@ -94,15 +97,22 @@ def _clean_rpyc(game_dir: Path, modified_files: "set[str] | None" = None) -> Non
     count = 0
     if modified_files:
         for rpy_rel in modified_files:
-            rpyc = game_dir / (rpy_rel + "c")  # .rpy → .rpyc
-            if rpyc.is_file() and rpyc.suffix == ".rpyc":
-                rpyc.unlink()
+            for suffix in (".rpyc", ".rpymc"):
+                cache = game_dir / (rpy_rel + suffix[4:])  # .rpy → .rpyc / .rpymc
+                if cache.is_file():
+                    cache.unlink()
+                    count += 1
+        # .rpyb 位于 game/cache/，无法按文件名精确对应，做全量清理
+        for f in game_dir.rglob("*.rpyb"):
+            if f.is_file():
+                f.unlink()
                 count += 1
     else:
-        for rpyc in game_dir.rglob("*.rpyc"):
-            if rpyc.is_file() and rpyc.suffix == ".rpyc":
-                rpyc.unlink()
-                count += 1
+        for ext in ("*.rpyc", "*.rpymc", "*.rpyb"):
+            for f in game_dir.rglob(ext):
+                if f.is_file():
+                    f.unlink()
+                    count += 1
     if count:
         logger.info(f"[RPYC] 已清理 {count} 个缓存文件")
 
@@ -311,6 +321,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         get_untranslated_entries,
         fill_translation,
         postprocess_tl_directory,
+        fix_nvl_ids_directory,
         print_tl_stats,
         DialogueEntry,
         StringEntry,
@@ -427,6 +438,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     if total_untrans == 0:
         logger.info("\n[TL-MODE] 所有条目已翻译或自动回填，无需 AI 操作")
         postprocess_tl_directory(str(game_dir / "tl"), tl_lang)
+        fix_nvl_ids_directory(str(game_dir / "tl"), tl_lang)
         return
 
     # ── 2. 按文件分组 + 分 chunk ──
@@ -679,10 +691,11 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     # ── 4c. 后处理：修复 nvl clear 兼容性 + 空 translate 块 ──
     tl_dir = str(game_dir / "tl")
     postprocess_tl_directory(tl_dir, tl_lang)
+    fix_nvl_ids_directory(tl_dir, tl_lang)
 
-    # ── 4d. 清理 rpyc 缓存（强制 Ren'Py 重编译） ──
+    # ── 4d. 清理 rpyc 缓存（全量清理，强制 Ren'Py 重编译） ──
     if not getattr(args, "no_clean_rpyc", False):
-        _clean_rpyc(game_dir, modified_rpy_files if modified_rpy_files else None)
+        _clean_rpyc(game_dir, None)
 
     # ── 5. 保存 & 报告 ──
     glossary.save(str(glossary_path))

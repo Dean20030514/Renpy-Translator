@@ -205,6 +205,13 @@ def _run_tl_mode_phase(
     else:
         report["stages"]["tl_mode"] = {"note": "tl_mode_report.json 未生成"}
 
+    # tl-mode 完成后，如果启用了 --tl-screen 则自动补充 screen 翻译
+    if getattr(args, "tl_screen", False):
+        _print("\n=== tl-screen: 翻译 screen 裸英文 ===")
+        from screen_translator import run_screen_translate
+        run_screen_translate(args)
+        report["stages"]["screen_translate"] = {"completed": True}
+
     report["stages"]["retranslate"] = {"skipped": True, "reason": "tl-mode 精度 99.97%，无需补翻"}
     _print("\n=== Stage 2/2: 报告与打包 ===")
 

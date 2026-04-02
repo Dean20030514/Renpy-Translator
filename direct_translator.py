@@ -1087,7 +1087,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         logger.info("\n[复制] 复制非 .rpy 文件...")
         asset_count = 0
         for src in game_dir.rglob('*'):
-            if src.is_file() and src.suffix.lower() not in ('.rpy', '.rpyc', '.rpyb'):
+            if src.is_file() and src.suffix.lower() not in ('.rpy', '.rpyc', '.rpymc', '.rpyb'):
                 rel = src.relative_to(game_dir)
                 dst = output_dir / "game" / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)

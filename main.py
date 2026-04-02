@@ -193,6 +193,8 @@ def main():
                         help="仅输出警告和错误（WARNING 级别）")
     parser.add_argument("--no-clean-rpyc", action="store_true",
                         help="跳过 tl-mode 翻译后的 .rpyc 缓存清理")
+    parser.add_argument("--tl-screen", action="store_true",
+                        help="翻译 screen 中的裸英文字符串（text/textbutton/Tooltip）")
     parser.add_argument("--engine", default="auto",
                         choices=["auto", "renpy", "rpgmaker", "csv", "jsonl"],
                         help="游戏引擎类型 (默认: auto 自动检测)")
@@ -269,6 +271,13 @@ def main():
         # Ren'Py 路径：保持现有行为完全不变
         if tl_mode:
             run_tl_pipeline(args)
+            if getattr(args, "tl_screen", False):
+                from screen_translator import run_screen_translate
+                run_screen_translate(args)
+        elif getattr(args, "tl_screen", False):
+            from screen_translator import run_screen_translate
+            logger.info("[SCREEN] 建议先运行 --tl-mode 完成主体翻译，再用 --tl-screen 补充 screen 文本")
+            run_screen_translate(args)
         elif args.retranslate:
             run_retranslate_pipeline(args)
         else:

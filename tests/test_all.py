@@ -1181,6 +1181,379 @@ def test_config_validation():
     print("[OK] config_validation: unknown key")
 
 
+def test_fix_nvl_ids_basic():
+    """含 nvl clear 的块：say-only ID 应被替换为 nvl+say ID"""
+    import tempfile
+    from tl_parser import fix_nvl_translation_ids, _compute_say_only_hash, _compute_nvl_say_hash
+    say_code = 's "Hello world"'
+    say_hash = _compute_say_only_hash(say_code)
+    nvl_hash = _compute_nvl_say_hash(say_code)
+    assert say_hash != nvl_hash
+
+    tl_content = (
+        f"# game/test.rpy:10\n"
+        f"translate chinese my_label_{say_hash}:\n"
+        f"\n"
+        f"    # nvl clear\n"
+        f"    # {say_code}\n"
+        f'    s "你好世界"\n'
+    )
+    tmpfile = Path(tempfile.mktemp(suffix=".rpy"))
+    tmpfile.write_text(tl_content, encoding="utf-8")
+    try:
+        stats = fix_nvl_translation_ids(str(tmpfile))
+        assert stats["ids_fixed"] == 1, f"expected 1 fix, got {stats}"
+        result = tmpfile.read_text(encoding="utf-8")
+        assert f"my_label_{nvl_hash}" in result
+        assert f"my_label_{say_hash}" not in result
+    finally:
+        tmpfile.unlink()
+    print("[OK] fix_nvl_ids_basic")
+
+
+def test_fix_nvl_ids_no_nvl():
+    """不含 nvl clear 的块不应被修改"""
+    import tempfile
+    from tl_parser import fix_nvl_translation_ids
+    tl_content = (
+        "# game/test.rpy:10\n"
+        "translate chinese my_label_abcd1234:\n"
+        "\n"
+        '    # s "Hello"\n'
+        '    s "你好"\n'
+    )
+    tmpfile = Path(tempfile.mktemp(suffix=".rpy"))
+    tmpfile.write_text(tl_content, encoding="utf-8")
+    try:
+        stats = fix_nvl_translation_ids(str(tmpfile))
+        assert stats["ids_fixed"] == 0
+        assert tmpfile.read_text(encoding="utf-8") == tl_content
+    finally:
+        tmpfile.unlink()
+    print("[OK] fix_nvl_ids_no_nvl")
+
+
+def test_fix_nvl_ids_already_correct():
+    """ID 已经是 nvl+say 哈希时不应重复修改"""
+    import tempfile
+    from tl_parser import fix_nvl_translation_ids, _compute_nvl_say_hash
+    say_code = 's "Already correct"'
+    nvl_hash = _compute_nvl_say_hash(say_code)
+    tl_content = (
+        f"# game/test.rpy:10\n"
+        f"translate chinese label_{nvl_hash}:\n"
+        f"\n"
+        f"    # nvl clear\n"
+        f"    # {say_code}\n"
+        f'    s "已经正确"\n'
+    )
+    tmpfile = Path(tempfile.mktemp(suffix=".rpy"))
+    tmpfile.write_text(tl_content, encoding="utf-8")
+    try:
+        stats = fix_nvl_translation_ids(str(tmpfile))
+        assert stats["ids_fixed"] == 0
+    finally:
+        tmpfile.unlink()
+    print("[OK] fix_nvl_ids_already_correct")
+
+
+def test_fix_nvl_ids_real_hashes():
+    """用 begin.rpy 的真实数据验证 7 个已知 case"""
+    from tl_parser import _compute_say_only_hash, _compute_nvl_say_hash
+    cases = [
+        ('s "The {color=#3cff00}Love{/color} and {color=#ff0000}Corruption{/color}'
+         ' paths have been extended to help make them more robust. There are'
+         ' corruption scenes written for the love path scenes and vice versa.'
+         ' Essentially doubling the amount of love and corruption content."',
+         'bcc2e904', '8c492e19'),
+        ('s "Turn {color=#0000ff}NTR{/color} on? These are the'
+         ' {color=#0000ff}Darker Paths{/color} in the Mod. This will allow'
+         ' access to the {color=#0000ff}Voyeur{/color},'
+         ' {color=#0000ff}NTR{/color}, {color=#0000ff}Sadist{/color},'
+         ' and {color=#0000ff}Revenge{/color} Paths."',
+         '735a34f0', 'df92c7d1'),
+    ]
+    for say_code, expected_say, expected_nvl in cases:
+        assert _compute_say_only_hash(say_code) == expected_say, \
+            f"say-only mismatch for {say_code[:40]}..."
+        assert _compute_nvl_say_hash(say_code) == expected_nvl, \
+            f"nvl+say mismatch for {say_code[:40]}..."
+    print(f"[OK] fix_nvl_ids_real_hashes: {len(cases)} cases verified")
+
+
+# ─────────────────────────────────────────────────────────────────
+# I: screen_translator 测试
+# ─────────────────────────────────────────────────────────────────
+
+def test_screen_should_skip():
+    from screen_translator import _should_skip
+    assert _should_skip("") is True
+    assert _should_skip("[var]") is True
+    assert _should_skip("[mother]") is True
+    assert _should_skip("123") is True
+    assert _should_skip("...") is True
+    assert _should_skip("已保存") is True
+    assert _should_skip("images/bg.png") is True
+    assert _should_skip("a") is True
+    assert _should_skip("Save Game") is False
+    assert _should_skip("NTR: undecided") is False
+    assert _should_skip("{color=#f00}Warning{/color}") is False
+    assert _should_skip("[name] is here") is False
+    # 含 Ren'Py 闭合标签的文本不应被误判为文件路径
+    assert _should_skip("{size=-10}- You can find work at the tanning salon.{/size}") is False
+    assert _should_skip("{size=-10}when you're a gangmember.{/size}") is False
+    assert _should_skip("icons/bg.png") is True  # 真正的文件路径仍跳过
+    print("[OK] test_screen_should_skip")
+
+
+def test_screen_extract_basic():
+    from screen_translator import extract_screen_strings
+    import tempfile, os
+    content = """\
+screen test_screen():
+    vbox:
+        text "Save Game"
+        textbutton "Start" action Start()
+        imagebutton hovered tt.Action("Go closer") focus_mask True
+        text "{color=#f00}Warning{/color}"
+        text "[pure_var]"
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = extract_screen_strings(tmp)
+        originals = [e.original for e in entries]
+        assert "Save Game" in originals
+        assert "Start" in originals
+        assert "Go closer" in originals
+        assert "{color=#f00}Warning{/color}" in originals
+        assert "[pure_var]" not in originals  # 纯变量跳过
+        types = {e.original: e.pattern_type for e in entries}
+        assert types["Save Game"] == "text"
+        assert types["Start"] == "textbutton"
+        assert types["Go closer"] == "tt_action"
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_extract_basic")
+
+
+def test_screen_extract_skips_underscore():
+    from screen_translator import extract_screen_strings
+    import tempfile, os
+    content = """\
+screen menu_screen():
+    textbutton _("Back") action Rollback()
+    textbutton "Visible" action Jump("x")
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = extract_screen_strings(tmp)
+        originals = [e.original for e in entries]
+        assert "Back" not in originals  # _() 包裹应跳过
+        assert "Visible" in originals
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_extract_skips_underscore")
+
+
+def test_screen_extract_skips_outside_screen():
+    from screen_translator import extract_screen_strings
+    import tempfile, os
+    content = """\
+label start:
+    text "Outside screen"
+    "Dialogue line"
+
+screen inner():
+    text "Inside screen"
+
+define x = 1
+    text "After screen"
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = extract_screen_strings(tmp)
+        originals = [e.original for e in entries]
+        assert "Inside screen" in originals
+        assert "Outside screen" not in originals
+        assert "After screen" not in originals
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_extract_skips_outside_screen")
+
+
+def test_screen_dedup():
+    from screen_translator import _deduplicate_entries, ScreenTextEntry
+    entries = [
+        ScreenTextEntry("a.rpy", 1, "text", "Hello"),
+        ScreenTextEntry("b.rpy", 5, "text", "Hello"),
+        ScreenTextEntry("a.rpy", 3, "text", "World"),
+    ]
+    table, by_text = _deduplicate_entries(entries)
+    assert len(table) == 2
+    assert len(by_text["Hello"]) == 2
+    assert len(by_text["World"]) == 1
+    print("[OK] test_screen_dedup")
+
+
+def test_screen_replace_text():
+    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    import tempfile, os
+    content = '    text "Save Game"\n'
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = [ScreenTextEntry(str(tmp), 1, "text", "Save Game")]
+        table = {"Save Game": "保存游戏"}
+        new_content, count = _replace_screen_strings_in_file(tmp, entries, table)
+        assert count == 1
+        assert '"保存游戏"' in new_content
+        assert '    text "保存游戏"' in new_content  # 缩进保留
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_replace_text")
+
+
+def test_screen_replace_textbutton_preserves_action():
+    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    import tempfile, os
+    content = '    textbutton "Start" action Start() style "btn_style"\n'
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = [ScreenTextEntry(str(tmp), 1, "textbutton", "Start")]
+        table = {"Start": "开始"}
+        new_content, count = _replace_screen_strings_in_file(tmp, entries, table)
+        assert count == 1
+        assert '"开始"' in new_content
+        assert 'style "btn_style"' in new_content  # action 参数不动
+        assert 'Start()' in new_content  # action 函数不动
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_replace_textbutton_preserves_action")
+
+
+def test_screen_replace_tt_action():
+    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    import tempfile, os
+    content = '    imagebutton hovered tt.Action("Go closer") focus_mask True\n'
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = [ScreenTextEntry(str(tmp), 1, "tt_action", "Go closer")]
+        table = {"Go closer": "靠近"}
+        new_content, count = _replace_screen_strings_in_file(tmp, entries, table)
+        assert count == 1
+        assert '"靠近"' in new_content
+        assert 'focus_mask True' in new_content
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_replace_tt_action")
+
+
+def test_screen_replace_with_tags_and_vars():
+    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    import tempfile, os
+    content = '    text "Relationship: {color=3cff00}[momrelationship]{/color}"\n'
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = [ScreenTextEntry(str(tmp), 1, "text",
+                                   "Relationship: {color=3cff00}[momrelationship]{/color}")]
+        table = {"Relationship: {color=3cff00}[momrelationship]{/color}":
+                 "关系: {color=3cff00}[momrelationship]{/color}"}
+        new_content, count = _replace_screen_strings_in_file(tmp, entries, table)
+        assert count == 1
+        assert "关系:" in new_content
+        assert "{color=3cff00}[momrelationship]{/color}" in new_content
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_replace_with_tags_and_vars")
+
+
+def test_screen_replace_notify():
+    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    import tempfile, os
+    content = '    imagebutton action Jump("x") hovered Notify("Help needed") focus_mask True\n'
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        tmp = Path(f.name)
+    try:
+        entries = [ScreenTextEntry(str(tmp), 1, "notify", "Help needed")]
+        table = {"Help needed": "需要帮助"}
+        new_content, count = _replace_screen_strings_in_file(tmp, entries, table)
+        assert count == 1
+        assert '"需要帮助"' in new_content
+        assert 'Notify' in new_content
+        assert 'Jump("x")' in new_content  # action 参数不动
+    finally:
+        os.unlink(tmp)
+    print("[OK] test_screen_replace_notify")
+
+
+def test_screen_backup_no_overwrite():
+    from screen_translator import _create_backup
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
+                                     encoding='utf-8') as f:
+        f.write("original content")
+        f.flush()
+        tmp = Path(f.name)
+    bak = tmp.with_suffix(tmp.suffix + ".bak")
+    try:
+        assert not bak.exists()
+        _create_backup(tmp)
+        assert bak.exists()
+        assert bak.read_text(encoding="utf-8") == "original content"
+        # 第二次不覆盖
+        bak.write_text("old backup", encoding="utf-8")
+        _create_backup(tmp)
+        assert bak.read_text(encoding="utf-8") == "old backup"
+    finally:
+        os.unlink(tmp)
+        if bak.exists():
+            os.unlink(bak)
+    print("[OK] test_screen_backup_no_overwrite")
+
+
+def test_screen_chunks():
+    from screen_translator import _build_screen_chunks
+    texts = [f"text_{i}" for i in range(100)]
+    chunks = _build_screen_chunks(texts, max_per_chunk=40)
+    assert len(chunks) == 3
+    assert len(chunks[0]) == 40
+    assert len(chunks[1]) == 40
+    assert len(chunks[2]) == 20
+    # 总数守恒
+    assert sum(len(c) for c in chunks) == 100
+    print("[OK] test_screen_chunks")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -1258,7 +1631,25 @@ if __name__ == '__main__':
     test_split_chunk_at_empty_line()
     # G: 配置 schema 校验
     test_config_validation()
+    # H: nvl clear 翻译 ID 修正
+    test_fix_nvl_ids_basic()
+    test_fix_nvl_ids_no_nvl()
+    test_fix_nvl_ids_already_correct()
+    test_fix_nvl_ids_real_hashes()
+    # I: screen_translator 测试
+    test_screen_should_skip()
+    test_screen_extract_basic()
+    test_screen_extract_skips_underscore()
+    test_screen_extract_skips_outside_screen()
+    test_screen_dedup()
+    test_screen_replace_text()
+    test_screen_replace_textbutton_preserves_action()
+    test_screen_replace_tt_action()
+    test_screen_replace_with_tags_and_vars()
+    test_screen_replace_notify()
+    test_screen_backup_no_overwrite()
+    test_screen_chunks()
     print()
     print("=" * 40)
-    print(f"ALL 71 TESTS PASSED")
+    print(f"ALL 87 TESTS PASSED")
     print("=" * 40)

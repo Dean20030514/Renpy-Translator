@@ -44,6 +44,7 @@ jobs:
           python -m py_compile analyze_writeback_failures.py
           python -m py_compile review_generator.py
           python -m py_compile lang_config.py
+          python -m py_compile screen_translator.py
 
       - name: Run unit tests (test_all.py)
         run: python test_all.py
@@ -53,6 +54,9 @@ jobs:
 
       - name: Run tl_parser self-tests
         run: python -c "import tl_parser; tl_parser._run_self_tests()"
+
+      - name: Run screen_translator self-tests
+        run: python -c "import screen_translator; screen_translator._run_self_tests()"
 
       - name: Verify zero third-party dependencies
         run: |

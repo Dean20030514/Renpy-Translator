@@ -10,13 +10,13 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `tests/test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator / config validation | 71 | 否 |
+| `tests/test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator / config validation / tl_parser nvl ID 修正 / screen_translator | 87 | 否 |
 | `tests/test_engines.py` | 引擎抽象层测试 | EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine / EngineBase / CSVEngine / generic_pipeline / checker 参数化 / prompts addon / RPGMakerMVEngine / glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
 | `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
 
-> **自动化测试总计**：71 + 62 + 13 = **146** 个用例（不含 tl_parser 内建 75 断言）。
+> **自动化测试总计**：87 + 62 + 13 = **162** 个用例（不含 tl_parser 内建 75 断言 + screen_translator 内建 51 断言）。
 
 > **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
@@ -36,7 +36,7 @@
 
 ## 二、已覆盖的测试用例
 
-### test_all.py（71 个单元测试）
+### test_all.py（75 个单元测试）
 
 | # | 函数 | 覆盖模块 | 测试内容 |
 |---|------|----------|----------|
@@ -111,6 +111,22 @@
 | 69 | `test_split_chunk_basic` | direct_translator | chunk 二分后行数守恒 + line_offset 正确 |
 | 70 | `test_split_chunk_at_empty_line` | direct_translator | 优先在空行处拆分验证 |
 | 71 | `test_config_validation` | config.py | Config.validate() 类型检查/范围校验/未知键告警（4 子场景） |
+| 72 | `test_fix_nvl_ids_basic` | tl_parser | 含 nvl clear 的翻译块：say-only ID 被替换为 nvl+say ID |
+| 73 | `test_fix_nvl_ids_no_nvl` | tl_parser | 不含 nvl clear 的块不受影响 |
+| 74 | `test_fix_nvl_ids_already_correct` | tl_parser | 已正确的 nvl+say ID 不会被重复修改（幂等性） |
+| 75 | `test_fix_nvl_ids_real_hashes` | tl_parser | 用 begin.rpy 真实数据验证哈希计算（2 个已知 case） |
+| 76 | `test_screen_should_skip` | screen_translator | 12 种跳过/不跳过场景（空串/纯变量/已中文/文件路径/正常文本） |
+| 77 | `test_screen_extract_basic` | screen_translator | text/textbutton/tt.Action 三种模式提取 + 纯变量跳过 + 类型正确性 |
+| 78 | `test_screen_extract_skips_underscore` | screen_translator | `_()` 包裹行被跳过（已由 tl translate strings 覆盖） |
+| 79 | `test_screen_extract_skips_outside_screen` | screen_translator | screen 定义外的 text 不提取（in_screen 上下文检测） |
+| 80 | `test_screen_dedup` | screen_translator | 相同文本去重 + 保留所有出现位置 |
+| 81 | `test_screen_replace_text` | screen_translator | text 行替换保留缩进 |
+| 82 | `test_screen_replace_textbutton_preserves_action` | screen_translator | textbutton 只替换显示文本，action/style 参数不动 |
+| 83 | `test_screen_replace_tt_action` | screen_translator | tt.Action 替换括号内字符串，focus_mask 等参数不动 |
+| 84 | `test_screen_replace_with_tags_and_vars` | screen_translator | 含 `{color}` 和 `[var]` 的复合文本正确替换 |
+| 85 | `test_screen_backup_no_overwrite` | screen_translator | .bak 仅在不存在时创建，二次调用不覆盖 |
+| 86 | `test_screen_chunks` | screen_translator | 分块行数守恒（100 条/40 per chunk → 3 chunks） |
+| 87 | `test_screen_replace_notify` | screen_translator | Notify("...") 替换正确 + action 参数不动 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -141,6 +157,19 @@
 - `postprocess_tl_file` nvl clear 移除 / 空块补 pass
 - UTF-8 BOM 处理
 - 源注释行（`# game/script.rpy:95`）解析
+
+### screen_translator.py 内建自测（42 个断言）
+
+通过 `python screen_translator.py` 直接运行 `_run_self_tests()`，覆盖：
+- `_should_skip` 12 种场景（空串/纯变量/中文/文件路径/正常文本）
+- `_line_has_underscore_wrap` 3 种场景
+- `extract_screen_strings` 完整提取（text/textbutton/tt.Action + 跳过 `_()` + 跳过 screen 外）
+- `_deduplicate_entries` 去重 + 位置保留
+- `_replace_screen_strings_in_file` 三种模式替换（text/textbutton/tt.Action + action 参数不动 + 多 tt.Action 同行）
+- `_create_backup` 备份逻辑（创建 + 不覆盖已有）
+- `_build_screen_chunks` 分块行数守恒
+- `Notify("...")` 提取 + 替换（第四种文本模式）
+- `_should_skip` 含 Ren'Py 闭合标签的文本不被误判为文件路径
 
 ---
 
@@ -386,7 +415,7 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 1. 单元测试（71 个）
+# 1. 单元测试（75 个）
 python test_all.py
 
 # 2. 冒烟测试（13 个）
@@ -398,7 +427,7 @@ python tl_parser.py
 
 全部通过预期输出：
 ```
-ALL 71 TESTS PASSED          (test_all.py)
+ALL 75 TESTS PASSED          (test_all.py)
 All tests passed              (smoke_test.py)
 All 75 assertions passed.     (tl_parser.py)
 ```

@@ -102,6 +102,8 @@ def parse_args() -> argparse.Namespace:
                         help="使用 tl-mode 替代 direct-mode：跳过试跑/补翻，直接扫描 tl/<lang>/ 空槽位翻译")
     parser.add_argument("--tl-lang", default="chinese", metavar="LANG",
                         help="tl 语言子目录名 (默认: chinese)；仅 --tl-mode 时有效")
+    parser.add_argument("--tl-screen", action="store_true", default=False,
+                        help="翻译 screen 中的裸英文字符串（text/textbutton/Tooltip/Notify）")
     return parser.parse_args()
 
 

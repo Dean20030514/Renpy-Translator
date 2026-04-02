@@ -507,12 +507,12 @@ def apply_fixes(results, do_backup=True):
 
 
 def delete_rpyc_files(game_dir):
-    """Delete all .rpyc compiled files to force recompilation."""
+    """Delete all Ren'Py cache files (.rpyc/.rpymc/.rpyb) to force recompilation."""
     count = 0
     for root, dirs, files in os.walk(game_dir):
         dirs[:] = [d for d in dirs if d not in (".git",)]
         for fname in files:
-            if fname.endswith(".rpyc"):
+            if fname.endswith((".rpyc", ".rpymc", ".rpyb")):
                 os.remove(os.path.join(root, fname))
                 count += 1
     return count

@@ -304,6 +304,10 @@ class App:
         ttk.Checkbutton(tab, text="不清理 .rpyc 缓存（--no-clean-rpyc）", variable=self.var_no_clean_rpyc).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=2)
         row += 1
+        self.var_tl_screen = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tab, text="翻译 screen 裸英文（--tl-screen）", variable=self.var_tl_screen).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=2)
+        row += 1
 
         # verbose / quiet
         ttk.Label(tab, text="日志级别:").grid(row=row, column=0, sticky="e", pady=2)
@@ -464,6 +468,8 @@ class App:
             cmd.append("--patch-font")
         if self.var_no_clean_rpyc.get():
             cmd.append("--no-clean-rpyc")
+        if self.var_tl_screen.get():
+            cmd.append("--tl-screen")
         if self.var_log_level.get() == "verbose":
             cmd.append("--verbose")
         elif self.var_log_level.get() == "quiet":

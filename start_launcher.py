@@ -115,7 +115,10 @@ def main() -> int:
     if mode in ("5", "6"):
         tl_lang = ask("tl 语言目录名（默认 chinese）: ", "chinese")
         workers = ask("并发线程数（默认 5）: ", "5")
+        use_screen = ask("翻译 screen 裸英文？[y/N]（补充 tl 框架无法覆盖的 UI 文本）: ", "n").lower() == "y"
         extra = ["--resume"] if mode == "6" else []
+        if use_screen:
+            extra.append("--tl-screen")
         cmd = [
             py, "-u", "main.py",
             "--game-dir", game_dir,

@@ -35,6 +35,106 @@
 | 第十二轮 GUI | 图形界面 + 打包 | gui.py Tkinter GUI（3 Tab + 内嵌日志 + 命令预览 + 配置加载）+ build.py PyInstaller 打包（32MB 单文件 .exe） |
 | 第十三轮 | 四项功能优化 | pipeline 集成 review.html + font_config.json 可配置 + tl/none 覆盖模板（不修改 gui.rpy）+ CoT 思维链翻译（`--cot`） |
 | 第十四轮 | 全面优化（Ren'Py 专项） | 五阶段升级：基础重构 + 代码健壮性 + 性能优化 + 翻译质量 + 用户体验 |
+| 第十五轮 | nvl clear 翻译 ID 修正 | `fix_nvl_translation_ids` 自动检测 8.6+ say-only 哈希并修正为 7.x nvl+say 哈希 + 管道集成 + 测试 71→75 |
+| 第十六轮 | screen 文本翻译 + 缓存清理修复 | `screen_translator.py` screen 裸英文翻译（`--tl-screen`，含 text/textbutton/tt.Action/Notify 四模式）+ `_should_skip` 标签误杀修复 + 缓存清理 .rpymc 补全 + 流水线/启动器/打包集成 + 测试 75→87 |
+
+---
+
+## 第十六轮：screen 文本翻译 + 缓存清理修复
+
+> **背景**：Ren'Py 的 `Generate Translations` 只提取 Say 对话和 `_()` 包裹的字符串到 tl 框架。screen 定义中的裸 `text "..."`、`textbutton "..."`、`tt.Action("...")` 不会被提取，导致 tl-mode 翻译后仍有 ~5.3% 的 UI 文本（按钮、状态面板、Tooltip 提示等）显示英文。经验证 `translate <lang> screen xxx():` 语法不存在于 Ren'Py（`renpy/parser.py` 只支持 strings/python/style），唯一可行路径是直接修改源文件中的英文字符串。
+
+### 新增功能
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 182 | `screen_translator.py` 新增（~420 行）：`ScreenTextEntry` 数据类 + 三组正则（text/textbutton/tt.Action）+ `in_screen` 上下文检测（只在 `screen xxx():` 缩进范围内提取）+ `_should_skip` 跳过逻辑（纯变量/已中文/文件路径/单字符）+ `_line_has_underscore_wrap` 跳过 `_()` 包裹行 + 去重翻译 + 逐行正则替换 + `.bak` 备份 + 进度文件断点续传 + dry-run 支持 + 42 个内建断言 | `screen_translator.py`（新增） | tl-mode 补充，覆盖 screen 裸英文 |
+| 183 | `--tl-screen` CLI 参数：可与 `--tl-mode` 联用（tl 翻译后自动补充 screen 文本），也可独立运行 | `main.py` | 新增 CLI 参数 |
+| 184 | GUI 新增 `--tl-screen` 勾选框（高级设置 tab） | `gui.py` | GUI 增强 |
+
+### 修复
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 185 | `_clean_rpyc` 的 `modified_files` 分支：增加 `.rpymc` 精确清理 + `.rpyb` 全量清理（此前只清理 `.rpyc`） | `tl_translator.py` | 缓存清理完整性 |
+| 186 | `delete_rpyc_files` 扩展到三种后缀（`.rpyc` + `.rpymc` + `.rpyb`）（此前只清理 `.rpyc`） | `renpy_upgrade_tool.py` | 升级扫描后缓存清理完整性 |
+| 187 | 资源复制排除列表增加 `.rpymc`（此前排除 `.rpy`/`.rpyc`/`.rpyb` 但漏掉 `.rpymc`） | `direct_translator.py` | 防止复制编译模块缓存 |
+
+### 测试
+
+| # | 描述 |
+|---|------|
+| 76 | `test_screen_should_skip`：12 种跳过/不跳过场景 |
+| 77 | `test_screen_extract_basic`：text/textbutton/tt.Action 三种模式提取 + 类型正确性 |
+| 78 | `test_screen_extract_skips_underscore`：`_()` 包裹行被跳过 |
+| 79 | `test_screen_extract_skips_outside_screen`：screen 定义外的 text 不提取 |
+| 80 | `test_screen_dedup`：相同文本去重 + 保留所有出现位置 |
+| 81 | `test_screen_replace_text`：text 行替换保留缩进 |
+| 82 | `test_screen_replace_textbutton_preserves_action`：textbutton 只替换显示文本，action/style 参数不动 |
+| 83 | `test_screen_replace_tt_action`：tt.Action 替换括号内字符串 |
+| 84 | `test_screen_replace_with_tags_and_vars`：含 `{color}` 和 `[var]` 的复合文本正确替换 |
+| 85 | `test_screen_backup_no_overwrite`：.bak 仅在不存在时创建 |
+| 86 | `test_screen_chunks`：分块行数守恒 |
+| 87 | `test_screen_replace_notify`：Notify("...") 替换正确 + action 参数不动 |
+
+### 修复（实战验证后）
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 188 | `_RE_NOTIFY` 正则新增：覆盖 `Notify("...")` 弹出通知模式（SAZMOD 大量使用） | `screen_translator.py` | 新增 735 条 Notify 文本覆盖 |
+| 189 | `_should_skip` 文件路径检测误杀修复：先剥离 Ren'Py 标签再检测 `/` + `.` | `screen_translator.py` | 修复 405 条含标签文本未提取 |
+
+### 流水线集成
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 190 | `_run_tl_mode_phase()` 末尾自动追加 screen 翻译 | `pipeline/stages.py` | 一键流水线 tl-mode 自动补充 |
+| 191 | `parse_args()` 新增 `--tl-screen` 参数 | `one_click_pipeline.py` | 流水线 CLI 支持 |
+| 192 | 模式 5/6 新增"翻译 screen 裸英文？"交互询问 | `start_launcher.py` | 启动器支持 |
+| 193 | `hidden_imports` 新增 `"screen_translator"` | `build.py` | PyInstaller 打包覆盖 |
+
+### 实战验证数据（The Tyrant, ~140 文件）
+
+| 轮次 | 条数 | 种类 | 费用 |
+|------|------|------|------|
+| 第一轮（text/textbutton/tt.Action） | 3,818 | 1,428 | $0.034 |
+| 第二轮（_should_skip 标签修复后） | 405 | 176 | $0.007 |
+| 第三轮（Notify 新增后） | 886 | 433 | $0.011 |
+| **合计** | **5,109** | **2,037** | **$0.052** |
+
+---
+
+## 第十五轮：nvl clear 翻译 ID 修正
+
+> **背景**：Ren'Py 8.6+ 的 `Generate Translations` 默认启用 `config.tlid_only_considers_say = True`，计算翻译块 ID 时只哈希 Say 语句。但 Ren'Py 7.x 没有此配置，始终把 `nvl clear` 等 translatable 语句也纳入哈希。导致含 `nvl clear` 的翻译块 ID 不匹配，翻译静默失败——游戏显示英文原文而非中文。
+
+### 新增功能
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 178 | `fix_nvl_translation_ids(file_path)` 单文件修正：扫描 .tl 文件中含 `# nvl clear` 注释的 translate 块，验证当前 ID 是 say-only 哈希后替换为 nvl+say 哈希；幂等（已修正的不重复处理） | `tl_parser.py` | 修正 Ren'Py 7.x 翻译静默失败 |
+| 179 | `fix_nvl_ids_directory(tl_dir, lang)` 批量目录修正，遍历 `tl/<lang>/**/*.rpy` | `tl_parser.py` | 一次修正全部文件 |
+| 180 | 管道集成：`run_tl_pipeline` 两处 `postprocess_tl_directory` 调用后自动执行 `fix_nvl_ids_directory` | `tl_translator.py` | 翻译流程自动修正 |
+| 181 | `_clean_rpyc` 增强：新增 .rpymc（编译模块）/ .rpyb（字节码缓存）清理；翻译后始终全量清理（不再仅清理已修改文件） | `tl_translator.py` | 避免残留缓存导致翻译不生效 |
+
+### 测试
+
+| # | 描述 |
+|---|------|
+| 72 | `test_fix_nvl_ids_basic`：say-only ID 被替换为 nvl+say ID |
+| 73 | `test_fix_nvl_ids_no_nvl`：不含 nvl clear 的块不受影响 |
+| 74 | `test_fix_nvl_ids_already_correct`：已正确的 ID 不重复修改（幂等性） |
+| 75 | `test_fix_nvl_ids_real_hashes`：begin.rpy 真实数据回归（2 case） |
+
+### 哈希算法
+
+```python
+# Ren'Py 7.x 翻译块 ID = md5(所有 translatable 语句)[:8]
+md5 = hashlib.md5()
+md5.update(b"nvl clear\r\n")          # nvl clear 的 get_code()
+md5.update(say_code.encode("utf-8") + b"\r\n")  # Say 的 get_code()
+digest = md5.hexdigest()[:8]           # → label_XXXXXXXX
+```
 
 ---
 

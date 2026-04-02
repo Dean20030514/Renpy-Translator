@@ -23,6 +23,7 @@
 - **字体配置可定制**：`--font-config font_config.json` 自定义字号/布局参数，tl-mode 使用 `translate None` 覆盖模板（不修改 gui.rpy）
 - **会话级翻译缓存**：相同原文自动命中缓存，减少重复 API 调用，跨文件术语一致性自动保障
 - **GUI 增强**：实时进度条、自适应轮询（50/200ms）、日志自动裁剪（5000→3000 行）、优雅终止（保存进度后退出）
+- **Screen 文本翻译**：`--tl-screen` 翻译 screen 中 tl 框架无法提取的裸英文（`text`/`textbutton`/`tt.Action` Tooltip），作为 tl-mode 补充覆盖剩余 ~5% UI 文本
 
 ---
 
@@ -113,7 +114,26 @@ python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
 - 回填精度远高于 direct-mode（行号定位 vs 文本匹配）
 - 引号剥离保护：AI 有时返回带外层引号的译文，回填前自动剥离，防止 `""text""` 格式错误
 - StringEntry 四层 fallback 匹配（精确 → strip → 去占位符令牌 → 转义规范化）
-- 翻译后自动清理修改过的 `.rpyc` 缓存（强制 Ren'Py 重编译），可用 `--no-clean-rpyc` 禁用
+- 翻译后自动清理修改过的 `.rpyc`/`.rpymc`/`.rpyb` 缓存（强制 Ren'Py 重编译），可用 `--no-clean-rpyc` 禁用
+
+### Screen 文本翻译（`--tl-screen`）
+
+tl 框架只提取 Say 对话和 `_()` 包裹的字符串，screen 定义中的裸 `text "..."`、`textbutton "..."`、`tt.Action("...")` 不会被提取。`--tl-screen` 直接修改源文件中的英文字符串，补充覆盖 tl-mode 遗漏的 UI 文本。
+
+```bash
+# 与 tl-mode 联用（推荐）：先翻译对话，再补充 screen 文本
+python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
+    --tl-mode --tl-lang chinese --workers 5 --tl-screen
+
+# 独立运行（已完成 tl-mode 后补充）
+python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --tl-screen
+```
+
+**注意**：
+- Screen 翻译**直接修改源 .rpy 文件**（自动创建 `.bak` 备份），游戏更新后需重新执行
+- 自动跳过 `_()` 包裹的文本（已由 tl 框架的 `translate strings:` 块覆盖）
+- 支持 `--dry-run` 预览（仅扫描统计，不调用 API）
+- 支持 `--resume` 断点续传
 
 ### Retranslate（补翻模式）
 
@@ -496,6 +516,7 @@ output/projects/<project_name>/
 | `--verbose` | — | 输出 DEBUG 级别详细日志 |
 | `--quiet` | — | 仅输出 WARNING 及以上日志 |
 | `--stage` | `single` | 阶段标记（流水线内部使用） |
+| `--tl-screen` | — | 翻译 screen 中的裸英文字符串（可与 `--tl-mode` 联用） |
 
 ---
 
@@ -600,7 +621,7 @@ MIT License — 详见 [LICENSE](LICENSE)。
 
 ```bash
 # 快速验证（< 5 秒，无需 API）
-python test_all.py           # 71 个单元+集成测试
+python test_all.py           # 75 个单元+集成测试
 python tests/smoke_test.py   # 13 个校验规则冒烟测试
 python tl_parser.py --test   # 75 个解析器断言
 ```
@@ -726,6 +747,12 @@ UnicodeDecodeError: 'utf-8' codec can't decode byte ...
 ## 版本历史
 
 详见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 第十五轮：nvl clear 翻译 ID 修正
+
+- **问题**：Ren'Py 8.6+ 生成 .tl 模板时默认只用 Say 语句算哈希，但 7.x 会把 `nvl clear` 也纳入哈希，导致含 `nvl clear` 的翻译块静默失败
+- **修复**：`fix_nvl_translation_ids` / `fix_nvl_ids_directory` 自动检测并修正 ID，已集成到 tl-mode 后处理链
+- **测试**：71→75
 
 ### 第十四轮：全面优化（Ren'Py 专项）
 

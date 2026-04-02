@@ -33,7 +33,7 @@ def main() -> int:
         "font_patch", "glossary", "lang_config", "main",
         "one_click_pipeline", "prompts", "retranslator", "review_generator",
         "renpy_upgrade_tool", "renpy_text_utils", "start_launcher",
-        "tl_parser", "tl_translator",
+        "screen_translator", "tl_parser", "tl_translator",
         "translation_db", "translation_utils",
         "pipeline", "pipeline.helpers", "pipeline.gate", "pipeline.stages",
         "engines", "engines.engine_base", "engines.engine_detector",
