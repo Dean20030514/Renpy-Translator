@@ -484,9 +484,9 @@ def _create_backup(file_path: Path) -> None:
 
 def run_screen_translate(args: argparse.Namespace) -> None:
     """Screen 文本翻译主入口。"""
-    from api_client import APIClient, APIConfig
-    from glossary import Glossary
-    from config import Config
+    from core.api_client import APIClient, APIConfig
+    from core.glossary import Glossary
+    from core.config import Config
 
     start_time = time.time()
     game_dir = Path(args.game_dir)

@@ -54,8 +54,8 @@ def _run_retranslate_phase(
         find_untranslated_lines as _find_untranslated_lines,
         ProgressTracker as _ProgressTracker,
     )
-    from api_client import APIClient as _APIClient, APIConfig as _APIConfig
-    from glossary import Glossary as _Glossary
+    from core.api_client import APIClient as _APIClient, APIConfig as _APIConfig
+    from core.glossary import Glossary as _Glossary
 
     rt_config = _APIConfig(
         provider=args.provider,
@@ -288,7 +288,7 @@ def _run_pilot_phase(
 
     # 试跑后自动术语表提取
     try:
-        from glossary import Glossary as _Glossary
+        from core.glossary import Glossary as _Glossary
 
         pilot_glossary = _Glossary()
         pilot_glossary_path = pilot_output / "glossary.json"

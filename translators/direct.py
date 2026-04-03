@@ -539,7 +539,7 @@ def _translate_file_targeted(
     - 输出到 output_dir（可能与 game_dir 不同）
     - 返回值与 translate_file 一致的 4-tuple
     """
-    from renpy_text_utils import _is_user_visible_string_line
+    from translators.renpy_text_utils import _is_user_visible_string_line
 
     all_lines = content.splitlines()
 
@@ -895,7 +895,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     # --dry-run: 仅展示待翻译信息，不实际调用 API
     if args.dry_run:
-        from api_client import get_pricing, is_reasoning_model
+        from core.api_client import get_pricing, is_reasoning_model
         logger.info("\n" + "=" * 60)
         logger.info("[DRY-RUN] 以下文件将被翻译:")
         logger.info("=" * 60)
