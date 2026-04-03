@@ -19,7 +19,7 @@
 - AI 自动术语表提取（pilot 后自动生成术语表）
 - Tkinter 图形界面（gui.py）+ PyInstaller 打包为单文件 .exe（build.py）
 
-**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging / csv / tkinter），~12,000 行核心代码。
+**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging / csv / tkinter），~12,000 行核心代码。代码按职责组织为 `core/`（基础设施）、`translators/`（翻译引擎）、`tools/`（辅助工具）、`engines/`（多引擎架构）、`file_processor/`（文件处理）、`pipeline/`（流水线）六个包。
 
 **多引擎架构**（阶段一已完成）：
 - `EngineProfile` 参数化引擎差异 + `TranslatableUnit` 通用文本单元 + `EngineBase` ABC
@@ -49,19 +49,50 @@
 
 ## 3. 文件职责总览
 
-### 3.1 核心模块
+### 3.1 入口与编排
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
 | **main.py** | ~295 | CLI 入口 + argparse + `setup_logging` + 路由（`--engine auto/renpy` 走原路径；其他走 `resolve_engine()`）+ `--tl-mode` / `--retranslate` 互斥检查 + 向后兼容 re-export + CLI 参数校验 + `--no-clean-rpyc` / `--engine` / `--tl-screen` 参数 |
-| **direct_translator.py** | ~960 | direct-mode 翻译引擎。`translate_file`（密度路由 + chunk 翻译）、`_translate_file_targeted`（低密度定向翻译）、`run_pipeline`（全量翻译流水线 + dry-run + 断点续传）、`_should_retry`（截断检测返回 `(should, needs_split)` 元组）、`_split_chunk`（三级优先拆分：label 边界 > 空行 > 二等分）、`_translate_chunk_with_retry`（截断时拆分重试 + 结果合并）、dry-run verbose 增强（`_compute_file_dialogue_stats` / `_print_density_histogram` / `_print_term_scan_preview`） |
-| **retranslator.py** | ~487 | 补翻引擎。`retranslate_file` / `find_untranslated_lines` / `build_retranslate_chunks` / `calculate_dialogue_density` / `run_retranslate_pipeline` |
-| **tl_translator.py** | ~740 | tl-mode 引擎。`run_tl_pipeline` / `build_tl_chunks` / `_apply_tl_game_patches`（生成 `none_overlay.rpy` 覆盖模板，不直接修改 gui.rpy；支持 font_config.json）/ `_inject_language_buttons` / `_clean_rpyc`（全量清理 .rpyc/.rpymc/.rpyb；modified_files 模式精确清理三种后缀 + `--no-clean-rpyc`） |
-| **screen_translator.py** | ~450 | screen 裸英文翻译器。`ScreenTextEntry` 数据类 + 四组正则（text/textbutton/tt.Action/Notify）+ `in_screen` 上下文检测 + `_should_skip` 跳过逻辑（标签剥离后检测文件路径）+ `_line_has_underscore_wrap` 跳过 `_()` + 去重翻译 + 逐行正则替换 + `.bak` 备份 + `screen_translate_progress.json` 断点续传 + dry-run + 51 个内建断言 |
-| **translation_utils.py** | ~310 | 公共辅助。`ChunkResult` / `ProgressTracker`（批量写入+损坏容错）/ `_restore_placeholders_in_translations` / `_strip_char_prefix` / `_filter_checked_translations` / `_deduplicate_translations` / `_build_fallback_dicts` / `_match_string_entry_fallback` / TranslationCache（会话级翻译缓存）/ 常量 |
-| **one_click_pipeline.py** | ~176 | 四阶段编排器（薄 facade）。`StageError` / 常量 / `parse_args()` / `main()` + 从 pipeline/ 和 renpy_text_utils 重导出全部公共 API（保持向后兼容） |
+| **one_click_pipeline.py** | ~176 | 四阶段编排器（薄 facade）。`StageError` / 常量 / `parse_args()` / `main()` + 从 pipeline/ 和 translators/renpy_text_utils 重导出全部公共 API（保持向后兼容） |
+| **pipeline/__init__.py** | ~26 | 一键流水线拆分包 re-export |
+| **pipeline/helpers.py** | ~126 | 流水线辅助函数：`_print` / `resolve_scan_root` / `list_rpy_files` / `score_file` / `pick_pilot_files` / `run_main` / `package_output` |
+| **pipeline/gate.py** | ~520 | 闸门评估：`evaluate_gate` / `attribute_untranslated` / `collect_strings_stats` / `write_report_summary_md` |
+| **pipeline/stages.py** | ~442 | 流水线阶段：`_run_pilot_phase` / `_run_full_translation_phase` / `_run_retranslate_phase` / `_run_tl_mode_phase` / `_run_final_report` |
+
+### 3.2 core/ 基础设施包
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| **core/api_client.py** | ~485 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口（推理模型自动 timeout 提升 300s）、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After + 404/401 立即报错不重试）、精确定价表 |
+| **core/config.py** | ~170 | 配置文件管理：Config 类（三层合并 CLI>配置文件>DEFAULTS）+ resolve_api_key（env/file）+ `validate()` 配置校验（类型/范围/未知键告警） |
+| **core/lang_config.py** | ~130 | 目标语言抽象层：LanguageConfig dataclass + 4 预置语言（zh/ja/ko/zh-tw）+ 文字检测 + 兼容字段读取 |
+| **core/glossary.py** | ~470 | 术语表管理。`Glossary` 类：`scan_game_directory` Ren'Py 角色提取、`scan_rpgmaker_database` RPG Maker 角色名+系统术语提取（Actors.json + System.json terms）、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆（`_memory_count` 信心度追踪，count>=2 才输出 prompt）、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取、`get_consistent_translation`（术语一致性查询）/ `_evict_low_frequency`（内存上限淘汰）/ `MAX_MEMORY_ENTRIES=10000` |
+| **core/prompts.py** | ~529 | Prompt 模板工厂。direct/retranslate/tl-mode 三套模板；`_ENGINE_PROMPT_ADDONS`（rpgmaker/generic）；`_COT_ADDON_ZH` / `_COT_ADDON_EN` CoT 思维链 addon；`build_system_prompt(engine_profile=, cot=)` + `build_tl_system_prompt(cot=)` 参数化 |
+| **core/translation_db.py** | ~124 | `TranslationDB` 类。逐行翻译元数据存储（file/line/original/translation/status/error_codes/warning_codes/provider/model/run_id）、upsert 去重、`has_entry()` 公共查询、按 status/file/stage 筛选 |
+| **core/translation_utils.py** | ~310 | 公共辅助。`ChunkResult` / `ProgressTracker`（批量写入+损坏容错）/ `_restore_placeholders_in_translations` / `_strip_char_prefix` / `_filter_checked_translations` / `_deduplicate_translations` / `_build_fallback_dicts` / `_match_string_entry_fallback` / TranslationCache（会话级翻译缓存）/ 常量 |
+
+### 3.3 translators/ 翻译引擎包
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| **translators/direct.py** | ~960 | direct-mode 翻译引擎。`translate_file`（密度路由 + chunk 翻译）、`_translate_file_targeted`（低密度定向翻译）、`run_pipeline`（全量翻译流水线 + dry-run + 断点续传）、`_should_retry`（截断检测返回 `(should, needs_split)` 元组）、`_split_chunk`（三级优先拆分：label 边界 > 空行 > 二等分）、`_translate_chunk_with_retry`（截断时拆分重试 + 结果合并）、dry-run verbose 增强（`_compute_file_dialogue_stats` / `_print_density_histogram` / `_print_term_scan_preview`）。注：原 direct_translator_dryrun.py 已合并至此模块 |
+| **translators/retranslator.py** | ~487 | 补翻引擎。`retranslate_file` / `find_untranslated_lines` / `build_retranslate_chunks` / `calculate_dialogue_density` / `run_retranslate_pipeline` |
+| **translators/tl_mode.py** | ~740 | tl-mode 引擎。`run_tl_pipeline` / `build_tl_chunks` / `_apply_tl_game_patches`（生成 `none_overlay.rpy` 覆盖模板，不直接修改 gui.rpy；支持 font_config.json）/ `_inject_language_buttons` / `_clean_rpyc`（全量清理 .rpyc/.rpymc/.rpyb；modified_files 模式精确清理三种后缀 + `--no-clean-rpyc`） |
+| **translators/screen.py** | ~450 | screen 裸英文翻译器。`ScreenTextEntry` 数据类 + 四组正则（text/textbutton/tt.Action/Notify）+ `in_screen` 上下文检测 + `_should_skip` 跳过逻辑（标签剥离后检测文件路径）+ `_line_has_underscore_wrap` 跳过 `_()` + 去重翻译 + 逐行正则替换 + `.bak` 备份 + `screen_translate_progress.json` 断点续传 + dry-run + 51 个内建断言 |
+| **translators/tl_parser.py** | ~1,090 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、`fix_nvl_translation_ids` / `fix_nvl_ids_directory` nvl clear 翻译块 ID 修正（Ren'Py 8.6+ say-only → 7.x nvl+say 哈希）、75 个内建测试 |
+| **translators/renpy_text_utils.py** | ~83 | Ren'Py 文本分析公共函数。从 one_click_pipeline.py 提取：`_is_user_visible_string_line` / `_is_untranslated_dialogue` / `_extract_dialogue_text` / `count_untranslated_dialogues_in_file` / `collect_untranslated_details` |
+
+### 3.4 file_processor/ 文件处理包
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
 | **file_processor/** | ~1,350 (4 sub-modules) | .rpy 文件处理核心 **包**。`splitter.py`（`split_file` 按块拆分）、`patcher.py`（`apply_translations` 行级回写）、`checker.py`（`protect_placeholders(patterns=)` 引擎参数化占位符保护 + `restore_placeholders` + `check_response_item(placeholder_re=)` 参数化校验 + `check_response_chunk` + `_extract_placeholder_sequence(regex=)` 参数化提取）、`validator.py`（`validate_translation` 主入口调度 4 个子检查函数）、`__init__.py` re-exports 全部公共 API、`SKIP_FILES_FOR_TRANSLATION` 跳过名单 |
-| **tl_parser.py** | ~1,090 | Ren'Py tl/ 框架独立解析器。状态机解析（IDLE/DIALOGUE/STRINGS/SKIP）、`DialogueEntry` / `StringEntry` / `TlParseResult` 数据类、`fill_translation` 行级精确回填（含引号剥离保护）、`postprocess_tl_file` / `postprocess_tl_directory` 后处理、`fix_nvl_translation_ids` / `fix_nvl_ids_directory` nvl clear 翻译块 ID 修正（Ren'Py 8.6+ say-only → 7.x nvl+say 哈希）、75 个内建测试 |
+
+### 3.5 engines/ 多引擎架构包
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
 | **engines/__init__.py** | ~39 | 引擎包公共 API re-export（EngineProfile / TranslatableUnit / EngineBase / EngineType / resolve_engine 等） |
 | **engines/engine_base.py** | ~202 | `EngineProfile`（9 字段）+ `TranslatableUnit`（8 字段）+ `EngineBase` ABC + 内置 Profile 常量 + `ENGINE_PROFILES` 注册表 |
 | **engines/engine_detector.py** | ~160 | `EngineType` 枚举（6 值）+ `detect_engine_type`（5 级优先）+ `create_engine` 延迟导入 + `resolve_engine` CLI 路由 |
@@ -69,52 +100,40 @@
 | **engines/renpy_engine.py** | ~74 | Ren'Py 薄包装。`run` 路由到三条管线（延迟导入） |
 | **engines/rpgmaker_engine.py** | ~636 | RPG Maker MV/MZ。事件指令(401/405 合并+102 选项+320 改名) + 8 种数据库 + System.json + JSON path 回写 |
 | **engines/csv_engine.py** | ~317 | CSV/JSONL 通用格式。列名别名(6 组) + UTF-8 BOM + 多行 CSV + 按源格式分流回写 |
-| **api_client.py** | ~485 | 多提供商 API 抽象层。`APIClient` / `APIConfig` 统一接口（推理模型自动 timeout 提升 300s）、`RateLimiter`（RPM/RPS 线程安全）、`UsageStats` token+成本追踪、6 级 JSON 解析容错、指数退避重试（jitter + Retry-After + 404/401 立即报错不重试）、精确定价表 |
-| **prompts.py** | ~529 | Prompt 模板工厂。direct/retranslate/tl-mode 三套模板；`_ENGINE_PROMPT_ADDONS`（rpgmaker/generic）；`_COT_ADDON_ZH` / `_COT_ADDON_EN` CoT 思维链 addon；`build_system_prompt(engine_profile=, cot=)` + `build_tl_system_prompt(cot=)` 参数化 |
-| **glossary.py** | ~470 | 术语表管理。`Glossary` 类：`scan_game_directory` Ren'Py 角色提取、`scan_rpgmaker_database` RPG Maker 角色名+系统术语提取（Actors.json + System.json terms）、`load_dict` CSV/JSONL 词典、`locked_terms` / `no_translate` 术语控制、`update_from_translations` 翻译记忆（`_memory_count` 信心度追踪，count>=2 才输出 prompt）、`to_prompt_text` 格式化输出、`extract_terms_from_translations` AI 自动术语表提取、`get_consistent_translation`（术语一致性查询）/ `_evict_low_frequency`（内存上限淘汰）/ `MAX_MEMORY_ENTRIES=10000` |
-| **renpy_text_utils.py** | ~83 | Ren'Py 文本分析公共函数。从 one_click_pipeline.py 提取：`_is_user_visible_string_line` / `_is_untranslated_dialogue` / `_extract_dialogue_text` / `count_untranslated_dialogues_in_file` / `collect_untranslated_details` |
-| **direct_translator_dryrun.py** | ~44 | dry-run 分析辅助。`_compute_file_dialogue_stats` / `_print_density_histogram` / `_print_term_scan_preview` |
-| **pipeline/__init__.py** | ~26 | 一键流水线拆分包 re-export |
-| **pipeline/helpers.py** | ~126 | 流水线辅助函数：`_print` / `resolve_scan_root` / `list_rpy_files` / `score_file` / `pick_pilot_files` / `run_main` / `package_output` |
-| **pipeline/gate.py** | ~520 | 闸门评估：`evaluate_gate` / `attribute_untranslated` / `collect_strings_stats` / `write_report_summary_md` |
-| **pipeline/stages.py** | ~442 | 流水线阶段：`_run_pilot_phase` / `_run_full_translation_phase` / `_run_retranslate_phase` / `_run_tl_mode_phase` / `_run_final_report` |
-| **translation_db.py** | ~124 | `TranslationDB` 类。逐行翻译元数据存储（file/line/original/translation/status/error_codes/warning_codes/provider/model/run_id）、upsert 去重、`has_entry()` 公共查询、按 status/file/stage 筛选 |
 
-### 3.2 辅助工具
+### 3.6 tools/ 辅助工具包 & 界面
 
 | 文件 | 职责 |
 |------|------|
-| **font_patch.py** (~147行) | `resolve_font` 字体查找 + `load_font_config` 加载 font_config.json + `apply_font_patch(font_config_path=)` 字体+字号/布局参数补丁 |
-| **renpy_upgrade_tool.py** (~17K) | Ren'Py 7→8 升级扫描器。19 条规则（Python 2→3 + 废弃 API）、`--fix` 自动修复、`--backup` 备份、rpyc 清理、RENPY-020 show 空 ATL 块修复（多行感知） |
-| **gui.py** (~730行) | Tkinter 图形界面启动器。3 Tab（基本设置 + 翻译设置动态引擎面板 + 高级设置）、引擎选择联动面板切换、API key 隐藏、命令预览（实时+****遮蔽）、内嵌日志（ScrolledText + queue 线程安全）、subprocess 执行/停止、配置 JSON 加载/保存、工具菜单（Dry-run 摘要弹窗 + 升级扫描）、DPI 适配 + 进度条（ttk.Progressbar + 百分比标签）+ 自适应轮询（50/200ms）+ 日志裁剪（5000→3000 行）+ 优雅终止（CTRL_C_EVENT + wait） |
-| **build.py** (~100行) | PyInstaller 打包脚本。35 个 hidden-import + 资源文件 → `dist/多引擎游戏汉化工具.exe`（~32MB 单文件） |
-| **start_launcher.py** (~218行) | CLI 中文交互启动器（9 种模式菜单），`START.bat` 调用，`getpass` 隐藏 API Key 输入 |
+| **tools/font_patch.py** (~147行) | `resolve_font` 字体查找 + `load_font_config` 加载 font_config.json + `apply_font_patch(font_config_path=)` 字体+字号/布局参数补丁 |
+| **tools/renpy_upgrade_tool.py** (~17K) | Ren'Py 7→8 升级扫描器。19 条规则（Python 2→3 + 废弃 API）、`--fix` 自动修复、`--backup` 备份、rpyc 清理、RENPY-020 show 空 ATL 块修复（多行感知） |
+| **tools/review_generator.py** (~150行) | HTML 翻译校对报告（side-by-side 原文/译文，error/warning 高亮，按文件折叠） |
 | **tools/verify_alignment.py** (~171行) | 零 API 验证工具，测试新校验策略 |
 | **tools/revalidate.py** (~54行) | 对已翻译输出重跑闸门检查（不调 API） |
 | **tools/patch_font_now.py** (~40行) | 翻译完成后独立运行字体补丁 |
 | **tools/analyze_writeback_failures.py** (~120行) | 回写失败根因分析工具（WF-01~08 分类统计） |
-| **review_generator.py** (~150行) | HTML 翻译校对报告（side-by-side 原文/译文，error/warning 高亮，按文件折叠） |
+| **gui.py** (~730行) | Tkinter 图形界面启动器。3 Tab（基本设置 + 翻译设置动态引擎面板 + 高级设置）、引擎选择联动面板切换、API key 隐藏、命令预览（实时+****遮蔽）、内嵌日志（ScrolledText + queue 线程安全）、subprocess 执行/停止、配置 JSON 加载/保存、工具菜单（Dry-run 摘要弹窗 + 升级扫描）、DPI 适配 + 进度条（ttk.Progressbar + 百分比标签）+ 自适应轮询（50/200ms）+ 日志裁剪（5000→3000 行）+ 优雅终止（CTRL_C_EVENT + wait） |
+| **build.py** (~100行) | PyInstaller 打包脚本。35 个 hidden-import + 资源文件 → `dist/多引擎游戏汉化工具.exe`（~32MB 单文件） |
+| **start_launcher.py** (~218行) | CLI 中文交互启动器（9 种模式菜单），`START.bat` 调用，`getpass` 隐藏 API Key 输入 |
 
-### 3.3 测试
+### 3.7 测试
 
 | 文件 | 职责 |
 |------|------|
-| **tests/test_all.py** (~1580行) | 综合模块测试（87 个用例：单元 + 集成 + screen_translator） |
+| **tests/test_all.py** (~1580行) | 综合模块测试（87 个用例：单元 + 集成 + screen translator） |
 | **tests/test_engines.py** (~962行) | 引擎抽象层测试（62 个用例：EngineProfile 6 + TranslatableUnit 3 + Detector 10 + RenPyEngine 5 + EngineBase 1 + CSV 10 + generic_pipeline 5 + patcher/checker 4 + prompts 2 + write_back 1 + RPG Maker 15） |
 | **tests/test_single.py** | 单文件端到端测试（需 API key） |
 | **tests/smoke_test.py** | 校验逻辑冒烟测试（13 个用例） |
 | **tests/fixtures/** | 测试用的 .rpy 样本文件 |
 
-### 3.4 配置与输出
+### 3.8 配置与输出
 
 | 文件/目录 | 说明 |
 |-----------|------|
 | **requirements.txt** | 空（纯标准库，无依赖） |
 | **pyproject.toml** | 项目元数据（name/version/requires-python） |
 | **LICENSE** | MIT 许可证 |
-| **config.py** (~170行) | 配置文件管理：Config 类（三层合并 CLI>配置文件>DEFAULTS）+ resolve_api_key（env/file）+ `validate()` 配置校验（类型/范围/未知键告警） |
 | **renpy_translate.example.json** | 示例配置文件模板 |
-| **lang_config.py** (~130行) | 目标语言抽象层：LanguageConfig dataclass + 4 预置语言（zh/ja/ko/zh-tw）+ 文字检测 + 兼容字段读取 |
 | **START.bat** | Windows 入口脚本 |
 | **output/** | 翻译结果、glossary.json、translation_db.json、tl_progress.json、tl_mode_report.json |
 | **resources/fonts/** | 内置中文字体（NotoSansSC / SourceHanSansSC） |
@@ -131,21 +150,21 @@ run_pipeline(args) 入口
   ├─ 扫描 .rpy → 排除引擎(renpy/lib/) → 排除 --exclude → tl-priority 过滤
   ├─ 按文件大小升序排列（小文件优先积累翻译记忆）
   └─ 逐文件翻译：
-      translate_file() 入口（direct_translator.py）
+      translate_file() 入口（translators/direct.py）
         ├─ 文件名 ∈ SKIP_FILES_FOR_TRANSLATION → [SKIP-CFG] 直接复制
         ├─ calculate_dialogue_density() < 阈值 → _translate_file_targeted()（定向翻译）
         └─ 密度 ≥ 阈值 → split_file() → 逐 chunk 翻译：
             _translate_chunk_with_retry()（自动重试；截断时自动拆分重试）
               ├─ _should_retry() → (should, needs_split) 元组
               ├─ needs_split=True → _split_chunk()（label 边界 > 空行 > 二等分）→ 分别翻译 → 合并
-              └─ _translate_chunk()（direct_translator.py 模块级函数）
+              └─ _translate_chunk()（translators/direct.py 模块级函数）
                     ├─ prev_context: 前一 chunk 末尾 5 行（提供上下文连贯性）
                     ├─ protect_placeholders() → __RENPY_PH_N__ 令牌
                     ├─ client.translate()（API 调用）
                     ├─ restore_placeholders()
                     ├─ check_response_item() + check_response_chunk()（ResponseChecker）
                     └─ 不通过 → 丢弃保留原文，status="checker_dropped"
-                    → ChunkResult dataclass 封装返回值
+                    → ChunkResult dataclass 封装返回值（core/translation_utils.py）
       apply_translations()（行级回写，四遍匹配策略；第四遍全文扫描时跳过已被前面 pass 修改的行（`modified_lines` + `full_scan` 参数），防止同一原文多次出现时误替换）
       validate_translation()（50+ 项校验）
       glossary.update_from_translations()（翻译记忆学习）
@@ -159,7 +178,7 @@ run_pipeline(args) 入口
 ### 4.2 tl-mode（`--tl-mode --tl-lang chinese`）
 
 ```
-run_tl_pipeline(args) 入口（tl_translator.py）
+run_tl_pipeline(args) 入口（translators/tl_mode.py）
   ├─ scan_tl_directory() 扫描 tl/<lang>/*.rpy（排除 common.rpy）
   ├─ get_untranslated_entries() 筛选空槽位
   │   ├─ DialogueEntry: translation == ""
@@ -179,7 +198,7 @@ run_tl_pipeline(args) 入口（tl_translator.py）
 ```
 
 **关键设计**：
-- tl_parser.py 独立模块，状态机解析（IDLE/DIALOGUE/STRINGS/SKIP），UTF-8 BOM 处理
+- translators/tl_parser.py 独立模块，状态机解析（IDLE/DIALOGUE/STRINGS/SKIP），UTF-8 BOM 处理
 - 回填精度远高于 direct-mode（行号精确定位 vs 文本匹配回写），可消除"回写失败"类漏翻
 - .bak 备份（首次回填前创建，不覆盖已有备份）
 - 独立进度文件 tl_progress.json，chunk 级断点续传
@@ -189,7 +208,7 @@ run_tl_pipeline(args) 入口（tl_translator.py）
 ### 4.3 Retranslate 补翻模式（`--retranslate`）
 
 ```
-retranslate_file()（retranslator.py）
+retranslate_file()（translators/retranslator.py）
   ├─ find_untranslated_lines()：检测残留英文行
   │   └─ 排除 auto/hover/idle 定义行、image 路径行、screen 布局属性行
   ├─ build_retranslate_chunks()：每 chunk ≤ 20 行漏翻行 + ±3 行上下文，合并重叠区间
@@ -398,7 +417,7 @@ check_response_chunk():
 | 4 | Ren'Py 一键流水线 | `one_click_pipeline.py` |
 | 5 | Ren'Py tl-mode 翻译（从头） | `main.py --tl-mode` |
 | 6 | Ren'Py tl-mode 翻译（断点续跑） | `main.py --tl-mode --resume` |
-| 7 | Ren'Py 7→8 升级扫描 | `renpy_upgrade_tool.py` |
+| 7 | Ren'Py 7→8 升级扫描 | `tools/renpy_upgrade_tool.py` |
 | 8 | RPG Maker MV/MZ 翻译 | `main.py --engine rpgmaker` |
 | 9 | CSV/JSONL 通用格式翻译 | `main.py --engine csv/jsonl` |
 
@@ -412,21 +431,21 @@ check_response_chunk():
 | `MODEL_SPEAKING_PATTERNS` | file_processor/checker.py | 7 条模式 | W440 模型自述检测关键词 |
 | `PLACEHOLDER_ORDER_PATTERNS` | file_processor/checker.py | 4 组 (regex, name) | W251 占位符顺序提取 |
 | `MIN_CHINESE_RATIO` | file_processor/validator.py | 0.05 | W442 中文占比阈值 |
-| `CHECKER_DROP_RATIO_THRESHOLD` | translation_utils.py | 0.3 | chunk 丢弃率重试阈值 |
-| `MIN_DROPPED_FOR_WARNING` | translation_utils.py | 3 | 最小丢弃数触发警告 |
-| `MIN_DIALOGUE_LENGTH` | translation_utils.py | 4 | 定向翻译最小对话长度 |
+| `CHECKER_DROP_RATIO_THRESHOLD` | core/translation_utils.py | 0.3 | chunk 丢弃率重试阈值 |
+| `MIN_DROPPED_FOR_WARNING` | core/translation_utils.py | 3 | 最小丢弃数触发警告 |
+| `MIN_DIALOGUE_LENGTH` | core/translation_utils.py | 4 | 定向翻译最小对话长度 |
 | `LEN_RATIO_LOWER / UPPER` | one_click_pipeline.py | 0.15 / 2.5 | W430 长度异常阈值 |
 | `RISK_KEYWORDS` | one_click_pipeline.py | 14 个关键词 | 试跑文件风险评分 |
 | `MAX_FILE_RANK_SCORE` | one_click_pipeline.py | 200 | 文件大小评分上限 |
 | `RISK_KEYWORD_SCORE` | one_click_pipeline.py | 80 | 风险关键词加分 |
 | `SAZMOD_BONUS_SCORE` | one_click_pipeline.py | 30 | SAZMOD 模组额外加分 |
-| `MIN_UNTRANSLATED_TEXT_LENGTH` | renpy_text_utils.py | 20 | 漏翻检测最小文本长度 |
-| `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED` | renpy_text_utils.py | 12 | 漏翻检测最小英文字符数 |
-| `MAX_MEMORY_ENTRIES` | glossary.py | 10000 | 翻译记忆最大条目数 |
-| `SAVE_INTERVAL` | main.py ProgressTracker | 10 | 批量写入间隔（每 N 次 mark 写磁盘） |
-| `_PH_TOKEN_RE` | main.py | `__RENPY_PH_\d+__` | 占位符令牌正则（fallback 匹配用） |
-| `_QUOTE_STRIP_PAIRS` | tl_parser.py | ASCII "" / 弯引号 "" / 全角 ＂＂ | fill_translation 引号剥离对 |
-| `_MODEL_PRICING` | api_client.py | ~20 个模型 | 精确定价表 |
+| `MIN_UNTRANSLATED_TEXT_LENGTH` | translators/renpy_text_utils.py | 20 | 漏翻检测最小文本长度 |
+| `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED` | translators/renpy_text_utils.py | 12 | 漏翻检测最小英文字符数 |
+| `MAX_MEMORY_ENTRIES` | core/glossary.py | 10000 | 翻译记忆最大条目数 |
+| `SAVE_INTERVAL` | core/translation_utils.py ProgressTracker | 10 | 批量写入间隔（每 N 次 mark 写磁盘） |
+| `_PH_TOKEN_RE` | core/translation_utils.py | `__RENPY_PH_\d+__` | 占位符令牌正则（fallback 匹配用） |
+| `_QUOTE_STRIP_PAIRS` | translators/tl_parser.py | ASCII "" / 弯引号 "" / 全角 ＂＂ | fill_translation 引号剥离对 |
+| `_MODEL_PRICING` | core/api_client.py | ~20 个模型 | 精确定价表 |
 | 截断匹配阈值 | file_processor/patcher.py line 414 | 0.7 | AI 截断文本匹配阈值（阶段 3e），低于此值不替换 |
 
 ---
@@ -543,7 +562,7 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 5. tl 优先模式（`--tl-priority`）
 6. strings 统计视图（`collect_strings_stats`）
 7. 闸门统计完整性补丁
-8. prompts.py 花括号转义修复
+8. core/prompts.py 花括号转义修复
 
 ### 第二轮：功能增强
 9. README 组合式工作流推荐
@@ -565,7 +584,7 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 23. 原地补翻 .bak 备份
 
 ### 第四轮：tl-mode 翻译模式
-24. tl_parser.py 独立解析模块
+24. translators/tl_parser.py 独立解析模块
 25. `--tl-mode` + `--tl-lang` CLI 参数
 26. tl-mode 专用 Prompt 模板
 27. `build_tl_chunks` + `run_tl_pipeline`（含占位符保护/还原/checker 复用）
@@ -619,10 +638,10 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 63. subprocess 调用 main.py 改绝对路径（跨平台兼容）（阶段六）
 
 ### 第十一轮阶段一：main.py 拆分 + 闭包重构
-64. main.py 从 ~2400 行拆分为 5 个模块：main.py(234) / direct_translator.py / retranslator.py / tl_translator.py / translation_utils.py
-65. main.py 保留 re-export 确保 `from main import ...` 向后兼容
+64. main.py 从 ~2400 行拆分为 5 个模块：main.py(234) / translators/direct.py / translators/retranslator.py / translators/tl_mode.py / core/translation_utils.py（原名 direct_translator.py / retranslator.py / tl_translator.py / translation_utils.py，后续重构迁入包）
+65. main.py 保留 re-export 确保向后兼容
 66. CI 增加 4 个新模块的 py_compile 检查
-67. TranslationContext dataclass 替代闭包：`_translate_chunk` / `_translate_chunk_with_retry` / `_should_retry` / `_translate_one_tl_chunk` 从嵌套函数提升为模块级函数
+67. TranslationContext dataclass 替代闭包：`_translate_chunk` / `_translate_chunk_with_retry` / `_should_retry` / `_translate_one_tl_chunk` 从嵌套函数提升为模块级函数（现分别位于 translators/direct.py 和 translators/tl_mode.py）
 
 ### 第十一轮阶段二+三：回写失败分析与修复
 68. `_diagnose_writeback_failure()` 诊断函数 + `apply_translations` 失败路径记录 `status="writeback_failed"` 到 DB
@@ -633,16 +652,16 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 73. 回写失败从 609 → 28 条（降 95%），进一步修复后预期接近 0
 
 ### 第十一轮阶段四：config.json 配置文件
-74. `config.py`（~140行）：Config 类 + DEFAULTS 字典 + 三层合并 + resolve_api_key（env/file）
+74. `core/config.py`（~140行）：Config 类 + DEFAULTS 字典 + 三层合并 + resolve_api_key（env/file）
 75. `renpy_translate.example.json` 示例配置 + `.gitignore` 排除 `renpy_translate.json`
 76. main.py argparse 18 个参数改 `default=None` + `--config` 参数 + Config 集成填充
 77. 新增 3 个测试（55→58）：config 默认值 / CLI 覆盖 / 配置文件加载
 78. README 新增配置文件使用说明章节
 
 ### 第十一轮阶段五：Review HTML + 进度增强
-79. `ProgressBar` 类加入 `translation_utils.py`（~60行）：Unicode/ASCII 自适应 + GBK 安全 + `update()`/`finish()` 接口
-80. `review_generator.py` 新增（~150行）：HTML 校对报告（side-by-side + 深色主题 + 按文件折叠 + error/warning/fail 颜色高亮）
-81. `direct_translator.py` `run_pipeline` 集成 ProgressBar（非 quiet/dry-run 模式显示）
+79. `ProgressBar` 类加入 `core/translation_utils.py`（~60行）：Unicode/ASCII 自适应 + GBK 安全 + `update()`/`finish()` 接口
+80. `tools/review_generator.py` 新增（~150行）：HTML 校对报告（side-by-side + 深色主题 + 按文件折叠 + error/warning/fail 颜色高亮）
+81. `translators/direct.py` `run_pipeline` 集成 ProgressBar（非 quiet/dry-run 模式显示）
 82. 新增 2 个测试（58→60）：ProgressBar 渲染 + review HTML 生成
 
 ### 第十一轮阶段六：类型注解
@@ -651,7 +670,7 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 85. CI 新增 mypy 步骤（`continue-on-error: true`，informational）
 
 ### 第十一轮阶段七：目标语言参数化
-86. `lang_config.py` 新增（~130行）：LanguageConfig dataclass + detect_chinese/japanese/korean_ratio + LANGUAGE_CONFIGS（zh/ja/ko/zh-tw）
+86. `core/lang_config.py` 新增（~130行）：LanguageConfig dataclass + detect_chinese/japanese/korean_ratio + LANGUAGE_CONFIGS（zh/ja/ko/zh-tw）
 87. `get_language_config()` 回退到 zh + `resolve_translation_field()` 兼容别名读取
 88. main.py 集成：`args.lang_config = get_language_config(args.target_lang)`
 89. 新增 3 个测试（60→63）：语言检测 / 配置查找与回退 / 兼容字段读取
@@ -670,14 +689,14 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 181. `_clean_rpyc` 增强：新增 .rpymc（编译模块）/ .rpyb（字节码缓存）清理 + 翻译后始终全量清理（不再仅清理已修改文件）
 
 ### 第十六轮：screen 文本翻译 + 缓存清理修复
-182. `screen_translator.py` 新增（~420 行）：screen 裸英文翻译（text/textbutton/tt.Action），三组正则 + in_screen 上下文检测 + _should_skip 跳过逻辑 + 去重翻译 + 逐行替换 + .bak 备份 + 断点续传 + dry-run + 42 个内建断言
+182. `translators/screen.py`（原 screen_translator.py）新增（~420 行）：screen 裸英文翻译（text/textbutton/tt.Action），三组正则 + in_screen 上下文检测 + _should_skip 跳过逻辑 + 去重翻译 + 逐行替换 + .bak 备份 + 断点续传 + dry-run + 42 个内建断言
 183. `--tl-screen` CLI 参数 + GUI 勾选框 + 流水线/启动器/打包集成
 184. `_clean_rpyc` modified_files 分支修复：增加 .rpymc 精确清理 + .rpyb 全量清理
 185. `delete_rpyc_files` 扩展到三种后缀（.rpyc + .rpymc + .rpyb）
 186. 资源复制排除列表增加 .rpymc
 187. `_RE_NOTIFY` 正则新增：覆盖 `Notify("...")` 弹出通知模式
 188. `_should_skip` 修复：先剥离 Ren'Py 标签再检测文件路径（避免 `{/size}` 误杀）
-189. 测试 75→87（12 个 screen_translator 测试）
+189. 测试 75→87（12 个 screen translator 测试）
 
 ### 已回滚
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
@@ -700,9 +719,9 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 - ~~chunk 失败自动拆分重试~~ — 第十二轮阶段零
 - ~~多引擎架构~~ — 第十二轮阶段一~三
 - ~~Tkinter GUI~~ — gui.py + build.py PyInstaller 打包
-- ~~项目结构整理~~ — 根目录 27→17 .py
+- ~~项目结构整理~~ — 根目录模块迁入 core/ / translators/ / tools/ 三个包
 - ~~nvl clear 翻译 ID 修正~~ — 第十五轮（fix_nvl_translation_ids + 管道集成 + 测试 71→75）
-- ~~screen 裸英文翻译~~ — 第十六轮（screen_translator.py + --tl-screen + Notify/标签修复 + 流水线集成 + 测试 75→87）
+- ~~screen 裸英文翻译~~ — 第十六轮（translators/screen.py + --tl-screen + Notify/标签修复 + 流水线集成 + 测试 75→87）
 - ~~核心函数单元测试~~ — 87 + 62 + 13 = 162 个用例
 - ~~纳入 git + CI~~ — `.github/workflows/test.yml`
 - ~~线程安全修复~~ — 并发锁 + ProgressTracker 损坏容错
@@ -713,17 +732,19 @@ score = min(file_size / 1024, MAX_FILE_RANK_SCORE)
 ## 15. 模块间调用关系
 
 ```
-gui.py (图形界面) ─── start_launcher.py (CLI 菜单) ─── renpy_upgrade_tool.py (独立工具)
+gui.py (图形界面) ─── start_launcher.py (CLI 菜单) ─── tools/renpy_upgrade_tool.py (独立工具)
        │                      │
        └──────────────────────┘
                 │ subprocess 调用
                 ▼
 main.py (CLI 入口 + --engine 路由)
-  ├── [engine=auto/renpy] → Ren'Py 三条管线
-  │    ├── direct_translator.py  (direct-mode)
-  │    ├── retranslator.py       (补翻)
-  │    ├── tl_translator.py      (tl-mode)
-  │    └── translation_utils.py  (公共辅助)
+  ├── [engine=auto/renpy] → translators/ Ren'Py 三条管线
+  │    ├── translators/direct.py         (direct-mode)
+  │    ├── translators/retranslator.py   (补翻)
+  │    ├── translators/tl_mode.py        (tl-mode)
+  │    ├── translators/screen.py         (screen 裸英文翻译)
+  │    ├── translators/tl_parser.py      (tl/ 解析器)
+  │    └── translators/renpy_text_utils.py (文本分析)
   │
   ├── [engine=rpgmaker/csv/jsonl] → engines/ 多引擎架构
   │    ├── engines/engine_detector.py  (检测+路由)
@@ -732,13 +753,15 @@ main.py (CLI 入口 + --engine 路由)
   │    ├── engines/rpgmaker_engine.py  (RPG Maker MV/MZ)
   │    └── engines/csv_engine.py       (CSV/JSONL)
   │
-  └── 共享基础设施
-       ├── api_client.py / file_processor/ / prompts.py / glossary.py
-       ├── translation_db.py / tl_parser.py / font_patch.py
-       ├── config.py / lang_config.py / review_generator.py
-       └── one_click_pipeline.py (Ren'Py 四阶段流水线)
+  └── core/ 共享基础设施
+       ├── core/api_client.py / core/prompts.py / core/glossary.py
+       ├── core/translation_db.py / core/translation_utils.py
+       ├── core/config.py / core/lang_config.py
+       ├── file_processor/ (splitter/patcher/checker/validator)
+       ├── tools/font_patch.py / tools/review_generator.py
+       └── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线)
 
-tests/   — test_all(70) + test_engines(62) + smoke(13)
+tests/   — test_all(87) + test_engines(62) + smoke(13)
 tools/   — verify_alignment / revalidate / patch_font_now / analyze_writeback
 ```
 

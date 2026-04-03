@@ -236,10 +236,10 @@ output/projects/<project_name>/
 
 ```bash
 # 仅扫描报告
-python renpy_upgrade_tool.py ./game
+python -m tools.renpy_upgrade_tool ./game
 
 # 自动修复并备份
-python renpy_upgrade_tool.py ./game --fix --backup
+python -m tools.renpy_upgrade_tool ./game --fix --backup
 ```
 
 ---
@@ -284,36 +284,42 @@ python renpy_upgrade_tool.py ./game --fix --backup
 ┌──────────────────────────────────────────────────────────────┐
 │  入口层                                                       │
 │  START.bat → start_launcher.py     中文交互启动器（7 种模式） │
-│  main.py                           CLI 入口 + 路由（233 行） │
+│  main.py                           CLI 入口 + 路由            │
 │  one_click_pipeline.py             四阶段流水线 CLI            │
 ├──────────────────────────────────────────────────────────────┤
-│  翻译引擎层                                                   │
-│  direct_translator.py   direct-mode 整文件翻译引擎            │
-│  retranslator.py        补翻引擎（残留英文检测 + 精准补翻）   │
-│  tl_translator.py       tl-mode 翻译框架槽位引擎              │
-│  translation_utils.py   公共辅助（ChunkResult/ProgressTracker）│
+│  翻译引擎层  translators/                                     │
+│  direct.py             direct-mode 整文件翻译引擎（含 dry-run）│
+│  retranslator.py       补翻引擎（残留英文检测 + 精准补翻）    │
+│  tl_mode.py            tl-mode 翻译框架槽位引擎               │
+│  screen.py             screen 文本翻译引擎                     │
+│  tl_parser.py          tl/ 框架状态机解析器                    │
+│  renpy_text_utils.py   Ren'Py 文本分析公共函数                │
+├──────────────────────────────────────────────────────────────┤
+│  核心层  core/                                                │
+│  api_client.py         多提供商 API 客户端 + 限流 + 计费      │
+│  config.py             全局配置                                │
+│  lang_config.py        语言配置                                │
+│  prompts.py            Prompt 模板工厂（支持外部覆写）         │
+│  glossary.py           术语表 + 翻译记忆 + 锁定/禁翻          │
+│  translation_db.py     翻译元数据 JSON 存储                    │
+│  translation_utils.py  公共辅助（ChunkResult/ProgressTracker） │
 ├──────────────────────────────────────────────────────────────┤
 │  基础设施层                                                   │
-│  file_processor/          拆分/回写/校验/占位符保护（4 子模块）│
-│  tl_parser.py         tl/ 框架状态机解析器（独立模块）        │
-│  api_client.py        多提供商 API 客户端 + 限流 + 计费      │
-│  prompts.py           Prompt 模板工厂（支持外部覆写）         │
-│  glossary.py          术语表 + 翻译记忆 + 锁定/禁翻          │
-│  translation_db.py    翻译元数据 JSON 存储                    │
-│  font_patch.py        字体补丁（gui.*_font 改写）             │
-│  renpy_text_utils.py   Ren'Py 文本分析公共函数               │
-│  pipeline/             一键流水线拆分包（helpers/gate/stages） │
+│  file_processor/         拆分/回写/校验/占位符保护（4 子模块） │
+│  pipeline/               一键流水线拆分包（helpers/gate/stages）│
 ├──────────────────────────────────────────────────────────────┤
-│  工具层                                                       │
-│  renpy_upgrade_tool.py  Ren'Py 7→8 升级扫描 + 自动修复       │
-│  verify_alignment.py    零 API 验证策略测试                   │
-│  revalidate.py          对已有输出重跑闸门                    │
-│  patch_font_now.py      独立运行字体补丁                      │
+│  工具层  tools/                                               │
+│  font_patch.py           字体补丁（gui.*_font 改写）           │
+│  renpy_upgrade_tool.py   Ren'Py 7→8 升级扫描 + 自动修复       │
+│  review_generator.py     翻译审校报告生成                      │
+│  verify_alignment.py     零 API 验证策略测试                   │
+│  revalidate.py           对已有输出重跑闸门                    │
+│  patch_font_now.py       独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
 │  测试层                                                       │
-│  test_all.py            综合模块测试（71 用例）               │
-│  tests/smoke_test.py    冒烟测试（13 用例）                   │
-│  test_single.py         单文件端到端测试                      │
+│  test_all.py             综合模块测试（71 用例）               │
+│  tests/smoke_test.py     冒烟测试（13 用例）                   │
+│  test_single.py          单文件端到端测试                      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -322,24 +328,24 @@ python renpy_upgrade_tool.py ./game --fix --backup
 ```
 start_launcher.py
   ├─ main.py（模式 1-3, 5-6）
-  │    ├── api_client.py        API 调用 + 限流 + 用量统计
-  │    ├── file_processor/      拆分 + 回写 + 校验 + 占位符保护（包）
-  │    ├── tl_parser.py         tl-mode 解析 + 精确回填
-  │    ├── prompts.py           Prompt 模板构建
-  │    ├── glossary.py          术语表管理
-  │    ├── translation_db.py    翻译元数据记录
-  │    └── font_patch.py        可选字体补丁
+  │    ├── core/api_client.py          API 调用 + 限流 + 用量统计
+  │    ├── file_processor/             拆分 + 回写 + 校验 + 占位符保护（包）
+  │    ├── translators/tl_parser.py    tl-mode 解析 + 精确回填
+  │    ├── core/prompts.py             Prompt 模板构建
+  │    ├── core/glossary.py            术语表管理
+  │    ├── core/translation_db.py      翻译元数据记录
+  │    └── tools/font_patch.py         可选字体补丁
   │
   ├─ one_click_pipeline.py（模式 4）→ 委托 pipeline/ 包
-  │    ├── pipeline/helpers.py  公共工具（日志/路径/归因）
-  │    ├── pipeline/gate.py     闸门评估（file_processor 校验）
-  │    ├── pipeline/stages.py   四阶段执行（pilot→gate→full→retranslate）
+  │    ├── pipeline/helpers.py         公共工具（日志/路径/归因）
+  │    ├── pipeline/gate.py            闸门评估（file_processor 校验）
+  │    ├── pipeline/stages.py          四阶段执行（pilot→gate→full→retranslate）
   │    ├── 调用 main.py（subprocess，分阶段执行）
-  │    ├── translation_db.py    漏翻归因分析
-  │    ├── font_patch.py        打包前字体补丁
-  │    └── main.py imports      retranslate_file（补翻阶段）
+  │    ├── core/translation_db.py      漏翻归因分析
+  │    ├── tools/font_patch.py         打包前字体补丁
+  │    └── main.py imports             retranslate_file（补翻阶段）
   │
-  └─ renpy_upgrade_tool.py（模式 7，独立工具）
+  └─ tools/renpy_upgrade_tool.py（模式 7，独立工具）
 ```
 
 所有底层模块仅依赖 Python 标准库，无循环依赖。
@@ -623,7 +629,7 @@ MIT License — 详见 [LICENSE](LICENSE)。
 # 快速验证（< 5 秒，无需 API）
 python test_all.py           # 75 个单元+集成测试
 python tests/smoke_test.py   # 13 个校验规则冒烟测试
-python tl_parser.py --test   # 75 个解析器断言
+python -m translators.tl_parser --test   # 75 个解析器断言
 ```
 
 ### CI
@@ -756,7 +762,7 @@ UnicodeDecodeError: 'utf-8' codec can't decode byte ...
 
 ### 第十四轮：全面优化（Ren'Py 专项）
 
-- **基础重构**：新建 `renpy_text_utils.py` 公共函数模块 + `pipeline/` 包拆分（helpers/gate/stages）+ dry-run 逻辑提取
+- **基础重构**：新建 `translators/renpy_text_utils.py` 公共函数模块 + `pipeline/` 包拆分（helpers/gate/stages）+ dry-run 逻辑提取
 - **代码健壮性**：收窄 10+ 处裸 `except`、`config.validate()` 类型/范围校验、GUI 优雅终止
 - **性能优化**：会话级翻译缓存（相同原文自动命中）、GUI 自适应轮询（50/200ms）、日志裁剪（5000→3000 行）
 - **翻译质量**：新增 E250（转义序列）/ W460（缓存一致性）/ W470（相同原文不同译文）校验规则，校验总数 55+
