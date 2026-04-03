@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 
 from file_processor import read_file
-from translation_db import TranslationDB
-from font_patch import resolve_font, apply_font_patch
+from core.translation_db import TranslationDB
+from tools.font_patch import resolve_font, apply_font_patch
 
 from pipeline.helpers import (
     _print,
@@ -208,7 +208,7 @@ def _run_tl_mode_phase(
     # tl-mode 完成后，如果启用了 --tl-screen 则自动补充 screen 翻译
     if getattr(args, "tl_screen", False):
         _print("\n=== tl-screen: 翻译 screen 裸英文 ===")
-        from screen_translator import run_screen_translate
+        from translators.screen import run_screen_translate
         run_screen_translate(args)
         report["stages"]["screen_translate"] = {"completed": True}
 
@@ -484,7 +484,7 @@ def _run_final_report(
 
     # HTML 校对报告
     try:
-        from review_generator import generate_review_html
+        from tools.review_generator import generate_review_html
         db_merged_path = project_out_root / "translation_db.json"
         if db_merged_path.exists():
             review_path = project_out_root / "review.html"

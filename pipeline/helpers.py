@@ -15,6 +15,25 @@ from typing import Iterable
 logger = logging.getLogger(__name__)
 
 
+# ---- 常量（从 one_click_pipeline.py 迁入）----
+
+RISK_KEYWORDS = [
+    "screen", "gui", "options", "menu", "club", "dining", "living",
+    "parents", "secret", "weekend", "v0", "help", "interaction",
+]
+
+MAX_FILE_RANK_SCORE = 200        # 文件大小评分上限
+RISK_KEYWORD_SCORE = 80          # 命中风险关键词加分
+SAZMOD_BONUS_SCORE = 30          # SAZMOD 模组额外加分
+
+LEN_RATIO_LOWER = 0.15
+LEN_RATIO_UPPER = 2.5
+
+
+class StageError(RuntimeError):
+    pass
+
+
 def _print(msg: str) -> None:
     logger.info(msg)
 
@@ -34,13 +53,6 @@ def list_rpy_files(scan_root: Path) -> list[Path]:
 
 
 def score_file(rel_path: str, size: int) -> int:
-    from one_click_pipeline import (
-        RISK_KEYWORDS,
-        MAX_FILE_RANK_SCORE,
-        RISK_KEYWORD_SCORE,
-        SAZMOD_BONUS_SCORE,
-    )
-
     lower = rel_path.lower()
     score = min(size // 1024, MAX_FILE_RANK_SCORE)
     for k in RISK_KEYWORDS:
@@ -96,8 +108,6 @@ def run_main(
     tl_mode: bool = False,
     tl_lang: str = "chinese",
 ) -> None:
-    from one_click_pipeline import StageError
-
     cmd = [
         sys.executable,
         str(Path(__file__).resolve().parent.parent / "main.py"),

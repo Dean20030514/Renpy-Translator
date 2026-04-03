@@ -10,8 +10,8 @@ import re
 from pathlib import Path
 
 from file_processor import read_file, validate_translation
-from translation_db import TranslationDB
-from renpy_text_utils import (
+from core.translation_db import TranslationDB
+from translators.renpy_text_utils import (
     count_untranslated_dialogues_in_file,
     collect_untranslated_details,
 )
