@@ -9,10 +9,11 @@
 | 文档 | 读者 | 内容 |
 |------|------|------|
 | **README.md**（本文件） | 用户 | 快速开始、翻译模式、参数说明、故障排查 |
-| [.cursor_prompt](.cursor_prompt) | AI 助手 / 开发者 | 架构、模块依赖、算法、开发原则 |
-| [CHANGELOG.md](CHANGELOG.md) | 开发者 | 逐轮变更记录（第一～十八轮） |
-| [EXPANSION_PLAN.md](EXPANSION_PLAN.md) | 开发者 | 多引擎扩展路线图与设计细节 |
+| [CLAUDE.md](CLAUDE.md) | AI 助手 / 开发者 | 项目全局上下文（精简版，≤120 行） |
+| [docs/](docs/) | AI 助手 / 开发者 | 按需加载专题文档（数据流、校验、常量、引擎指南、路线图） |
+| [CHANGELOG_RECENT.md](CHANGELOG_RECENT.md) | 开发者 | 最近 3 轮变更详情 + 历史摘要 |
 | [TEST_PLAN.md](TEST_PLAN.md) | 开发者 | 测试覆盖明细、缺口分析、执行方法 |
+| [_archive/](_archive/) | 开发者 | 完整历史文档归档 |
 
 ---
 
