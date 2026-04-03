@@ -173,12 +173,12 @@ def _save_progress(progress_path: Path, completed: set[int]) -> None:
 
 def run_generic_pipeline(engine, args) -> None:
     """通用翻译流水线入口。由 EngineBase.run() 默认调用。"""
-    from api_client import APIClient, APIConfig
-    from glossary import Glossary
-    from translation_db import TranslationDB
+    from core.api_client import APIClient, APIConfig
+    from core.glossary import Glossary
+    from core.translation_db import TranslationDB
     from file_processor import protect_placeholders, restore_placeholders, check_response_item
-    from prompts import build_system_prompt
-    from lang_config import get_language_config
+    from core.prompts import build_system_prompt
+    from core.lang_config import get_language_config
 
     game_dir = Path(args.game_dir)
     output_dir = Path(getattr(args, 'output_dir', 'output') or 'output')

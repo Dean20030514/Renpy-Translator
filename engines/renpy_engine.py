@@ -53,21 +53,21 @@ class RenPyEngine(EngineBase):
 
         if tl_mode:
             try:
-                from tl_translator import run_tl_pipeline
+                from translators.tl_mode import run_tl_pipeline
             except ImportError as e:
                 logger.error(f"[ENGINE] 无法加载 tl-mode 模块: {e}")
                 raise
             run_tl_pipeline(args)
         elif retranslate:
             try:
-                from retranslator import run_retranslate_pipeline
+                from translators.retranslator import run_retranslate_pipeline
             except ImportError as e:
                 logger.error(f"[ENGINE] 无法加载补翻模块: {e}")
                 raise
             run_retranslate_pipeline(args)
         else:
             try:
-                from direct_translator import run_pipeline
+                from translators.direct import run_pipeline
             except ImportError as e:
                 logger.error(f"[ENGINE] 无法加载 direct-mode 模块: {e}")
                 raise
