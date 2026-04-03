@@ -175,6 +175,71 @@ def restore_placeholders(text: str, mapping: list[tuple[str, str]]) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# 锁定术语预替换 — 翻译前将 locked_terms 替换为令牌，翻译后还原为中文译名
+# 作为 prompt 注入的补充保险：即使 LLM 忽略术语表指令，译名也会被正确插入。
+# ---------------------------------------------------------------------------
+
+_LOCKED_TERM_PREFIX = "__LOCKED_TERM_"
+_LOCKED_TERM_SUFFIX = "__"
+
+
+def protect_locked_terms(
+    text: str,
+    locked_terms: "dict[str, str]",
+) -> tuple[str, list[tuple[str, str]]]:
+    """将 locked_terms 中的源语言术语替换为唯一令牌。
+
+    使用词边界 ``\\b`` 匹配，避免部分命中（如 "Game" 不匹配 "GameOver"）。
+
+    Args:
+        text: 已经过 protect_placeholders() 处理的文本。
+        locked_terms: ``{英文术语: 中文译名}`` 字典。仅处理两者均非空的条目。
+
+    Returns:
+        (替换后的文本, mapping: [(token, 中文译名), ...])
+        注意：与 protect_placeholders 不同，这里 mapping 的第二个元素是**中文译名**
+        而不是原始文本，因为 restore 时需要插入译名而非还原原文。
+    """
+    if not locked_terms or not text:
+        return text, []
+
+    mapping: list[tuple[str, str]] = []
+    idx = 0
+
+    # 按术语长度降序排列，优先匹配较长术语（避免 "New York" 被 "New" 先匹配）
+    for en_term, zh_term in sorted(locked_terms.items(), key=lambda kv: -len(kv[0])):
+        if not en_term or not zh_term:
+            continue
+        escaped = re.escape(en_term)
+        # 智能词边界：仅在术语首/尾是"词字符"(\w) 时添加 \b，
+        # 避免 "C++" 等含特殊字符的术语匹配失败。
+        prefix = r"\b" if en_term[0].isalnum() or en_term[0] == "_" else ""
+        suffix = r"\b" if en_term[-1].isalnum() or en_term[-1] == "_" else ""
+        pattern = re.compile(prefix + escaped + suffix)
+        if pattern.search(text):
+            token = f"{_LOCKED_TERM_PREFIX}{idx}{_LOCKED_TERM_SUFFIX}"
+            text = pattern.sub(token, text)
+            mapping.append((token, zh_term))
+            idx += 1
+
+    return text, mapping
+
+
+def restore_locked_terms(text: str, mapping: list[tuple[str, str]]) -> str:
+    """将锁定术语令牌替换为中文译名。
+
+    Args:
+        text: 可能包含 __LOCKED_TERM_N__ 令牌的字符串。
+        mapping: protect_locked_terms 返回的 [(token, 中文译名), ...]。
+    """
+    if not mapping or not text:
+        return text
+    for token, zh_term in mapping:
+        text = text.replace(token, zh_term)
+    return text
+
+
 def _count_translatable_lines_in_chunk(content: str) -> int:
     """启发式统计 chunk 中「可能需翻译」的行数。
 

@@ -27,6 +27,8 @@ from file_processor import (
     estimate_tokens,
     read_file,
     protect_placeholders,
+    protect_locked_terms,
+    restore_locked_terms,
     check_response_chunk,
     _count_translatable_lines_in_chunk,
     _find_block_boundaries,
@@ -52,6 +54,7 @@ from core.translation_utils import (
     MIN_DIALOGUE_LENGTH,
     _strip_char_prefix,
     _restore_placeholders_in_translations,
+    _restore_locked_terms_in_translations,
     _filter_checked_translations,
     _deduplicate_translations,
 )
@@ -78,6 +81,10 @@ def _translate_chunk(ctx: TranslationContext, chunk: dict) -> ChunkResult:
     expected_count = _count_translatable_lines_in_chunk(chunk["content"])
     # 占位符保护
     protected_content, ph_mapping = protect_placeholders(chunk["content"])
+    # 锁定术语预替换（在占位符保护之后，避免干扰 Ren'Py 语法占位符）
+    lt_mapping: list[tuple[str, str]] = []
+    if ctx.locked_terms_map:
+        protected_content, lt_mapping = protect_locked_terms(protected_content, ctx.locked_terms_map)
     user_prompt = build_user_prompt(ctx.rel_path, protected_content, chunk_info)
     logger.debug(f"    [API ] 块 {part}/{chunk['total']}  "
           f"({estimate_tokens(chunk['content']):,} tokens)")
@@ -85,6 +92,9 @@ def _translate_chunk(ctx: TranslationContext, chunk: dict) -> ChunkResult:
         translations = ctx.client.translate(ctx.system_prompt, user_prompt)
     except Exception as e:
         return ChunkResult(part=part, error=f"块 {part} API 调用失败: {e}", expected=expected_count)
+    # 锁定术语还原（先于占位符还原，避免令牌冲突）
+    if lt_mapping:
+        _restore_locked_terms_in_translations(translations, lt_mapping)
     # 占位符还原
     _restore_placeholders_in_translations(translations, ph_mapping)
     # Chunk 级检查（条数一致）
@@ -311,8 +321,17 @@ def translate_file(
 
     total_checker_dropped = 0
 
+    # 构建锁定术语映射（用于预替换保护）
+    locked_terms_map: dict[str, str] = {}
+    if glossary.locked_terms:
+        for en_term in glossary.locked_terms:
+            zh_term = glossary.terms.get(en_term, "")
+            if en_term and zh_term:
+                locked_terms_map[en_term] = zh_term
+
     # 构建翻译上下文（替代嵌套函数闭包捕获）
-    ctx = TranslationContext(client=client, system_prompt=system_prompt, rel_path=rel_path)
+    ctx = TranslationContext(client=client, system_prompt=system_prompt,
+                             rel_path=rel_path, locked_terms_map=locked_terms_map)
 
     if workers > 1 and len(pending_chunks) > 1:
         # 并发翻译多个 chunk
@@ -786,7 +805,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     logger.info(f"[API ] 提供商: {config.provider}, 模型: {config.model}")
     logger.info(f"[API ] 速率限制: RPM={args.rpm}, RPS={args.rps}")
     if args.workers > 1:
-        logger.info(f"[API ] 并发线程: {args.workers}")
+        logger.info(f"[API ] chunk 并发线程: {args.workers}")
+    file_workers = getattr(args, "file_workers", 1) or 1
+    if file_workers > 1:
+        logger.info(f"[API ] 文件级并行: {file_workers} 个文件同时翻译")
 
     # 初始化术语表
     glossary = Glossary()
@@ -1033,11 +1055,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
     show_progress_bar = not getattr(args, 'quiet', False) and not getattr(args, 'dry_run', False)
     progress_bar = ProgressBar(total_files) if show_progress_bar and total_files > 0 else None
 
-    for i, rpy_path in enumerate(rpy_files, 1):
-        # SIGTERM 中断检查
-        if _interrupted.is_set():
-            logger.info("[SIGTERM] 翻译中断，已保存进度。使用 --resume 继续。")
-            break
+    # -- 共用的单文件翻译函数 --
+    _results_lock = threading.Lock()
+
+    def _translate_one_file(i: int, rpy_path: Path):
+        """翻译单个文件，返回 (count, warnings, checker_dropped, chunk_stats) 或异常。"""
+        nonlocal total_translated, total_checker_dropped, files_done_this_run
 
         rel = rpy_path.relative_to(game_dir)
         done_count = len(progress.data.get("completed_files", []))
@@ -1060,26 +1083,31 @@ def run_pipeline(args: argparse.Namespace) -> None:
         logger.info(f"\n[{i}/{total_files}] ({pct:.0f}%{eta_str}) {rel}")
         log(f"[{i}/{total_files}] ({pct:.0f}%) {rel}")
 
-        try:
-            count, warnings, checker_dropped, file_chunk_stats = translate_file(
-                rpy_path,
-                game_dir,
-                output_dir / "game",
-                client,
-                glossary,
-                progress,
-                quality_report,
-                genre=args.genre,
-                max_tokens_per_chunk=args.max_chunk_tokens,
-                workers=args.workers,
-                translation_db=translation_db,
-                run_id=run_id,
-                stage=stage,
-                provider=config.provider,
-                model=config.model,
-                min_dialogue_density=getattr(args, "min_dialogue_density", 0.20),
-                cot=getattr(args, "cot", False),
-            )
+        count, warnings, checker_dropped, file_chunk_stats = translate_file(
+            rpy_path,
+            game_dir,
+            output_dir / "game",
+            client,
+            glossary,
+            progress,
+            quality_report,
+            genre=args.genre,
+            max_tokens_per_chunk=args.max_chunk_tokens,
+            workers=args.workers,
+            translation_db=translation_db,
+            run_id=run_id,
+            stage=stage,
+            provider=config.provider,
+            model=config.model,
+            min_dialogue_density=getattr(args, "min_dialogue_density", 0.20),
+            cot=getattr(args, "cot", False),
+        )
+        return count, warnings, checker_dropped, file_chunk_stats
+
+    def _collect_result(count, warnings, checker_dropped, file_chunk_stats):
+        """线程安全地汇总单个文件的翻译结果。"""
+        nonlocal total_translated, total_checker_dropped, files_done_this_run
+        with _results_lock:
             total_translated += count
             total_checker_dropped += checker_dropped
             total_warnings.extend(warnings)
@@ -1088,25 +1116,72 @@ def run_pipeline(args: argparse.Namespace) -> None:
             if progress_bar:
                 progress_bar.cost = client.usage.estimated_cost
                 progress_bar.update(1)
-        except KeyboardInterrupt:
-            logger.info("\n[中断] 保存进度...")
-            glossary.save(str(glossary_path))
-            progress.save()
-            try:
-                translation_db.save()
-            except OSError as e:
-                logger.debug(f"中断时保存 translation_db 失败: {e}")
-            logger.info("[中断] 进度已保存，可用 --resume 继续")
-            sys.exit(1)
-        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
-            msg = f"文件 {rel} 处理失败: {e}"
-            logger.error(f"  [ERROR] {msg}")
-            total_warnings.append(msg)
-            continue
 
-        # 定期保存术语表
-        if i % 5 == 0:
+    if file_workers > 1 and len(rpy_files) > 1:
+        # ── 文件级并行翻译 ──
+        logger.info(f"[并行] 启用文件级并行: {file_workers} 个文件同时翻译")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=file_workers) as executor:
+            futures: dict[concurrent.futures.Future, Path] = {}
+            for i, rpy_path in enumerate(rpy_files, 1):
+                if _interrupted.is_set():
+                    break
+                fut = executor.submit(_translate_one_file, i, rpy_path)
+                futures[fut] = rpy_path
+
+            for fut in concurrent.futures.as_completed(futures):
+                rpy_path = futures[fut]
+                rel = rpy_path.relative_to(game_dir)
+                try:
+                    count, warnings, checker_dropped, file_chunk_stats = fut.result()
+                    _collect_result(count, warnings, checker_dropped, file_chunk_stats)
+                except KeyboardInterrupt:
+                    logger.info("\n[中断] 保存进度...")
+                    glossary.save(str(glossary_path))
+                    progress.save()
+                    try:
+                        translation_db.save()
+                    except OSError as e:
+                        logger.debug(f"中断时保存 translation_db 失败: {e}")
+                    logger.info("[中断] 进度已保存，可用 --resume 继续")
+                    sys.exit(1)
+                except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
+                    msg = f"文件 {rel} 处理失败: {e}"
+                    logger.error(f"  [ERROR] {msg}")
+                    with _results_lock:
+                        total_warnings.append(msg)
+
+            # 定期保存术语表
             glossary.save(str(glossary_path))
+    else:
+        # ── 顺序翻译（默认） ──
+        for i, rpy_path in enumerate(rpy_files, 1):
+            if _interrupted.is_set():
+                logger.info("[SIGTERM] 翻译中断，已保存进度。使用 --resume 继续。")
+                break
+
+            try:
+                count, warnings, checker_dropped, file_chunk_stats = _translate_one_file(i, rpy_path)
+                _collect_result(count, warnings, checker_dropped, file_chunk_stats)
+            except KeyboardInterrupt:
+                logger.info("\n[中断] 保存进度...")
+                glossary.save(str(glossary_path))
+                progress.save()
+                try:
+                    translation_db.save()
+                except OSError as e:
+                    logger.debug(f"中断时保存 translation_db 失败: {e}")
+                logger.info("[中断] 进度已保存，可用 --resume 继续")
+                sys.exit(1)
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
+                rel = rpy_path.relative_to(game_dir)
+                msg = f"文件 {rel} 处理失败: {e}"
+                logger.error(f"  [ERROR] {msg}")
+                total_warnings.append(msg)
+                continue
+
+            # 定期保存术语表
+            if i % 5 == 0:
+                glossary.save(str(glossary_path))
 
     if progress_bar:
         progress_bar.finish()
@@ -1204,6 +1279,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         "provider": args.provider,
         "model": config.model,
         "workers": args.workers,
+        "file_workers": file_workers,
         "api_requests": client.usage.total_requests,
         "input_tokens": client.usage.total_input_tokens,
         "output_tokens": client.usage.total_output_tokens,

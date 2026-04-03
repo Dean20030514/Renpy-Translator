@@ -12,6 +12,7 @@ import re
 import shutil
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -278,6 +279,157 @@ def _inject_language_buttons(game_dir: Path, tl_lang: str) -> None:
         logger.info(f"[TL-PATCH] 注入语言按钮: {rpy.relative_to(game_dir.parent)}")
 
 
+# ---------------------------------------------------------------------------
+# 跨文件翻译去重
+# ---------------------------------------------------------------------------
+
+# 源文本长度阈值：仅对 ≥ 此长度的完整句子去重。
+# 短语气词（"Hmm...", "...", "Huh?"）必须逐条翻译以保留上下文差异。
+DEDUP_MIN_LENGTH = 40
+
+
+@dataclass
+class DedupResult:
+    """去重结果"""
+    unique_entries: list          # 需要发给 API 翻译的条目（去重后）
+    dedup_groups: dict            # {(char, text) → (first_entry, [dup_entries])}
+    skipped_count: int            # 被跳过（将复用翻译）的条目数
+    total_before: int             # 去重前总数
+
+
+def dedup_tl_entries(
+    all_entries: list,
+    min_length: int = DEDUP_MIN_LENGTH,
+) -> DedupResult:
+    """跨文件去重：相同 (speaker, original_text) 只翻译一次。
+
+    仅对源文本长度 ≥ min_length 的条目去重。短句/语气词保留全部，
+    因为 LLM 会根据上下文给出不同译法。
+
+    Args:
+        all_entries: DialogueEntry + StringEntry 混合列表。
+        min_length: 源文本最小字符数。
+
+    Returns:
+        DedupResult，其中 unique_entries 为去重后需翻译的条目。
+    """
+    from translators.tl_parser import DialogueEntry, StringEntry
+
+    unique: list = []
+    # (char, text) → (first_entry, [dup_entries])
+    groups: dict[tuple[str, str], tuple[object, list]] = {}
+    skipped = 0
+
+    for entry in all_entries:
+        if isinstance(entry, DialogueEntry):
+            char = entry.character or ""
+            text = entry.original
+        elif isinstance(entry, StringEntry):
+            char = ""
+            text = entry.old
+        else:
+            unique.append(entry)
+            continue
+
+        # 短文本不去重
+        if len(text) < min_length:
+            unique.append(entry)
+            continue
+
+        key = (char, text)
+        if key not in groups:
+            groups[key] = (entry, [])
+            unique.append(entry)
+        else:
+            groups[key][1].append(entry)
+            skipped += 1
+
+    # 只保留有实际重复的 group
+    dedup_groups = {k: v for k, v in groups.items() if v[1]}
+
+    return DedupResult(
+        unique_entries=unique,
+        dedup_groups=dedup_groups,
+        skipped_count=skipped,
+        total_before=len(all_entries),
+    )
+
+
+def apply_dedup_translations(
+    dedup_result: DedupResult,
+    file_translations: dict[str, dict[str, str]],
+    game_dir: Path,
+) -> tuple[int, list[dict]]:
+    """将已翻译条目的翻译复用到去重组中的其他条目。
+
+    对于 dedup_groups 中的每个 (first_entry, [dup_entries])，查找
+    first_entry 的翻译结果，然后注入到每个 dup_entry 所属文件的
+    file_translations 中。后续回填循环会自动处理。
+
+    Args:
+        dedup_result: dedup_tl_entries 返回的去重结果。
+        file_translations: {rel_path → {identifier_or_old: translation}}。
+        game_dir: 游戏目录，用于计算相对路径。
+
+    Returns:
+        (filled_count, dedup_log) — dedup_log 记录复用来源，便于调试。
+    """
+    from translators.tl_parser import DialogueEntry, StringEntry
+
+    filled = 0
+    dedup_log: list[dict] = []
+
+    # 构建 identifier/old → translation 的全局索引
+    all_trans: dict[str, str] = {}
+    for _rel, td in file_translations.items():
+        all_trans.update(td)
+
+    for (_char, text), (first_entry, dup_entries) in dedup_result.dedup_groups.items():
+        if not dup_entries:
+            continue
+
+        # 查找 first_entry 的翻译
+        translation = None
+        source_file = ""
+        source_line = 0
+
+        if isinstance(first_entry, DialogueEntry):
+            translation = all_trans.get(first_entry.identifier)
+            source_file = first_entry.tl_file
+            source_line = first_entry.tl_line
+        elif isinstance(first_entry, StringEntry):
+            translation = all_trans.get(first_entry.old)
+            source_file = first_entry.tl_file
+            source_line = first_entry.tl_line
+
+        if not translation:
+            continue
+
+        # 将翻译注入到每个 dup_entry 所属文件的 file_translations
+        for entry in dup_entries:
+            try:
+                rel_path = str(Path(entry.tl_file).relative_to(game_dir))
+            except ValueError:
+                rel_path = entry.tl_file
+
+            if isinstance(entry, DialogueEntry):
+                file_translations.setdefault(rel_path, {})[entry.identifier] = translation
+            else:
+                file_translations.setdefault(rel_path, {})[entry.old] = translation
+
+            filled += 1
+            dedup_log.append({
+                "source_text": text[:80],
+                "translation": translation[:80],
+                "source_file": source_file,
+                "source_line": source_line,
+                "target_file": entry.tl_file,
+                "target_line": entry.tl_line,
+            })
+
+    return filled, dedup_log
+
+
 def build_tl_chunks(
     entries: list,
     max_per_chunk: int = 30,
@@ -441,8 +593,16 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         fix_nvl_ids_directory(str(game_dir / "tl"), tl_lang)
         return
 
+    # ── 1c. 跨文件翻译去重（仅 ≥ 40 字符的完整句子） ──
+    all_entries_raw = list(untrans_dlg) + list(untrans_str)
+    dedup = dedup_tl_entries(all_entries_raw)
+    if dedup.skipped_count > 0:
+        logger.info(f"[TL-DEDUP] 去重: {dedup.total_before} → {len(dedup.unique_entries)} 条 "
+                     f"(跳过 {dedup.skipped_count} 条重复, "
+                     f"{len(dedup.dedup_groups)} 组, 阈值 ≥{DEDUP_MIN_LENGTH} 字符)")
+    all_entries = dedup.unique_entries
+
     # ── 2. 按文件分组 + 分 chunk ──
-    all_entries = list(untrans_dlg) + list(untrans_str)
     by_file: dict[str, list] = {}
     for entry in all_entries:
         by_file.setdefault(entry.tl_file, []).append(entry)
@@ -551,6 +711,27 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
 
                 # 每完成一个就补提交一个（背压）
                 _submit_next()
+
+    # ── 2c. 去重翻译复用 ──
+    if dedup.skipped_count > 0:
+        dedup_filled, dedup_log = apply_dedup_translations(
+            dedup, file_translations, game_dir,
+        )
+        if dedup_filled > 0:
+            logger.info(f"[TL-DEDUP] 复用翻译: {dedup_filled} 条")
+            # 去重的条目也需要加入 file_meta 的 entries 中以便回填
+            for (_char, _text), (first_entry, dup_entries) in dedup.dedup_groups.items():
+                for entry in dup_entries:
+                    try:
+                        rel_path = str(Path(entry.tl_file).relative_to(game_dir))
+                    except ValueError:
+                        rel_path = entry.tl_file
+                    if rel_path in file_meta:
+                        _fp, existing_entries, _tc = file_meta[rel_path]
+                        if entry not in existing_entries:
+                            existing_entries.append(entry)
+                    else:
+                        file_meta[rel_path] = (entry.tl_file, [entry], 0)
 
     # ── 3. 匹配 + 回填（串行，保证文件写入安全） ──
     modified_rpy_files: set[str] = set()

@@ -1554,6 +1554,105 @@ def test_screen_chunks():
     print("[OK] test_screen_chunks")
 
 
+# ============================================================
+# J: 锁定术语预替换 (locked_terms protection)
+# ============================================================
+
+def test_locked_terms_protect_basic():
+    """locked_terms: basic protection and restore."""
+    from file_processor.checker import protect_locked_terms, restore_locked_terms
+    terms = {"MyGame": "我的游戏", "Alice": "爱丽丝"}
+    text = 'mc "Welcome to MyGame! Alice is here."'
+    protected, mapping = protect_locked_terms(text, terms)
+    assert "MyGame" not in protected
+    assert "Alice" not in protected
+    assert "__LOCKED_TERM_" in protected
+    assert len(mapping) == 2
+    # Restore with Chinese translations
+    restored = restore_locked_terms(protected, mapping)
+    assert "我的游戏" in restored
+    assert "爱丽丝" in restored
+    assert "__LOCKED_TERM_" not in restored
+    print("[OK] test_locked_terms_protect_basic")
+
+
+def test_locked_terms_word_boundary():
+    """locked_terms: word boundary prevents partial matches."""
+    from file_processor.checker import protect_locked_terms
+    terms = {"Game": "游戏"}
+    text = 'GameOver is not the same as Game end'
+    protected, mapping = protect_locked_terms(text, terms)
+    # "Game" should match "Game end" but NOT "GameOver"
+    assert "GameOver" in protected  # not replaced
+    assert len(mapping) == 1
+    assert "__LOCKED_TERM_0__" in protected
+    # Check that "Game end" was partially replaced
+    assert "__LOCKED_TERM_0__ end" in protected
+    print("[OK] test_locked_terms_word_boundary")
+
+
+def test_locked_terms_longer_first():
+    """locked_terms: longer terms matched first."""
+    from file_processor.checker import protect_locked_terms
+    terms = {"New York": "纽约", "New": "新"}
+    text = 'Visit New York and New Orleans'
+    protected, mapping = protect_locked_terms(text, terms)
+    # "New York" should be matched before "New"
+    assert "New York" not in protected
+    # mapping[0] should be the "New York" entry
+    assert mapping[0][1] == "纽约"
+    print("[OK] test_locked_terms_longer_first")
+
+
+def test_locked_terms_empty():
+    """locked_terms: empty terms dict does nothing."""
+    from file_processor.checker import protect_locked_terms
+    text = "Hello world"
+    protected, mapping = protect_locked_terms(text, {})
+    assert protected == text
+    assert mapping == []
+    # Also test with None-value terms
+    protected2, mapping2 = protect_locked_terms(text, {"Key": ""})
+    assert protected2 == text
+    assert mapping2 == []
+    print("[OK] test_locked_terms_empty")
+
+
+def test_locked_terms_no_match():
+    """locked_terms: no matching terms in text."""
+    from file_processor.checker import protect_locked_terms
+    terms = {"NotInText": "不在文中"}
+    text = 'mc "Hello world"'
+    protected, mapping = protect_locked_terms(text, terms)
+    assert protected == text
+    assert mapping == []
+    print("[OK] test_locked_terms_no_match")
+
+
+def test_locked_terms_multiple_occurrences():
+    """locked_terms: same term appearing multiple times."""
+    from file_processor.checker import protect_locked_terms, restore_locked_terms
+    terms = {"Alice": "爱丽丝"}
+    text = 'Alice said "Hi Alice" to Alice.'
+    protected, mapping = protect_locked_terms(text, terms)
+    assert protected.count("__LOCKED_TERM_0__") == 3
+    restored = restore_locked_terms(protected, mapping)
+    assert restored.count("爱丽丝") == 3
+    print("[OK] test_locked_terms_multiple_occurrences")
+
+
+def test_locked_terms_special_chars():
+    """locked_terms: terms with regex special characters."""
+    from file_processor.checker import protect_locked_terms, restore_locked_terms
+    terms = {"C++": "C加加", "Mr.Smith": "史密斯先生"}
+    text = 'Learn C++ with Mr.Smith today'
+    protected, mapping = protect_locked_terms(text, terms)
+    restored = restore_locked_terms(protected, mapping)
+    assert "C加加" in restored
+    assert "史密斯先生" in restored
+    print("[OK] test_locked_terms_special_chars")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -1649,7 +1748,15 @@ if __name__ == '__main__':
     test_screen_replace_notify()
     test_screen_backup_no_overwrite()
     test_screen_chunks()
+    # J: 锁定术语预替换
+    test_locked_terms_protect_basic()
+    test_locked_terms_word_boundary()
+    test_locked_terms_longer_first()
+    test_locked_terms_empty()
+    test_locked_terms_no_match()
+    test_locked_terms_multiple_occurrences()
+    test_locked_terms_special_chars()
     print()
     print("=" * 40)
-    print(f"ALL 87 TESTS PASSED")
+    print(f"ALL 94 TESTS PASSED")
     print("=" * 40)

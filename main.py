@@ -106,7 +106,9 @@ def main():
     parser.add_argument("--copy-assets", action="store_true",
                         help="复制非 .rpy 资源文件到输出目录")
     parser.add_argument("--workers", type=int, default=None,
-                        help="并发翻译线程数 (默认: 1)")
+                        help="每文件内 chunk 并发线程数 (默认: 1)")
+    parser.add_argument("--file-workers", type=int, default=None,
+                        help="文件级并行翻译线程数 (默认: 1, >1 时多文件同时翻译)")
     parser.add_argument("--exclude", nargs="*", default=None, metavar="PATTERN",
                         help="排除匹配的文件 (glob 模式)")
     parser.add_argument("--dry-run", action="store_true",
@@ -187,6 +189,7 @@ def main():
     args.model = cfg.get("model", "")
     args.genre = cfg.get("genre", "adult")
     args.workers = cfg.get("workers", 1)
+    args.file_workers = cfg.get("file_workers", 1)
     args.rpm = cfg.get("rpm", 60)
     args.rps = cfg.get("rps", 5)
     args.timeout = cfg.get("timeout", 180.0)

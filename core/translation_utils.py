@@ -64,6 +64,7 @@ class TranslationContext:
     client: object              # APIClient 实例
     system_prompt: str          # 当前翻译的系统 prompt
     rel_path: str               # 当前文件相对路径（用于 user_prompt 构建）
+    locked_terms_map: "dict[str, str]" = field(default_factory=dict)  # {英文术语: 中文译名}，用于预替换保护
 
 
 # ============================================================
@@ -262,6 +263,25 @@ def _restore_placeholders_in_translations(
             val = t.get(key)
             if val:
                 t[key] = restore_placeholders(val, ph_mapping)
+
+
+def _restore_locked_terms_in_translations(
+    translations: list[dict],
+    lt_mapping: list[tuple[str, str]],
+    extra_keys: tuple[str, ...] = (),
+) -> None:
+    """将翻译结果中的锁定术语令牌替换为中文译名。
+
+    默认处理 original 和 zh 字段。注意：对 original 字段也做还原，
+    这样 validator 看到的 original 是还原后的文本，不含令牌。
+    """
+    from file_processor.checker import restore_locked_terms
+    keys = ("original", "zh") + extra_keys
+    for t in translations:
+        for key in keys:
+            val = t.get(key)
+            if val:
+                t[key] = restore_locked_terms(val, lt_mapping)
 
 
 _PH_TOKEN_RE = re.compile(r"__RENPY_PH_\d+__")

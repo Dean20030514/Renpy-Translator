@@ -2,7 +2,7 @@
 
 一个纯 Python 的游戏自动汉化工具，支持 **Ren'Py**、**RPG Maker MV/MZ**、**CSV/JSONL 通用格式**，通过 LLM API 翻译为简体中文。
 
-**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译**
+**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译** | **RPA 解包 + rpyc 反编译**
 
 ---
 
@@ -24,6 +24,13 @@
 - **会话级翻译缓存**：相同原文自动命中缓存，减少重复 API 调用，跨文件术语一致性自动保障
 - **GUI 增强**：实时进度条、自适应轮询（50/200ms）、日志自动裁剪（5000→3000 行）、优雅终止（保存进度后退出）
 - **Screen 文本翻译**：`--tl-screen` 翻译 screen 中 tl 框架无法提取的裸英文（`text`/`textbutton`/`tt.Action` Tooltip），作为 tl-mode 补充覆盖剩余 ~5% UI 文本
+- **RPA 解包**：纯标准库解包 RPA-3.0/2.0 档案，提取 .rpy/.rpyc 文件（`python -m tools.rpa_unpacker`）
+- **rpyc 反编译**：双层策略 — Tier 1 调用游戏自带 Python 完美反编译，Tier 2 独立提取文本（无需 Ren'Py 运行时）。覆盖只发布 .rpyc 的游戏（`python -m tools.rpyc_decompiler`）
+- **Ren'Py lint 集成**：调用游戏引擎 lint 检测翻译语法错误并自动修复，优雅降级（无运行时时回退到静态验证）
+- **文件级并行翻译**：`--file-workers N` 多文件同时翻译，与 `--workers`（chunk 并发）正交叠加
+- **锁定术语预替换**：locked_terms 在翻译前替换为令牌，翻译后还原为中文译名，作为 prompt 注入的补充保险
+- **跨文件翻译去重**：tl-mode 下相同完整句子（≥40 字符）只翻译一次，结果复用到所有重复条目，节省 ~20% API 调用
+- **Hook 模板**：运行时提取 Hook（注入游戏提取全部对话 JSON）+ 语言切换 UI 注入（自动扫描 tl/ 生成切换按钮）
 
 ---
 
@@ -76,9 +83,9 @@ python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
 # 断点续传
 python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --resume
 
-# 并发翻译（加速大文件）
+# 并发翻译（chunk 级 + 文件级并行）
 python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --workers 3 --rpm 600 --rps 10
+    --workers 3 --file-workers 2 --rpm 600 --rps 10
 
 # 加载外部词典 + 复制资源 + 保存日志
 python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
@@ -484,6 +491,30 @@ output/projects/<project_name>/
 
 ---
 
+## 预处理工具
+
+游戏只发布了 .rpa 档案或 .rpyc 编译文件？使用预处理工具链提取源文件后再翻译。
+
+```bash
+# 1. 解包 RPA 档案（提取 .rpy/.rpyc 文件）
+python -m tools.rpa_unpacker "E:\Games\MyGame\game\archive.rpa" --scripts-only
+
+# 2. 反编译 .rpyc（需要完整游戏目录）
+python -m tools.rpyc_decompiler "E:\Games\MyGame" --confirm
+
+# 2b. 无 Ren'Py 运行时时，独立提取文本（Tier 2 降级）
+python -m tools.rpyc_decompiler "E:\Games\MyGame" --fallback --json-out strings.json
+
+# 3. 翻译完成后，运行 lint 检查并自动修复语法错误
+python -m tools.renpy_lint_fixer "E:\Games\MyGame"
+```
+
+**Hook 模板**（手动注入游戏 `game/` 目录后启动游戏）：
+- `resources/hooks/extract_hook.rpy` — 运行时提取全部对话到 JSON（静态解析的兜底方案）
+- `resources/hooks/language_switcher.rpy` — 自动生成语言切换按钮（玩家体验增强）
+
+---
+
 ## 参数完整说明
 
 ### main.py
@@ -502,7 +533,8 @@ output/projects/<project_name>/
 | `--temperature` | 0.1 | 生成温度（低 = 一致性高） |
 | `--max-chunk-tokens` | 4000 | 分块最大 token 数 |
 | `--max-response-tokens` | 32768 | API 最大响应 token 数 |
-| `--workers` | 1 | 并发翻译线程数 |
+| `--workers` | 1 | 每文件内 chunk 并发线程数 |
+| `--file-workers` | 1 | 文件级并行翻译线程数（>1 时多文件同时翻译） |
 | `--resume` | — | 从上次中断处继续 |
 | `--dry-run` | — | 仅扫描统计，预估费用 |
 | `--retranslate` | — | 补翻模式 |

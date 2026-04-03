@@ -38,6 +38,49 @@
 | 第十五轮 | nvl clear 翻译 ID 修正 | `fix_nvl_translation_ids` 自动检测 8.6+ say-only 哈希并修正为 7.x nvl+say 哈希 + 管道集成 + 测试 71→75 |
 | 第十六轮 | screen 文本翻译 + 缓存清理修复 | `screen_translator.py` screen 裸英文翻译（`--tl-screen`，含 text/textbutton/tt.Action/Notify 四模式）+ `_should_skip` 标签误杀修复 + 缓存清理 .rpymc 补全 + 流水线/启动器/打包集成 + 测试 75→87 |
 | 第十七轮 | 项目结构深度重构 | 根目录 25→5 .py：core/(7模块) + translators/(6模块) + tools/(扩充3模块)，消除 re-export 兼容层 + 循环依赖，162 测试全绿 |
+| 第十八轮 | 预处理工具链 + 翻译增强 | RPA 解包 + rpyc 反编译（双层策略）+ Ren'Py lint 集成 + 文件级并行翻译 + locked_terms 预替换 + 跨文件去重 + Hook 模板，测试 162→215 |
+
+---
+
+## 第十八轮：预处理工具链 + 翻译增强
+
+> **背景**：分析 renpy-translator-main（MIT, anonymousException 2024）项目，识别出 8 项可借鉴功能，按 P0~P3 优先级全部实施。新增 3 个独立预处理工具（`tools/`）、2 个 Ren'Py Hook 模板（`resources/hooks/`），并对翻译流水线做了 3 项增强（文件级并行、锁定术语预替换、跨文件去重）。
+
+### 新增工具
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 205 | **RPA 解包工具**：纯标准库实现 RPA-3.0/2.0 档案解包（XOR 解混淆 + zlib + pickle），支持 `--list` / `--scripts-only` / `--force`，独立 CLI + API | `tools/rpa_unpacker.py`（新增 ~320 行） | 翻译全链路第一步：解包 → 反编译 → 翻译 |
+| 206 | **rpyc 反编译工具**（双层策略）：Tier 1 调用游戏自带 Python + `renpy.util.get_code()` 生成完美 .rpy；Tier 2 用 `RestrictedUnpickler` 独立提取文本（无需 Ren'Py 运行时）。平台适配层覆盖 Win/Mac/Linux × Ren'Py 7.x/8.x。法律确认提示为阻塞式 `input()` | `tools/rpyc_decompiler.py`（新增 ~640 行） | 覆盖只发布 .rpyc 的游戏 |
+| 207 | **Ren'Py lint 集成 + 自动修复**：调用游戏自带引擎执行 lint，解析 6 种语法错误 + 1 种重复翻译，自动删除/修复问题行。优雅降级：无完整运行时时静默回退到静态验证。超时默认 120s 可配置 | `tools/renpy_lint_fixer.py`（新增 ~340 行） | 静态验证的兜底补充 |
+| 208 | **运行时提取 Hook**：注入游戏运行时，从 `renpy.game.script.translator.default_translates` 提取全部 say 语句导出 JSON | `resources/hooks/extract_hook.rpy`（新增 ~63 行） | 复杂脚本的终极兜底方案 |
+| 209 | **语言切换 UI 注入**：monkey-patch `renpy.show_screen` 替换设置页，自动扫描 `tl/` 列出语言切换按钮 | `resources/hooks/language_switcher.rpy`（新增 ~63 行） | 玩家体验增强 |
+
+### 翻译流水线增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 210 | **文件级并行翻译**（`--file-workers`）：在现有 chunk 并发之上新增文件级 ThreadPoolExecutor，默认 1（不改变现有行为），opt-in 启用。共用 `_results_lock` 保护共享状态 | `translators/direct.py` + `main.py` + `gui.py` + `one_click_pipeline.py` | 大型项目翻译提速 |
+| 211 | **锁定术语预替换**：翻译前将 `locked_terms` 替换为 `__LOCKED_TERM_N__` 令牌（智能词边界：仅在首尾为 \w 时添加 `\b`），翻译后替换为中文译名。作为 prompt 注入的补充保险 | `file_processor/checker.py` + `translators/direct.py` + `core/translation_utils.py` | 术语准确率提升 |
+| 212 | **跨文件翻译去重**（仅 tl-mode）：相同 `(speaker, text)` 且源文本 ≥40 字符的条目只翻译一次，结果复用到所有重复条目。短语气词/短句不去重（保留上下文翻译差异）。记录复用来源 `{source_file, source_line}` 便于调试 | `translators/tl_mode.py` | 节省 ~20% API 调用（实测 TheTyrant 42.7% 重复率） |
+
+### 测试新增
+
+| 文件 | 新增用例 | 覆盖 |
+|------|---------|------|
+| `tests/test_rpa_unpacker.py` | 14 | RPA-3.0/2.0 解包、XOR key 变体、prefix bytes、版本检测、损坏文件、目录解包 |
+| `tests/test_rpyc_decompiler.py` | 17 | RPYC2 二进制格式、RestrictedUnpickler、Say/Menu/TranslateString 提取、Unicode、平台检测 |
+| `tests/test_lint_fixer.py` | 15 | 7 种 lint 错误模式解析、old/new 对修复、translate 块修复、连续空行清理、降级检测 |
+| `tests/test_tl_dedup.py` | 10 | 去重基础/阈值/speaker 隔离/StringEntry/apply 复用/无翻译降级 |
+| `tests/test_all.py` 追加 | 7 | locked_terms 保护/还原/词边界/长匹配优先/特殊字符/多次出现/空输入 |
+
+### 技术指标
+
+- 新增文件：5（3 工具 + 2 Hook 模板）+ 4 测试文件
+- 修改文件：8（direct.py / tl_mode.py / checker.py / translation_utils.py / main.py / gui.py / one_click_pipeline.py / __init__.py）
+- 测试数量：162 → **215**（94 + 62 + 13 + 14 + 17 + 15 + 10 新测试文件，不含内建断言）
+- 零依赖原则：保持
+- 所有预处理工具遵循 fail-fast + 不阻断主流程原则
 
 ---
 

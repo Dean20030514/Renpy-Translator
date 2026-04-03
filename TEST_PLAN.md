@@ -10,13 +10,17 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `tests/test_all.py` | 单元+集成测试 | core.api_client / file_processor / core.glossary / core.prompts / main / core.translation_utils / translators.retranslator / translators.renpy_text_utils / core.translation_db / core.config / core.lang_config / tools.review_generator / translators.direct / translators.tl_parser nvl ID 修正 / translators.screen | 87 | 否 |
+| `tests/test_all.py` | 单元+集成测试 | core.api_client / file_processor / core.glossary / core.prompts / main / core.translation_utils / translators.retranslator / translators.renpy_text_utils / core.translation_db / core.config / core.lang_config / tools.review_generator / translators.direct / translators.tl_parser nvl ID 修正 / translators.screen / **locked_terms 预替换** | 94 | 否 |
 | `tests/test_engines.py` | 引擎抽象层测试 | engines.EngineProfile / engines.TranslatableUnit / engines.EngineDetector / engines.RenPyEngine / engines.EngineBase / engines.CSVEngine / engines.generic_pipeline / checker 参数化 / core.prompts addon / engines.RPGMakerMVEngine / core.glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
+| `tests/test_rpa_unpacker.py` | RPA 解包测试 | RPA-3.0/2.0 解包、XOR key 变体、prefix bytes、版本检测、损坏文件、目录批量解包 | 14 | 否 |
+| `tests/test_rpyc_decompiler.py` | rpyc 反编译测试 | RPYC2 二进制格式、RestrictedUnpickler、Say/Menu/TranslateString 文本提取、Unicode、平台检测 | 17 | 否 |
+| `tests/test_lint_fixer.py` | lint 修复测试 | 7 种 lint 错误模式解析、old/new 对修复、translate 块修复、连续空行清理、降级检测 | 15 | 否 |
+| `tests/test_tl_dedup.py` | tl-mode 去重测试 | 去重基础/阈值/speaker 隔离/StringEntry/apply 复用/无翻译降级 | 10 | 否 |
 | `translators/tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
 
-> **自动化测试总计**：87 + 62 + 13 = **162** 个用例（不含 translators/tl_parser 内建 75 断言 + translators/screen 内建 51 断言）。
+> **自动化测试总计**：94 + 62 + 13 + 14 + 17 + 15 + 10 = **225** 个用例（不含 translators/tl_parser 内建 75 断言 + translators/screen 内建 51 断言）。
 
 > **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
@@ -127,6 +131,89 @@
 | 85 | `test_screen_backup_no_overwrite` | translators.screen | .bak 仅在不存在时创建，二次调用不覆盖 |
 | 86 | `test_screen_chunks` | translators.screen | 分块行数守恒（100 条/40 per chunk → 3 chunks） |
 | 87 | `test_screen_replace_notify` | translators.screen | Notify("...") 替换正确 + action 参数不动 |
+| 88 | `test_locked_terms_protect_basic` | file_processor.checker | locked_terms 保护 + 中文译名还原往返正确 |
+| 89 | `test_locked_terms_word_boundary` | file_processor.checker | \b 词边界防止部分匹配（GameOver vs Game） |
+| 90 | `test_locked_terms_longer_first` | file_processor.checker | 长术语优先匹配（New York > New） |
+| 91 | `test_locked_terms_empty` | file_processor.checker | 空字典 / 空值术语不处理 |
+| 92 | `test_locked_terms_no_match` | file_processor.checker | 文本中不含术语时原样返回 |
+| 93 | `test_locked_terms_multiple_occurrences` | file_processor.checker | 同一术语多次出现全部替换 + 还原 |
+| 94 | `test_locked_terms_special_chars` | file_processor.checker | 含 regex 特殊字符的术语（C++ / Mr.Smith） |
+
+### tests/test_rpa_unpacker.py（14 个 RPA 解包测试）
+
+| # | 函数 | 测试内容 |
+|---|------|----------|
+| 1 | `test_rpa3_list` | RPA-3.0 文件列表提取 |
+| 2 | `test_rpa3_extract` | RPA-3.0 文件内容提取 + 完整性校验 |
+| 3 | `test_rpa3_extract_scripts_only` | 扩展名过滤（仅 .rpy/.rpyc） |
+| 4 | `test_rpa3_no_overwrite` | force=False 跳过已存在文件 |
+| 5 | `test_rpa3_force_overwrite` | force=True 覆盖已存在文件 |
+| 6 | `test_rpa2_extract` | RPA-2.0 解包（无 XOR key） |
+| 7 | `test_rpa3_different_keys` | 5 种 XOR key 变体（0/1/0xFFFFFFFF/0x12345678/0xCAFEBABE） |
+| 8 | `test_rpa3_prefix_bytes` | index 条目含 prefix bytes 时正确拼接 |
+| 9 | `test_unsupported_version` | RPA-4.0 等不支持版本的清晰错误信息 |
+| 10 | `test_invalid_file` | 非 RPA 文件的版本检测 |
+| 11 | `test_corrupted_index` | 损坏 zlib 数据的错误检测 |
+| 12 | `test_unpack_all_rpa_in_dir` | 目录批量解包多个 .rpa 文件 |
+| 13 | `test_nested_directory_structure` | 嵌套目录结构还原（tl/english/script.rpy） |
+| 14 | `test_empty_archive` | 空档案不报错 |
+
+### tests/test_rpyc_decompiler.py（17 个 rpyc 反编译测试）
+
+| # | 函数 | 测试内容 |
+|---|------|----------|
+| 1 | `test_read_rpyc2_slot1` | RPYC2 slot 1 数据读取 |
+| 2 | `test_read_rpyc2_missing_slot` | 不存在的 slot 返回 None |
+| 3 | `test_read_legacy_rpyc` | Legacy（pre-RPYC2）格式读取 |
+| 4 | `test_read_legacy_rpyc_slot2` | Legacy 格式只有 slot 1 |
+| 5 | `test_read_corrupted_rpyc` | 损坏 zlib 数据返回 None |
+| 6 | `test_restricted_unpickler` | renpy.ast 类替换为 DummyClass |
+| 7 | `test_extract_say_statements` | Say 语句文本 + speaker 提取 |
+| 8 | `test_extract_menu_items` | Menu 选项文本提取 |
+| 9 | `test_extract_translate_strings` | TranslateString old/new/language 提取 |
+| 10 | `test_extract_mixed_content` | Say + Menu + TranslateString 混合 |
+| 11 | `test_extract_empty_rpyc` | 无可翻译内容返回空列表 |
+| 12 | `test_extract_unicode_content` | CJK/日文 Unicode 文本正确提取 |
+| 13 | `test_extract_strings_standalone` | 目录批量提取模式 |
+| 14 | `test_extract_strings_standalone_json_output` | JSON 文件输出 |
+| 15 | `test_find_renpy_python_not_found` | 空目录返回 None |
+| 16 | `test_find_renpy_python_with_lib` | 模拟 lib/ 目录结构找到 Python |
+| 17 | `test_detect_renpy_version` | py3 路径检测为 Ren'Py 8.x |
+
+### tests/test_lint_fixer.py（15 个 lint 修复测试）
+
+| # | 函数 | 测试内容 |
+|---|------|----------|
+| 1 | `test_remove_consecutive_empty_lines` | 连续空行折叠 |
+| 2 | `test_remove_consecutive_no_change` | 无连续空行不变 |
+| 3 | `test_parse_lint_termination_error` | "not terminated" 错误解析 |
+| 4 | `test_parse_lint_end_of_line` | "end of line expected" 错误解析 |
+| 5 | `test_parse_lint_empty_block` | "expects a non-empty block" 错误解析 |
+| 6 | `test_parse_lint_unknown_statement` | "unknown statement" 错误解析 |
+| 7 | `test_parse_lint_duplicate_translation` | 重复翻译异常解析 |
+| 8 | `test_parse_lint_multiple_errors` | 多错误混合解析（4 种） |
+| 9 | `test_parse_lint_no_errors` | 无错误输出返回空列表 |
+| 10 | `test_fix_old_new_pair` | old/new 翻译对修复 |
+| 11 | `test_fix_unknown_statement` | 无效语句删除 |
+| 12 | `test_fix_translate_block` | translate 块头修复 |
+| 13 | `test_fix_preserves_other_content` | 修复不影响无关内容 |
+| 14 | `test_lint_not_available_empty_dir` | 空目录无 lib/ 返回不可用 |
+| 15 | `test_lint_not_available_no_game_dir` | 无 game/ 返回不可用 |
+
+### tests/test_tl_dedup.py（10 个跨文件去重测试）
+
+| # | 函数 | 测试内容 |
+|---|------|----------|
+| 1 | `test_dedup_basic` | 长句去重 + 短句保留 |
+| 2 | `test_dedup_different_speakers` | 不同 speaker 同文本不去重 |
+| 3 | `test_dedup_string_entries` | StringEntry 去重 |
+| 4 | `test_dedup_no_duplicates` | 全部唯一不去重 |
+| 5 | `test_dedup_threshold` | 默认阈值 40 字符 |
+| 6 | `test_dedup_custom_threshold` | 自定义阈值 |
+| 7 | `test_dedup_mixed_types` | DialogueEntry + StringEntry 混合 |
+| 8 | `test_apply_dedup_basic` | 翻译结果复用到重复条目 |
+| 9 | `test_apply_dedup_no_translation` | 首条未翻译时不复用 |
+| 10 | `test_apply_dedup_string_entry` | StringEntry 用 old text 做 key 复用 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 

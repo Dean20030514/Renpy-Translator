@@ -2,7 +2,7 @@
 
 > 基于「多引擎游戏汉化工具」当前状态（第十六轮全部完成、~14700 行核心代码、87+62+13=162 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
 >
-> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包 + 第十四轮 Ren'Py 专项五阶段优化 + 第十六轮 screen 裸英文翻译（`--tl-screen`）。后续路线见 §8。
+> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包 + 第十四轮 Ren'Py 专项五阶段优化 + 第十六轮 screen 裸英文翻译（`--tl-screen`）+ 第十八轮预处理工具链（RPA 解包 + rpyc 反编译 + lint 集成 + 文件级并行 + locked_terms 预替换 + 跨文件去重）。后续路线见 §8。
 
 ---
 
@@ -100,6 +100,8 @@
 > **第十五轮补充**：新增 `fix_nvl_translation_ids` / `fix_nvl_ids_directory`，自动修正 Ren'Py 8.6+ 生成的 say-only 翻译块 ID 为 7.x nvl+say 哈希，解决含 `nvl clear` 的翻译静默失败。已集成到 `run_tl_pipeline` 后处理链。测试 71→75。详见 CHANGELOG.md 第十五轮。
 >
 > **第十六轮补充**：新增 `translators/screen.py`（原 `screen_translator.py`，~420 行），翻译 screen 定义中 Ren'Py tl 框架无法提取的裸英文字符串（`text "..."`/`textbutton "..."`/`tt.Action("...")`）。通过 `--tl-screen` 参数启用，可与 `--tl-mode` 联用。同时修复 `_clean_rpyc`/`delete_rpyc_files`/资源复制中 `.rpymc` 缓存清理遗漏。测试 75→86。详见 CHANGELOG.md 第十六轮。
+>
+> **第十八轮补充**：新增预处理工具链 `tools/rpa_unpacker.py`（RPA-3.0/2.0 纯标准库解包）+ `tools/rpyc_decompiler.py`（双层策略：游戏 Python 完美反编译 / RestrictedUnpickler 独立提取）+ `tools/renpy_lint_fixer.py`（lint 集成 + 自动修复 + 优雅降级）。翻译增强：`--file-workers` 文件级并行、locked_terms 预替换（`__LOCKED_TERM_N__` 令牌）、tl-mode 跨文件去重（≥40 字符白名单）。Hook 模板：`resources/hooks/extract_hook.rpy` + `language_switcher.rpy`。测试 162→215。详见 CHANGELOG.md 第十八轮。
 
 ---
 
@@ -892,7 +894,7 @@ python main.py --engine csv --game-dir texts.csv --placeholder-regex '\{\w+\}' -
 
 | 优先级 | 引擎 | 占比估计 | 实现难度 | 依赖 | 状态 |
 |--------|------|----------|----------|------|------|
-| ✅ P0 | Ren'Py | ~35% | — | — | **已完成**（第一轮~第十二轮） |
+| ✅ P0 | Ren'Py | ~35% | — | — | **已完成**（第一轮~第十二轮，第十八轮新增 RPA 解包 + rpyc 反编译 + lint 集成） |
 | ✅ P0 | RPG Maker MV/MZ | ~25% | 低 | 纯标准库 | **已完成**（第十二轮阶段三，636 行） |
 | ✅ P0 | CSV/JSONL 通用 | 覆盖全部 | 最低 | 纯标准库 | **已完成**（第十二轮阶段二，317 行） |
 | 🟡 P1 | RPG Maker VX/Ace | ~5% | 中 | `rubymarshal`（可选） | 待实现 |

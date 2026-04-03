@@ -148,9 +148,12 @@ class App:
         # 并发 / RPM / RPS
         frame_perf = ttk.Frame(tab)
         frame_perf.grid(row=row, column=0, columnspan=3, sticky="w", pady=3)
-        ttk.Label(frame_perf, text="并发线程:").pack(side=tk.LEFT)
+        ttk.Label(frame_perf, text="chunk并发:").pack(side=tk.LEFT)
         self.var_workers = tk.StringVar(value="3")
         ttk.Spinbox(frame_perf, from_=1, to=20, textvariable=self.var_workers, width=4).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Label(frame_perf, text="文件并行:").pack(side=tk.LEFT)
+        self.var_file_workers = tk.StringVar(value="1")
+        ttk.Spinbox(frame_perf, from_=1, to=8, textvariable=self.var_file_workers, width=4).pack(side=tk.LEFT, padx=(0, 15))
         ttk.Label(frame_perf, text="RPM:").pack(side=tk.LEFT)
         self.var_rpm = tk.StringVar(value="600")
         ttk.Spinbox(frame_perf, from_=1, to=9999, textvariable=self.var_rpm, width=6).pack(side=tk.LEFT, padx=(0, 15))
@@ -387,6 +390,7 @@ class App:
         api_key = self.var_api_key.get().strip()
         model = self.var_model.get().strip()
         workers = self.var_workers.get().strip() or "3"
+        file_workers = self.var_file_workers.get().strip() or "1"
         rpm = self.var_rpm.get().strip() or "600"
         rps = self.var_rps.get().strip() or "10"
 
@@ -398,7 +402,8 @@ class App:
                 "--game-dir", game_dir, "--output-dir", output_dir,
                 "--provider", provider, "--api-key", api_key,
                 "--model", model, "--genre", genre,
-                "--workers", workers, "--rpm", rpm, "--rps", rps,
+                "--workers", workers, "--file-workers", file_workers,
+                "--rpm", rpm, "--rps", rps,
                 "--clean-output",
                 "--pilot-count", self.var_pilot_count.get().strip() or "20",
                 "--gate-max-untranslated-ratio", self.var_gate_ratio.get().strip() or "0.08",
@@ -414,7 +419,8 @@ class App:
         # 通用命令
         cmd = [py, "-u", "main.py", "--game-dir", game_dir, "--output-dir", output_dir,
                "--provider", provider, "--model", model,
-               "--workers", workers, "--rpm", rpm, "--rps", rps]
+               "--workers", workers, "--file-workers", file_workers,
+               "--rpm", rpm, "--rps", rps]
 
         if not dry_run and api_key:
             cmd += ["--api-key", api_key]
@@ -695,7 +701,8 @@ class App:
             mapping = {
                 "provider": self.var_provider, "model": self.var_model,
                 "genre": self.var_genre, "rpm": self.var_rpm, "rps": self.var_rps,
-                "workers": self.var_workers, "timeout": self.var_timeout,
+                "workers": self.var_workers, "file_workers": self.var_file_workers,
+                "timeout": self.var_timeout,
                 "temperature": self.var_temperature, "max_chunk_tokens": self.var_max_chunk,
                 "max_response_tokens": self.var_max_response, "target_lang": None,
                 "tl_lang": self.var_tl_lang, "min_dialogue_density": self.var_min_density,
@@ -724,6 +731,7 @@ class App:
             "rpm": int(self.var_rpm.get() or 600),
             "rps": int(self.var_rps.get() or 10),
             "workers": int(self.var_workers.get() or 3),
+            "file_workers": int(self.var_file_workers.get() or 1),
             "timeout": float(self.var_timeout.get() or 180),
             "temperature": float(self.var_temperature.get() or 0.1),
             "max_chunk_tokens": int(self.var_max_chunk.get() or 4000),

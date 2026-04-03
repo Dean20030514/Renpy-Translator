@@ -35,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="grok-4-1-fast-reasoning")
     parser.add_argument("--genre", default="adult", choices=["adult", "visual_novel", "rpg", "general"])
     parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--file-workers", type=int, default=1,
+                        help="文件级并行线程数 (>1 多文件同时翻译)")
     parser.add_argument("--rpm", type=int, default=600)
     parser.add_argument("--rps", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=180.0)
