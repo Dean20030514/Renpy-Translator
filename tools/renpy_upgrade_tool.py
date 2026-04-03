@@ -18,7 +18,7 @@ Examples:
 
 Can also be imported and called programmatically::
 
-    from renpy_upgrade_tool import scan_directory, print_report, apply_fixes
+    from tools.renpy_upgrade_tool import scan_directory, print_report, apply_fixes
     results, n = scan_directory("path/to/game")
     print_report(results, n)
 """
