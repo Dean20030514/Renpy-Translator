@@ -26,19 +26,29 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 def main() -> int:
     # 收集所有需要打包的 Python 模块（非测试、非工具）
     hidden_imports = [
-        "api_client", "config", "direct_translator", "direct_translator_dryrun",
+        # core infrastructure
+        "core", "core.api_client", "core.config", "core.glossary",
+        "core.lang_config", "core.prompts", "core.translation_db",
+        "core.translation_utils",
+        # translators
+        "translators", "translators.direct", "translators.tl_mode",
+        "translators.retranslator", "translators.screen",
+        "translators.tl_parser", "translators.renpy_text_utils",
+        # file_processor
         "file_processor",
         "file_processor.splitter", "file_processor.patcher",
         "file_processor.checker", "file_processor.validator",
-        "font_patch", "glossary", "lang_config", "main",
-        "one_click_pipeline", "prompts", "retranslator", "review_generator",
-        "renpy_upgrade_tool", "renpy_text_utils", "start_launcher",
-        "screen_translator", "tl_parser", "tl_translator",
-        "translation_db", "translation_utils",
+        # tools
+        "tools", "tools.font_patch", "tools.renpy_upgrade_tool",
+        "tools.review_generator",
+        # pipeline
         "pipeline", "pipeline.helpers", "pipeline.gate", "pipeline.stages",
+        # engines
         "engines", "engines.engine_base", "engines.engine_detector",
         "engines.generic_pipeline", "engines.renpy_engine",
         "engines.rpgmaker_engine", "engines.csv_engine",
+        # entry points
+        "main", "one_click_pipeline", "start_launcher",
     ]
 
     # 数据文件

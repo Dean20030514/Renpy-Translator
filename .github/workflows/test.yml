@@ -23,40 +23,68 @@ jobs:
 
       - name: Syntax check (py_compile)
         run: |
+          # entry points
           python -m py_compile main.py
           python -m py_compile one_click_pipeline.py
-          python -m py_compile api_client.py
-          python -m py_compile glossary.py
-          python -m py_compile prompts.py
-          python -m py_compile translation_db.py
-          python -m py_compile tl_parser.py
-          python -m py_compile font_patch.py
+          python -m py_compile gui.py
+          python -m py_compile start_launcher.py
+          python -m py_compile build.py
+          # core
+          python -m py_compile core/__init__.py
+          python -m py_compile core/api_client.py
+          python -m py_compile core/config.py
+          python -m py_compile core/lang_config.py
+          python -m py_compile core/glossary.py
+          python -m py_compile core/prompts.py
+          python -m py_compile core/translation_db.py
+          python -m py_compile core/translation_utils.py
+          # translators
+          python -m py_compile translators/__init__.py
+          python -m py_compile translators/direct.py
+          python -m py_compile translators/tl_mode.py
+          python -m py_compile translators/retranslator.py
+          python -m py_compile translators/screen.py
+          python -m py_compile translators/tl_parser.py
+          python -m py_compile translators/renpy_text_utils.py
+          # file_processor
           python -m py_compile file_processor/__init__.py
           python -m py_compile file_processor/splitter.py
           python -m py_compile file_processor/patcher.py
           python -m py_compile file_processor/checker.py
           python -m py_compile file_processor/validator.py
-          python -m py_compile direct_translator.py
-          python -m py_compile retranslator.py
-          python -m py_compile tl_translator.py
-          python -m py_compile translation_utils.py
-          python -m py_compile config.py
-          python -m py_compile analyze_writeback_failures.py
-          python -m py_compile review_generator.py
-          python -m py_compile lang_config.py
-          python -m py_compile screen_translator.py
+          # tools
+          python -m py_compile tools/__init__.py
+          python -m py_compile tools/font_patch.py
+          python -m py_compile tools/renpy_upgrade_tool.py
+          python -m py_compile tools/review_generator.py
+          # pipeline
+          python -m py_compile pipeline/__init__.py
+          python -m py_compile pipeline/helpers.py
+          python -m py_compile pipeline/gate.py
+          python -m py_compile pipeline/stages.py
+          # engines
+          python -m py_compile engines/__init__.py
+          python -m py_compile engines/engine_base.py
+          python -m py_compile engines/engine_detector.py
+          python -m py_compile engines/generic_pipeline.py
+          python -m py_compile engines/renpy_engine.py
+          python -m py_compile engines/rpgmaker_engine.py
+          python -m py_compile engines/csv_engine.py
 
       - name: Run unit tests (test_all.py)
-        run: python test_all.py
+        run: python tests/test_all.py
+
+      - name: Run engine tests (test_engines.py)
+        run: python tests/test_engines.py
 
       - name: Run smoke tests (tests/smoke_test.py)
         run: python tests/smoke_test.py
 
       - name: Run tl_parser self-tests
-        run: python -c "import tl_parser; tl_parser._run_self_tests()"
+        run: python -c "from translators.tl_parser import _run_self_tests; _run_self_tests()"
 
       - name: Run screen_translator self-tests
-        run: python -c "import screen_translator; screen_translator._run_self_tests()"
+        run: python -c "from translators.screen import _run_self_tests; _run_self_tests()"
 
       - name: Verify zero third-party dependencies
         run: |
@@ -96,7 +124,7 @@ jobs:
       - name: Type check (informational)
         run: |
           pip install mypy --break-system-packages 2>/dev/null || pip install mypy
-          mypy --ignore-missing-imports --no-error-summary translation_utils.py config.py file_processor/ api_client.py glossary.py translation_db.py || true
+          mypy --ignore-missing-imports --no-error-summary core/translation_utils.py core/config.py file_processor/ core/api_client.py core/glossary.py core/translation_db.py || true
         continue-on-error: true
 
       - name: Integration test (dry-run)
