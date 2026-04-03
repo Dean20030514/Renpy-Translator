@@ -1,8 +1,19 @@
 # 多引擎翻译工具扩展方案
 
-> 基于「多引擎游戏汉化工具」当前状态（第十六轮全部完成、~14700 行核心代码、87+62+13=162 单元测试、三引擎支持：Ren'Py + RPG Maker MV/MZ + CSV/JSONL）的完整扩展规划。
->
-> **阶段零~四全部落地**，里程碑 M1~M4 达成。额外完成：项目结构整理 + Tkinter GUI + PyInstaller 打包 + 第十四轮 Ren'Py 专项五阶段优化 + 第十六轮 screen 裸英文翻译（`--tl-screen`）+ 第十八轮预处理工具链（RPA 解包 + rpyc 反编译 + lint 集成 + 文件级并行 + locked_terms 预替换 + 跨文件去重）。后续路线见 §8。
+## 当前进度
+
+| 对应章节 | 内容 | 状态 |
+|---------|------|------|
+| §1 Ren'Py 优化 | chunk 拆分重试 + pipeline 拆分 + rpyc 清理 + dry-run 增强 | ✅ Done |
+| §2 引擎抽象层 | EngineProfile / TranslatableUnit / EngineBase / EngineDetector | ✅ Done |
+| §3 RPG Maker | MV/MZ 事件指令 + 数据库 + System.json | ✅ Done |
+| §4 CSV/JSONL | 通用格式支持（列名别名 + UTF-8 BOM + 多行） | ✅ Done |
+| §5 通用管线 | 6 阶段统一翻译流程 | ✅ Done |
+| §6 模块适配 | checker/prompts/glossary 引擎参数化 | ✅ Done |
+| §7 测试策略 | 多引擎回归测试（225 用例） | ✅ Done |
+| §8 后续路线图 | RPG Maker VX/Ace、Godot、Unity 等 | 📋 Planned |
+
+> 各阶段详细变更记录见 CHANGELOG.md
 
 ---
 
@@ -23,91 +34,29 @@
 
 ## 1. 当前 Ren'Py 工具优化 ✅ 已完成
 
-> **状态**：四项优化全部落地（第十二轮），测试 66→70，zero regression。
-
-在做多引擎扩展之前，先把现有 Ren'Py 工具的几个低风险高价值改进落地。这些改进与多引擎扩展互不依赖，可以独立推进。
+四项低风险高价值改进已全部落地：chunk 失败自动拆分重试（§1.1）、pipeline 进一步拆分（§1.2）、tl-mode 自动清理 .rpyc（§1.3）、dry-run 增强（§1.4）。后续又经历第十四～十八轮持续优化，详见 CHANGELOG.md。
 
 ### 1.1 chunk 失败自动拆分重试
 
-**现状**：`_translate_chunk_with_retry` 在 API 错误或高丢弃率时整 chunk 原样重试，最多 2 次。
-
-**问题**：当 chunk 过大导致 AI 输出被截断时，原样重试不会有效果。截断是因为响应 token 不够，重试只会得到同样的截断结果。
-
-**方案**：
-
-- 在 `_should_retry` 函数中新增一个判断条件：如果返回的翻译条数 < 期望条数的 50%（强烈暗示截断），标记为 `needs_split`
-- `_translate_chunk_with_retry` 检测到 `needs_split` 后，不做原样重试，而是：
-  - 将 chunk 从中间空行处（或直接二分）拆成两个子 chunk
-  - 分别翻译子 chunk
-  - 合并两个子 chunk 的结果
-- 拆分只做一层（不递归），避免复杂度爆炸
-- 拆分点的选择：优先在 label/screen 边界处拆，其次在空行处，最后直接二等分
-
-**涉及文件**：`translators/direct.py`（`_translate_chunk_with_retry` 和 `_should_retry`）
-
-**风险**：低。拆分逻辑只在重试路径触发，正常翻译路径不受影响。`split_file` 里已有 `_force_split_block` 的拆分经验可以复用。
-
-**验证方式**：构造一个超大 chunk（比如 200 行对话），设置很低的 `max_response_tokens`（如 1000），验证拆分重试后翻译完整度优于原样重试。
+`_should_retry` 检测截断（返回条数 < 50%）→ `_translate_chunk_with_retry` 拆分（label 边界 > 空行 > 二等分）→ 分别翻译 → 合并。仅一层拆分，不递归。
 
 ### 1.2 one_click_pipeline.py 进一步拆分
 
-**现状**：`one_click_pipeline.py` 有 ~1410 行，已拆出 `_run_retranslate_phase` 和 `_run_final_report`，但 `main()` 函数仍然偏大。
-
-**方案**：
-
-- 将 pilot 阶段拆为 `_run_pilot_phase()`：文件风险评分（`_compute_file_risk_score`）+ 选择 pilot 文件 + 执行 pilot 翻译 + AI 术语提取
-- 将闸门评估拆为 `_run_gate_phase()`：`evaluate_gate` 调用 + 结果判定 + 日志输出
-- 将全量翻译拆为 `_run_full_translation_phase()`
-- `main()` 变成纯编排函数：调用四个 `_run_*_phase()` + 异常处理 + 报告汇总
-- 预计 `main()` 从 ~300 行缩减到 ~80 行
-
-**涉及文件**：仅 `one_click_pipeline.py`
-
-**风险**：极低。纯重构，不改任何逻辑，只是把函数体搬到命名函数中。
+`main()` 拆为 `_run_pilot_phase` / `_run_gate_phase` / `_run_full_translation_phase` / `_run_retranslate_phase` / `_run_final_report` 五个阶段函数。
 
 ### 1.3 tl-mode 自动清理 .rpyc 缓存
 
-**现状**：`translators/tl_mode.py` 的 `_clean_rpyc` 函数已存在，但需要用户在 `_apply_tl_game_patches` 中手动触发。
-
-**方案**：
-
-- 在 `run_tl_pipeline` 的最后阶段（所有文件回填完成后），自动扫描翻译过的 `.rpy` 文件对应的 `.rpyc` 文件并删除
-- 只删除与本次翻译修改过的 `.rpy` 同名的 `.rpyc`，不全目录清理
-- 输出日志 `[RPYC] 已清理 N 个缓存文件`
-- 用 `--no-clean-rpyc` 参数允许禁用（默认启用）
-
-**涉及文件**：`translators/tl_mode.py`（`run_tl_pipeline` 尾部 + CLI 参数传递）
-
-**风险**：极低。`.rpyc` 是自动生成的缓存，删除后 Ren'Py 会自动重建。
+`run_tl_pipeline` 完成后自动清理 .rpyc/.rpymc/.rpyb，`--no-clean-rpyc` 可禁用。
 
 ### 1.4 dry-run 模式增强
 
-**现状**：`--dry-run` 只输出文件数、token 估算、费用估算。
-
-**方案**：
-
-- 新增按文件的明细输出：每个 `.rpy` 文件的对话行数、token 数、预估费用
-- 输出对话密度分布直方图（文字版），帮助用户预判哪些文件会走定向翻译
-- 输出术语扫描结果预览（自动提取的角色名 + 已有词典条目数）
-- 所有新增输出仅在 `--verbose` 时显示，默认保持简洁
-
-**涉及文件**：`translators/direct.py`（`run_pipeline` 的 dry-run 分支）
-
-**风险**：零。dry-run 不调用 API，不修改文件。
-
-> **第十四轮补充**：第十四轮在此基础上做了进一步的 Ren'Py 专项五阶段优化：基础重构（pipeline/ 包 + renpy_text_utils.py）→ 代码健壮性（except 收窄 + 配置校验 + GUI 优雅终止）→ 性能优化（TranslationCache + token 估算改进 + 背压机制）→ 翻译质量（E250/W460/W470 新规则 + 术语一致性主动执行）→ 用户体验（GUI 进度条 + 自适应轮询 + 日志裁剪 + SIGTERM 处理）。详见 CHANGELOG.md 第十四轮。
->
-> **第十五轮补充**：新增 `fix_nvl_translation_ids` / `fix_nvl_ids_directory`，自动修正 Ren'Py 8.6+ 生成的 say-only 翻译块 ID 为 7.x nvl+say 哈希，解决含 `nvl clear` 的翻译静默失败。已集成到 `run_tl_pipeline` 后处理链。测试 71→75。详见 CHANGELOG.md 第十五轮。
->
-> **第十六轮补充**：新增 `translators/screen.py`（原 `screen_translator.py`，~420 行），翻译 screen 定义中 Ren'Py tl 框架无法提取的裸英文字符串（`text "..."`/`textbutton "..."`/`tt.Action("...")`）。通过 `--tl-screen` 参数启用，可与 `--tl-mode` 联用。同时修复 `_clean_rpyc`/`delete_rpyc_files`/资源复制中 `.rpymc` 缓存清理遗漏。测试 75→86。详见 CHANGELOG.md 第十六轮。
->
-> **第十八轮补充**：新增预处理工具链 `tools/rpa_unpacker.py`（RPA-3.0/2.0 纯标准库解包）+ `tools/rpyc_decompiler.py`（双层策略：游戏 Python 完美反编译 / RestrictedUnpickler 独立提取）+ `tools/renpy_lint_fixer.py`（lint 集成 + 自动修复 + 优雅降级）。翻译增强：`--file-workers` 文件级并行、locked_terms 预替换（`__LOCKED_TERM_N__` 令牌）、tl-mode 跨文件去重（≥40 字符白名单）。Hook 模板：`resources/hooks/extract_hook.rpy` + `language_switcher.rpy`。测试 162→215。详见 CHANGELOG.md 第十八轮。
+`--verbose` 时输出按文件明细（对话行数/token/费用）+ 密度分布直方图 + 术语预览。
 
 ---
 
 ## 2. 引擎抽象层设计 ✅ 已完成
 
-> **状态**：阶段一落地。`engine_base.py`（202 行）+ `engine_detector.py`（160 行）+ `engines/renpy_engine.py`（74 行）+ `engines/__init__.py`（3 行）。`main.py` 新增 `--engine` 参数（auto/renpy/rpgmaker/csv/jsonl），auto/renpy 走原路径零改动，其他引擎走 `resolve_engine()` → `engine.run(args)`。25 个引擎测试全绿，70 现有测试零回归。
+`engine_base.py` + `engine_detector.py` + `renpy_engine.py`。`--engine` 参数路由（auto/renpy/rpgmaker/csv/jsonl）。
 
 ### 2.1 核心设计原则
 

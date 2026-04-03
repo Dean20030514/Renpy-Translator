@@ -38,7 +38,7 @@
 | 第十五轮 | nvl clear 翻译 ID 修正 | `fix_nvl_translation_ids` 自动检测 8.6+ say-only 哈希并修正为 7.x nvl+say 哈希 + 管道集成 + 测试 71→75 |
 | 第十六轮 | screen 文本翻译 + 缓存清理修复 | `screen_translator.py` screen 裸英文翻译（`--tl-screen`，含 text/textbutton/tt.Action/Notify 四模式）+ `_should_skip` 标签误杀修复 + 缓存清理 .rpymc 补全 + 流水线/启动器/打包集成 + 测试 75→87 |
 | 第十七轮 | 项目结构深度重构 | 根目录 25→5 .py：core/(7模块) + translators/(6模块) + tools/(扩充3模块)，消除 re-export 兼容层 + 循环依赖，162 测试全绿 |
-| 第十八轮 | 预处理工具链 + 翻译增强 | RPA 解包 + rpyc 反编译（双层策略）+ Ren'Py lint 集成 + 文件级并行翻译 + locked_terms 预替换 + 跨文件去重 + Hook 模板，测试 162→215 |
+| 第十八轮 | 预处理工具链 + 翻译增强 | RPA 解包 + rpyc 反编译（双层策略）+ Ren'Py lint 集成 + 文件级并行翻译 + locked_terms 预替换 + 跨文件去重 + Hook 模板，测试 162→225 |
 
 ---
 
@@ -78,7 +78,7 @@
 
 - 新增文件：5（3 工具 + 2 Hook 模板）+ 4 测试文件
 - 修改文件：8（direct.py / tl_mode.py / checker.py / translation_utils.py / main.py / gui.py / one_click_pipeline.py / __init__.py）
-- 测试数量：162 → **215**（94 + 62 + 13 + 14 + 17 + 15 + 10 新测试文件，不含内建断言）
+- 测试数量：162 → **225**（94 + 62 + 13 + 14 + 17 + 15 + 10 = 225 自动化用例，不含内建断言）
 - 零依赖原则：保持
 - 所有预处理工具遵循 fail-fast + 不阻断主流程原则
 
@@ -562,48 +562,14 @@ digest = md5.hexdigest()[:8]           # → label_XXXXXXXX
 
 ## 已回滚
 
-| 描述 | 原因 |
-|------|------|
-| Prompt 强制覆盖指令（CRITICAL RULE） | 降低 AI 返回率 5 个百分点，增量覆盖导致丢翻译 |
-| 增量翻译 + merge 覆盖架构 | 两次翻译覆盖范围不一致时丢数据，被 retranslate 模式替代 |
+| 描述 | 原因 | 教训 |
+|------|------|------|
+| Prompt 强制覆盖指令（CRITICAL RULE） | 降低 AI 返回率 5 个百分点，增量覆盖导致丢翻译 | prompt 干预不如算法保障（占位符保护 + checker 过滤）可靠；强制指令可能干扰 AI 正常输出 |
+| 增量翻译 + merge 覆盖架构 | 两次翻译覆盖范围不一致时丢数据，被 retranslate 模式替代 | 合并策略复杂度高且脆弱，不如"全量 + 补翻"两步走简单可靠 |
 
 ---
 
-## 配置项速查表
-
-### CLI 参数（本轮新增）
-
-| 参数 | 所在文件 | 默认值 | 说明 |
-|------|----------|--------|------|
-| `--tl-priority` | `main.py` | False | 仅翻译 `tl/` 下的 .rpy |
-| `--retranslate` | `main.py` | False | 补翻模式：扫描残留英文行 |
-| `--min-dialogue-density` | `main.py` | 0.20 | 低密度阈值（低于此值走定向翻译） |
-| `--tl-mode` | `main.py` | False | tl 框架翻译模式 |
-| `--tl-lang` | `main.py` | `chinese` | tl 语言子目录名 |
-| `--patch-font` | `main.py` | False | 启用自动字体补丁 |
-| `--font-file` | `main.py` | — | 指定字体文件路径 |
-| `--verbose` | `main.py` | False | 日志级别设为 DEBUG |
-| `--quiet` | `main.py` | False | 日志级别设为 WARNING |
-| `--tl-mode`（pipeline） | `one_click_pipeline.py` | False | 一键流水线使用 tl-mode 翻译 |
-| `--tl-lang`（pipeline） | `one_click_pipeline.py` | `chinese` | 一键流水线 tl 语言子目录名 |
-
-### 模块级常量
-
-| 常量 | 所在文件 | 默认值 | 说明 | 调整建议 |
-|------|----------|--------|------|----------|
-| `LEN_RATIO_LOWER` | `one_click_pipeline.py` | 0.15 | W430 译文长度比例下限 | 短句误报多可调低 |
-| `LEN_RATIO_UPPER` | `one_click_pipeline.py` | 2.5 | W430 译文长度比例上限 | 译文偏长可调高 |
-| `MODEL_SPEAKING_PATTERNS` | `file_processor.py` | 7 条模式 | W440 模型自述检测关键词 | 新套话可追加 |
-| `PLACEHOLDER_ORDER_PATTERNS` | `file_processor.py` | 4 组 (regex, name) | W251 占位符顺序提取 | 新类型追加，具体 pattern 靠前 |
-| `SKIP_FILES_FOR_TRANSLATION` | `file_processor.py` | 5 个文件名 | 跳过翻译的配置文件 | 按项目追加无对话文件 |
-| `_QUOTE_STRIP_PAIRS` | `tl_parser.py` | 3 对引号 | fill_translation 引号剥离 | AI 返回新引号类型时追加 |
-
-### 数据文件字段
-
-| 字段 | 所在文件 | 默认值 | 说明 |
-|------|----------|--------|------|
-| `locked_terms` | `glossary.json` | `[]` | 锁定术语 key 列表，违反报 E411 |
-| `no_translate` | `glossary.json` | `[]` | 禁翻片段列表，违反报 E420 |
+> 配置项速查表已移至 README §附录：配置项速查表
 
 ---
 

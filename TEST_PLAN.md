@@ -40,7 +40,7 @@
 
 ## 二、已覆盖的测试用例
 
-### tests/test_all.py（87 个单元测试）
+### tests/test_all.py（94 个单元测试）
 
 | # | 函数 | 覆盖模块 | 测试内容 |
 |---|------|----------|----------|
@@ -458,42 +458,16 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 
 ---
 
-### 低优先级：需 API 的端到端测试
+### 待补充：需 API 的端到端测试
 
-#### T11. 单文件翻译端到端
+| 编号 | 测试 | 状态 | 说明 |
+|------|------|------|------|
+| T11 | 单文件翻译端到端 | ⚠ 需 API | `tests/test_single.py`，验证 API→回写→校验完整链路 |
+| T12 | tl-mode 端到端 | ⚠ 需 API | 5-10 个空槽位，验证回填+引号剥离+备份+进度 |
+| T13 | retranslate 端到端 | ⚠ 需 API | 验证残留英文检出+补翻+已有翻译不破坏 |
+| T14 | 一键流水线端到端 | ⚠ 需 API | 极小目录，验证 Stage 1-4 + 闸门 + 报告 |
 
-使用 `tests/test_single.py`（需 API key），验证：
-1. API 调用成功返回翻译
-2. `apply_translations` 回写无崩溃
-3. `validate_translation` 无 error 级 issue
-4. 输出文件可正常保存
-
-#### T12. tl-mode 小规模端到端
-
-对含 5-10 个空槽位的 tl 文件运行 `--tl-mode`，验证：
-1. `scan_tl_directory` 正确检出空槽位
-2. API 调用返回翻译
-3. `fill_translation` 精确回填
-4. 引号剥离保护生效
-5. `.bak` 备份创建
-6. `tl_progress.json` 正确记录
-
-#### T13. retranslate 补翻端到端
-
-对含残留英文行的已翻译文件运行 `--retranslate`，验证：
-1. `find_untranslated_lines` 正确检出
-2. `build_retranslate_chunks` 构建合理
-3. 补翻回写后残留英文行减少
-4. 已有翻译不被破坏
-5. `.bak` 备份创建
-
-#### T14. 一键流水线端到端
-
-用极小游戏目录（3-5 个文件）运行 `one_click_pipeline.py`，验证：
-1. Stage 1-4 均正常完成
-2. `pipeline_report.json` 结构完整
-3. 闸门评估结果合理
-4. `evaluate_gate` 返回字典包含所有预期字段
+> T11-T14 需 API key，建议作为 CI 中的可选步骤（手动触发）。
 
 ---
 
@@ -502,19 +476,21 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 1. 单元测试（87 个）
-python tests/test_all.py
-
-# 2. 冒烟测试（13 个）
-python tests/smoke_test.py
-
-# 3. tl_parser 自测（75 个断言）
-python -m translators.tl_parser
+# 全部 225 个自动化用例（< 5 秒）
+python tests/test_all.py             # 94 个单元+集成测试
+python tests/test_engines.py         # 62 个引擎抽象层测试
+python tests/smoke_test.py           # 13 个校验规则冒烟测试
+python tests/test_rpa_unpacker.py    # 14 个 RPA 解包测试
+python tests/test_rpyc_decompiler.py # 17 个 rpyc 反编译测试
+python tests/test_lint_fixer.py      # 15 个 lint 修复测试
+python tests/test_tl_dedup.py        # 10 个 tl 去重测试
+python -m translators.tl_parser --test  # 75 个解析器断言（内建）
 ```
 
 全部通过预期输出：
 ```
-ALL 87 TESTS PASSED          (tests/test_all.py)
+ALL 94 TESTS PASSED          (tests/test_all.py)
+ALL 62 ENGINE TESTS PASSED   (tests/test_engines.py)
 All tests passed              (tests/smoke_test.py)
 All 75 assertions passed.     (translators/tl_parser.py)
 ```
@@ -577,25 +553,21 @@ python -m translators.renpy_text_utils --game-dir "E:\Games\MyGame" --provider x
 | core.translation_utils.TranslationCache | get/put/confidence/stats/thread_safety | 集成测试验证 |
 | core.glossary.get_consistent_translation / _evict_low_frequency | 术语一致性 / 内存淘汰 | 集成测试验证 |
 
-### 覆盖不足（需补充）
+### 当前覆盖状态
 
-| 优先级 | 模块/函数 | 当前状态 | 补充建议 |
-|--------|----------|----------|----------|
-| ~~高~~ | ~~`protect_placeholders` / `restore_placeholders`~~ | **已覆盖** | ~~T1~~ → test_all #22-26 |
-| ~~高~~ | ~~`check_response_item`~~ | **已覆盖** | ~~T2~~ → test_all #27-32 |
-| ~~高~~ | ~~`check_response_chunk`~~ | **已覆盖** | ~~T3~~ → test_all #33-36 |
-| ~~高~~ | ~~`_sanitize_translation`~~ | **已覆盖** | ~~T4~~ → translators/tl_parser.py 内建自测 #11-#12（12 个断言） |
-| ~~中~~ | ~~`calculate_dialogue_density`~~ | **已覆盖** | ~~T6~~ → test_all.py `test_dialogue_density`（3 用例） |
-| ~~中~~ | ~~`find_untranslated_lines` 过滤~~ | **已覆盖** | ~~T8~~ → test_all.py `test_find_untranslated_lines`（多项断言） |
-| ~~中~~ | ~~`fill_translation` 边界~~ | **已覆盖** | ~~T5~~ → translators/tl_parser.py 内建自测 #11-#12（7 个断言） |
-| ~~中~~ | ~~`TranslationDB` save/load~~ | **已覆盖** | ~~T10~~ → tests/test_all.py `test_translation_db_roundtrip` |
-| ~~中~~ | ~~`SKIP_FILES_FOR_TRANSLATION`~~ | **已覆盖** | ~~T7~~ → tests/test_all.py `test_skip_files` |
-| 低 | 端到端 tl-mode | 无自动化 | T12：需 API |
-| 低 | 端到端 retranslate | 无自动化 | T13：需 API |
+| 模块/函数 | 状态 | 测试位置 |
+|----------|------|---------|
+| `protect_placeholders` / `restore_placeholders` | ✅ 已覆盖 | test_all #22-26 |
+| `check_response_item` / `check_response_chunk` | ✅ 已覆盖 | test_all #27-36 |
+| `_sanitize_translation` / `fill_translation` 边界 | ✅ 已覆盖 | tl_parser 内建（19 断言） |
+| `calculate_dialogue_density` / `find_untranslated_lines` | ✅ 已覆盖 | test_all #37-39 |
+| `TranslationDB` / `SKIP_FILES_FOR_TRANSLATION` | ✅ 已覆盖 | test_all #38-40 |
+| RPA 解包 / rpyc 反编译 / lint 修复 / tl 去重 | ✅ 已覆盖 | 独立测试文件 |
+| 端到端 tl-mode | ❌ 待补充 | T12：需 API |
+| 端到端 retranslate | ❌ 待补充 | T13：需 API |
+| 一键流水线端到端 | ❌ 待补充 | T14：需 API |
+| GUI / build 流程 | ⚠ 仅手动 | `python gui.py` / `python build.py` |
 
-### 下一步行动
+### 下一步
 
-1. ~~将 T1-T3 的代码示例加入 `tests/test_all.py` 或新建 `test_core.py`~~ — **已完成**（tests/test_all.py #22-36）
-2. ~~将 T4-T5 的边界场景加入 `translators/tl_parser.py` 内建测试~~ — **已完成**（translators/tl_parser.py 内建自测 #11-#12，19 个断言）
-3. ~~T6-T10 作为集成级测试~~ — **已完成**（tests/test_all.py #37-42，6 个集成测试）
-4. T11-T14 的端到端测试需 API key，建议作为 CI 中的可选步骤
+T11-T14 端到端测试需 API key，建议作为 CI 可选步骤（手动触发）。GUI 和 build 流程继续保持手动验证。

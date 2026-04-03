@@ -4,6 +4,16 @@
 
 **零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译** | **RPA 解包 + rpyc 反编译**
 
+### 文档索引
+
+| 文档 | 读者 | 内容 |
+|------|------|------|
+| **README.md**（本文件） | 用户 | 快速开始、翻译模式、参数说明、故障排查 |
+| [.cursor_prompt](.cursor_prompt) | AI 助手 / 开发者 | 架构、模块依赖、算法、开发原则 |
+| [CHANGELOG.md](CHANGELOG.md) | 开发者 | 逐轮变更记录（第一～十八轮） |
+| [EXPANSION_PLAN.md](EXPANSION_PLAN.md) | 开发者 | 多引擎扩展路线图与设计细节 |
+| [TEST_PLAN.md](TEST_PLAN.md) | 开发者 | 测试覆盖明细、缺口分析、执行方法 |
+
 ---
 
 ## 特性一览
@@ -187,6 +197,16 @@ python main.py --engine rpgmaker --game-dir "E:\Games\RPGMakerGame" --provider x
 
 **注意**：翻译后需手动安装中文字体到 `www/fonts/` 目录，工具会在翻译完成后给出提示。
 
+### 翻译模式选择指南
+
+| 维度 | Direct-mode | tl-mode | Retranslate |
+|------|------------|---------|-------------|
+| **适用场景** | 快速翻译、无 SDK 环境 | 精确翻译、有 Ren'Py SDK | 补翻残留英文 |
+| **前置条件** | 无 | 需先用 SDK 生成 `tl/<lang>/` | 需已有翻译输出 |
+| **回写精度** | 文本匹配（~96%） | 行号精确定位（~99.97%） | 原地替换 |
+| **推荐工作流** | 小项目一次到位 | 大项目首选（配合 `--tl-screen` 覆盖 UI） | 任何模式翻译后扫尾 |
+| **CLI 参数** | 默认 | `--tl-mode --tl-lang chinese` | `--retranslate` |
+
 ---
 
 ## 一键流水线
@@ -290,23 +310,32 @@ python -m tools.renpy_upgrade_tool ./game --fix --backup
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  入口层                                                       │
-│  START.bat → start_launcher.py     中文交互启动器（7 种模式） │
-│  main.py                           CLI 入口 + 路由            │
+│  gui.py                            Tkinter 图形界面           │
+│  START.bat → start_launcher.py     中文交互启动器（9 种模式） │
+│  main.py                           CLI 入口 + --engine 路由   │
 │  one_click_pipeline.py             四阶段流水线 CLI            │
 ├──────────────────────────────────────────────────────────────┤
-│  翻译引擎层  translators/                                     │
+│  Ren'Py 翻译层  translators/                                  │
 │  direct.py             direct-mode 整文件翻译引擎（含 dry-run）│
 │  retranslator.py       补翻引擎（残留英文检测 + 精准补翻）    │
 │  tl_mode.py            tl-mode 翻译框架槽位引擎               │
-│  screen.py             screen 文本翻译引擎                     │
+│  screen.py             screen 文本翻译引擎（--tl-screen）     │
 │  tl_parser.py          tl/ 框架状态机解析器                    │
 │  renpy_text_utils.py   Ren'Py 文本分析公共函数                │
 ├──────────────────────────────────────────────────────────────┤
+│  多引擎层  engines/                                           │
+│  engine_base.py        EngineProfile + TranslatableUnit + ABC │
+│  engine_detector.py    引擎自动检测 + --engine CLI 路由       │
+│  renpy_engine.py       Ren'Py 薄包装（委托 translators/）    │
+│  rpgmaker_engine.py    RPG Maker MV/MZ（事件+数据库+System） │
+│  csv_engine.py         CSV/JSONL 通用格式                     │
+│  generic_pipeline.py   通用翻译流水线（6 阶段）               │
+├──────────────────────────────────────────────────────────────┤
 │  核心层  core/                                                │
 │  api_client.py         多提供商 API 客户端 + 限流 + 计费      │
-│  config.py             全局配置                                │
-│  lang_config.py        语言配置                                │
-│  prompts.py            Prompt 模板工厂（支持外部覆写）         │
+│  config.py             全局配置（三层合并）                    │
+│  lang_config.py        目标语言抽象层                          │
+│  prompts.py            Prompt 模板工厂 + 引擎 addon + CoT     │
 │  glossary.py           术语表 + 翻译记忆 + 锁定/禁翻          │
 │  translation_db.py     翻译元数据 JSON 存储                    │
 │  translation_utils.py  公共辅助（ChunkResult/ProgressTracker） │
@@ -316,43 +345,60 @@ python -m tools.renpy_upgrade_tool ./game --fix --backup
 │  pipeline/               一键流水线拆分包（helpers/gate/stages）│
 ├──────────────────────────────────────────────────────────────┤
 │  工具层  tools/                                               │
+│  rpa_unpacker.py         RPA-3.0/2.0 纯标准库解包             │
+│  rpyc_decompiler.py      rpyc 反编译（双层策略）              │
+│  renpy_lint_fixer.py     lint 集成 + 自动修复                  │
 │  font_patch.py           字体补丁（gui.*_font 改写）           │
 │  renpy_upgrade_tool.py   Ren'Py 7→8 升级扫描 + 自动修复       │
 │  review_generator.py     翻译审校报告生成                      │
-│  verify_alignment.py     零 API 验证策略测试                   │
-│  revalidate.py           对已有输出重跑闸门                    │
-│  patch_font_now.py       独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
-│  测试层                                                       │
-│  tests/test_all.py       综合模块测试（87 用例）               │
+│  测试层（225 个自动化用例）                                    │
+│  tests/test_all.py       综合模块测试（94 用例）               │
+│  tests/test_engines.py   引擎抽象层测试（62 用例）             │
 │  tests/smoke_test.py     冒烟测试（13 用例）                   │
-│  tests/test_single.py    单文件端到端测试                      │
+│  tests/test_rpa_unpacker.py  RPA 解包测试（14 用例）           │
+│  tests/test_rpyc_decompiler.py  rpyc 反编译测试（17 用例）     │
+│  tests/test_lint_fixer.py    lint 修复测试（15 用例）          │
+│  tests/test_tl_dedup.py  tl 去重测试（10 用例）               │
+│  tests/test_single.py    单文件端到端测试（需 API）            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### 模块调用关系
 
 ```
-start_launcher.py
-  ├─ main.py（模式 1-3, 5-6）
-  │    ├── core/api_client.py          API 调用 + 限流 + 用量统计
-  │    ├── file_processor/             拆分 + 回写 + 校验 + 占位符保护（包）
-  │    ├── translators/tl_parser.py    tl-mode 解析 + 精确回填
-  │    ├── core/prompts.py             Prompt 模板构建
-  │    ├── core/glossary.py            术语表管理
-  │    ├── core/translation_db.py      翻译元数据记录
-  │    └── tools/font_patch.py         可选字体补丁
+gui.py (图形界面) ─── start_launcher.py (CLI 菜单)
+       │                      │
+       └──────────────────────┘
+                │ subprocess 调用
+                ▼
+main.py (CLI 入口 + --engine 路由)
+  ├── [engine=auto/renpy] → translators/ Ren'Py 三条管线
+  │    ├── translators/direct.py         (direct-mode)
+  │    ├── translators/retranslator.py   (补翻)
+  │    ├── translators/tl_mode.py        (tl-mode)
+  │    ├── translators/screen.py         (screen 裸英文翻译)
+  │    └── translators/tl_parser.py      (tl/ 解析器)
   │
-  ├─ one_click_pipeline.py（模式 4）→ 委托 pipeline/ 包
-  │    ├── pipeline/helpers.py         公共工具（日志/路径/归因）
-  │    ├── pipeline/gate.py            闸门评估（file_processor 校验）
-  │    ├── pipeline/stages.py          四阶段执行（pilot→gate→full→retranslate）
-  │    ├── 调用 main.py（subprocess，分阶段执行）
-  │    ├── core/translation_db.py      漏翻归因分析
-  │    ├── tools/font_patch.py         打包前字体补丁
-  │    └── main.py imports             retranslate_file（补翻阶段）
+  ├── [engine=rpgmaker/csv/jsonl] → engines/ 多引擎架构
+  │    ├── engines/engine_detector.py  (检测+路由)
+  │    ├── engines/engine_base.py      (EngineProfile/TranslatableUnit)
+  │    ├── engines/generic_pipeline.py (6 阶段通用流水线)
+  │    ├── engines/rpgmaker_engine.py  (RPG Maker MV/MZ)
+  │    └── engines/csv_engine.py       (CSV/JSONL)
   │
-  └─ tools/renpy_upgrade_tool.py（模式 7，独立工具）
+  ├── core/ 共享基础设施
+  │    ├── api_client.py / prompts.py / glossary.py
+  │    ├── translation_db.py / translation_utils.py
+  │    ├── config.py / lang_config.py
+  │    └── file_processor/ (splitter/patcher/checker/validator)
+  │
+  ├── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线)
+  │
+  └── tools/ 独立工具（可单独运行）
+       ├── rpa_unpacker.py / rpyc_decompiler.py / renpy_lint_fixer.py
+       ├── font_patch.py / renpy_upgrade_tool.py / review_generator.py
+       └── verify_alignment.py / revalidate.py / analyze_writeback_failures.py
 ```
 
 所有底层模块仅依赖 Python 标准库，无循环依赖。
@@ -555,6 +601,11 @@ python -m tools.renpy_lint_fixer "E:\Games\MyGame"
 | `--quiet` | — | 仅输出 WARNING 及以上日志 |
 | `--stage` | `single` | 阶段标记（流水线内部使用） |
 | `--tl-screen` | — | 翻译 screen 中的裸英文字符串（可与 `--tl-mode` 联用） |
+| `--engine` | `auto` | 游戏引擎类型（auto/renpy/rpgmaker/csv/jsonl） |
+| `--cot` | — | CoT 思维链翻译（直译→校正→意译，质量更高费用+30-50%） |
+| `--font-config` | — | 字体配置文件路径（font_config.json） |
+| `--no-clean-rpyc` | — | 跳过 tl-mode 翻译后的 .rpyc 缓存清理 |
+| `--config` | 自动 | 配置文件路径（默认查找 game-dir 下 renpy_translate.json） |
 
 ---
 
@@ -659,9 +710,15 @@ MIT License — 详见 [LICENSE](LICENSE)。
 
 ```bash
 # 快速验证（< 5 秒，无需 API）
-python tests/test_all.py     # 87 个单元+集成测试
-python tests/smoke_test.py   # 13 个校验规则冒烟测试
-python -m translators.tl_parser --test   # 75 个解析器断言
+python tests/test_all.py             # 94 个单元+集成测试
+python tests/test_engines.py         # 62 个引擎抽象层测试
+python tests/smoke_test.py           # 13 个校验规则冒烟测试
+python tests/test_rpa_unpacker.py    # 14 个 RPA 解包测试
+python tests/test_rpyc_decompiler.py # 17 个 rpyc 反编译测试
+python tests/test_lint_fixer.py      # 15 个 lint 修复测试
+python tests/test_tl_dedup.py        # 10 个 tl 去重测试
+python -m translators.tl_parser --test  # 75 个解析器断言
+# 总计 225 个自动化用例（不含内建断言）
 ```
 
 ### CI
@@ -786,16 +843,24 @@ UnicodeDecodeError: 'utf-8' codec can't decode byte ...
 
 详见 [CHANGELOG.md](CHANGELOG.md)。
 
-### 第十五轮：nvl clear 翻译 ID 修正
+---
 
-- **问题**：Ren'Py 8.6+ 生成 .tl 模板时默认只用 Say 语句算哈希，但 7.x 会把 `nvl clear` 也纳入哈希，导致含 `nvl clear` 的翻译块静默失败
-- **修复**：`fix_nvl_translation_ids` / `fix_nvl_ids_directory` 自动检测并修正 ID，已集成到 tl-mode 后处理链
-- **测试**：71→75
+## 附录：配置项速查表
 
-### 第十四轮：全面优化（Ren'Py 专项）
+### 模块级常量
 
-- **基础重构**：新建 `translators/renpy_text_utils.py` 公共函数模块 + `pipeline/` 包拆分（helpers/gate/stages）+ dry-run 逻辑提取
-- **代码健壮性**：收窄 10+ 处裸 `except`、`config.validate()` 类型/范围校验、GUI 优雅终止
-- **性能优化**：会话级翻译缓存（相同原文自动命中）、GUI 自适应轮询（50/200ms）、日志裁剪（5000→3000 行）
-- **翻译质量**：新增 E250（转义序列）/ W460（缓存一致性）/ W470（相同原文不同译文）校验规则，校验总数 55+
-- **用户体验**：GUI 实时进度条、优雅终止（保存进度后退出）、测试用例 66→71
+| 常量 | 所在文件 | 默认值 | 说明 | 调整建议 |
+|------|----------|--------|------|----------|
+| `LEN_RATIO_LOWER` | `pipeline/helpers.py` | 0.15 | W430 译文长度比例下限 | 短句误报多可调低 |
+| `LEN_RATIO_UPPER` | `pipeline/helpers.py` | 2.5 | W430 译文长度比例上限 | 译文偏长可调高 |
+| `MODEL_SPEAKING_PATTERNS` | `file_processor/checker.py` | 7 条模式 | W440 模型自述检测关键词 | 新套话可追加 |
+| `PLACEHOLDER_ORDER_PATTERNS` | `file_processor/checker.py` | 4 组 (regex, name) | W251 占位符顺序提取 | 新类型追加 |
+| `SKIP_FILES_FOR_TRANSLATION` | `file_processor/checker.py` | 5 个文件名 | 跳过翻译的配置文件 | 按项目追加 |
+| `_QUOTE_STRIP_PAIRS` | `translators/tl_parser.py` | 3 对引号 | fill_translation 引号剥离 | AI 返回新引号类型时追加 |
+
+### 数据文件字段
+
+| 字段 | 所在文件 | 默认值 | 说明 |
+|------|----------|--------|------|
+| `locked_terms` | `glossary.json` | `[]` | 锁定术语 key 列表，违反报 E411 |
+| `no_translate` | `glossary.json` | `[]` | 禁翻片段列表，违反报 E420 |
