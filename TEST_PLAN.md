@@ -10,13 +10,13 @@
 
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `tests/test_all.py` | 单元+集成测试 | api_client / file_processor / glossary / prompts / main / one_click_pipeline / translation_db / config / lang_config / review_generator / direct_translator / config validation / tl_parser nvl ID 修正 / screen_translator | 87 | 否 |
-| `tests/test_engines.py` | 引擎抽象层测试 | EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine / EngineBase / CSVEngine / generic_pipeline / checker 参数化 / prompts addon / RPGMakerMVEngine / glossary RPG Maker | 62 | 否 |
+| `tests/test_all.py` | 单元+集成测试 | core.api_client / file_processor / core.glossary / core.prompts / main / core.translation_utils / translators.retranslator / translators.renpy_text_utils / core.translation_db / core.config / core.lang_config / tools.review_generator / translators.direct / translators.tl_parser nvl ID 修正 / translators.screen | 87 | 否 |
+| `tests/test_engines.py` | 引擎抽象层测试 | engines.EngineProfile / engines.TranslatableUnit / engines.EngineDetector / engines.RenPyEngine / engines.EngineBase / engines.CSVEngine / engines.generic_pipeline / checker 参数化 / core.prompts addon / engines.RPGMakerMVEngine / core.glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
-| `tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
+| `translators/tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
 
-> **自动化测试总计**：87 + 62 + 13 = **162** 个用例（不含 tl_parser 内建 75 断言 + screen_translator 内建 51 断言）。
+> **自动化测试总计**：87 + 62 + 13 = **162** 个用例（不含 translators/tl_parser 内建 75 断言 + translators/screen 内建 51 断言）。
 
 > **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
@@ -36,31 +36,31 @@
 
 ## 二、已覆盖的测试用例
 
-### test_all.py（75 个单元测试）
+### tests/test_all.py（87 个单元测试）
 
 | # | 函数 | 覆盖模块 | 测试内容 |
 |---|------|----------|----------|
-| 1 | `test_api_config` | api_client | 5 个提供商的 endpoint / model 默认值 |
-| 2 | `test_usage_stats` | api_client | token 累计、费用估算、summary 格式 |
-| 3 | `test_rate_limiter` | api_client | RateLimiter acquire 不报错 |
+| 1 | `test_api_config` | core.api_client | 5 个提供商的 endpoint / model 默认值 |
+| 2 | `test_usage_stats` | core.api_client | token 累计、费用估算、summary 格式 |
+| 3 | `test_rate_limiter` | core.api_client | RateLimiter acquire 不报错 |
 | 4 | `test_estimate_tokens` | file_processor | 英文/中文 token 估算 > 0 |
 | 5 | `test_find_block_boundaries` | file_processor | label/screen/init 块边界检测 |
 | 6 | `test_safety_check` | file_processor | 变量丢失/多出、标签不匹配、换行符、{#id}、%(name)s、长度比例 |
 | 7 | `test_apply_translations` | file_processor | 基本行级回写 |
 | 8 | `test_apply_cascade` | file_processor | 多条翻译指向同一行时不重复替换 |
 | 9 | `test_validate_translation` | file_processor | 无问题文件通过 + 变量丢失检出 |
-| 10 | `test_glossary` | glossary | to_prompt_text / update_from_translations 过滤（短句/同值/数字/标点） |
-| 11 | `test_prompts` | prompts | system_prompt 含风格/术语/规范 + user_prompt 含文件名/chunk 信息 |
-| 12 | `test_json_parse` | api_client | 6 级 JSON 解析：直接/markdown/尾逗号/空数组/垃圾/逐对象/转义引号/字段顺序 |
+| 10 | `test_glossary` | core.glossary | to_prompt_text / update_from_translations 过滤（短句/同值/数字/标点） |
+| 11 | `test_prompts` | core.prompts | system_prompt 含风格/术语/规范 + user_prompt 含文件名/chunk 信息 |
+| 12 | `test_json_parse` | core.api_client | 6 级 JSON 解析：直接/markdown/尾逗号/空数组/垃圾/逐对象/转义引号/字段顺序 |
 | 13 | `test_force_split` | file_processor | 超大块强制拆分，总行数不丢 |
 | 14 | `test_triple_quote_replacement` | file_processor | 三引号字符串替换 |
 | 15 | `test_underscore_func_replacement` | file_processor | `_()` 包裹字符串替换 |
 | 16 | `test_validate_menu_identifier` | file_processor | `{#identifier}` 保留/丢失检测 |
-| 17 | `test_glossary_dedup` | glossary | terms 中已有的不重复进 memory |
+| 17 | `test_glossary_dedup` | core.glossary | terms 中已有的不重复进 memory |
 | 18 | `test_image_block_boundary` | file_processor | image 声明作为块边界 |
-| 19 | `test_glossary_thread_safety` | glossary | 4 线程 × 50 条并发写入 |
-| 20 | `test_progress_cleanup` | main.ProgressTracker | mark_file_done 后 results 被清理 |
-| 21 | `test_pricing_lookup` | api_client | 精确/前缀/兜底定价 + 推理模型检测 |
+| 19 | `test_glossary_thread_safety` | core.glossary | 4 线程 × 50 条并发写入 |
+| 20 | `test_progress_cleanup` | core.translation_utils.ProgressTracker | mark_file_done 后 results 被清理 |
+| 21 | `test_pricing_lookup` | core.api_client | 精确/前缀/兜底定价 + 推理模型检测 |
 | 22 | `test_protect_restore_roundtrip` | file_processor | protect→translate→restore 往返正确 |
 | 23 | `test_protect_dedup` | file_processor | 相同占位符去重（mapping 长度 1） |
 | 24 | `test_protect_empty_and_no_placeholders` | file_processor | 空文本/无占位符原样返回 |
@@ -76,57 +76,57 @@
 | 34 | `test_check_response_chunk_mismatch` | file_processor | 条数不一致有警告 |
 | 35 | `test_check_response_chunk_empty` | file_processor | 空 chunk 无警告 |
 | 36 | `test_check_response_chunk_skip_chinese` | file_processor | 已含中文行跳过 |
-| 37 | `test_dialogue_density` | main | 密度自适应路由（低/高/空 3 用例） |
+| 37 | `test_dialogue_density` | translators.retranslator | 密度自适应路由（低/高/空 3 用例） |
 | 38 | `test_skip_files` | file_processor | SKIP_FILES_FOR_TRANSLATION 跳过名单完整性 |
-| 39 | `test_find_untranslated_lines` | main | 漏翻检测二次过滤（auto/idle/hover/image 排除） |
-| 40 | `test_translation_db_roundtrip` | translation_db | save/load 往返 + upsert 去重 |
-| 41 | `test_is_untranslated_dialogue` | one_click_pipeline | 漏翻检测辅助函数（中文/英文/短文本） |
-| 42 | `test_restore_placeholders_in_translations` | main | 公共辅助函数占位符还原 |
-| 43 | `test_progress_resume` | main.ProgressTracker | 写入后重载数据一致 |
-| 44 | `test_progress_normalize` | main.ProgressTracker | 损坏/缺key的JSON不崩溃 |
-| 45 | `test_filter_checked_translations` | main | checker过滤：正常/空译文/占位符缺失 |
-| 46 | `test_deduplicate_translations` | main | 去重：有重复/无重复/空列表 |
-| 47 | `test_match_string_entry_fallback` | main | 四层fallback：精确/strip/去令牌/转义 |
-| 48 | `test_api_empty_choices` | api_client | 推理模型检测（reasoning/o系列） |
+| 39 | `test_find_untranslated_lines` | translators.retranslator | 漏翻检测二次过滤（auto/idle/hover/image 排除） |
+| 40 | `test_translation_db_roundtrip` | core.translation_db | save/load 往返 + upsert 去重 |
+| 41 | `test_is_untranslated_dialogue` | translators.renpy_text_utils | 漏翻检测辅助函数（中文/英文/短文本） |
+| 42 | `test_restore_placeholders_in_translations` | core.translation_utils | 公共辅助函数占位符还原 |
+| 43 | `test_progress_resume` | core.translation_utils.ProgressTracker | 写入后重载数据一致 |
+| 44 | `test_progress_normalize` | core.translation_utils.ProgressTracker | 损坏/缺key的JSON不崩溃 |
+| 45 | `test_filter_checked_translations` | core.translation_utils | checker过滤：正常/空译文/占位符缺失 |
+| 46 | `test_deduplicate_translations` | core.translation_utils | 去重：有重复/无重复/空列表 |
+| 47 | `test_match_string_entry_fallback` | core.translation_utils | 四层fallback：精确/strip/去令牌/转义 |
+| 48 | `test_api_empty_choices` | core.api_client | 推理模型检测（reasoning/o系列） |
 | 49 | `test_positive_int_validation` | main | CLI参数校验：正值/零/负值 |
-| 50 | `test_reasoning_model_timeout` | api_client | 推理模型auto timeout≥300s |
-| 51 | `test_glossary_hyphenated_names` | glossary | 连字符人名提取（Mary-Jane） |
-| 52 | `test_glossary_memory_confidence` | glossary | 翻译记忆信心度过滤（count>=2才输出） |
+| 50 | `test_reasoning_model_timeout` | core.api_client | 推理模型auto timeout≥300s |
+| 51 | `test_glossary_hyphenated_names` | core.glossary | 连字符人名提取（Mary-Jane） |
+| 52 | `test_glossary_memory_confidence` | core.glossary | 翻译记忆信心度过滤（count>=2才输出） |
 | 53 | `test_protect_control_tags` | file_processor | 控制标签{w}/{p}/{nw}/{fast}/{cps=N}被保护 |
 | 54 | `test_replace_string_prefix_strip` | file_processor.patcher | WF-08 修复：AI 返回含行前缀的 original 剥离 |
 | 55 | `test_replace_string_escaped_quotes` | file_processor.patcher | WF-04 修复：含转义引号字符串匹配 |
-| 56 | `test_config_load_and_defaults` | config | 无配置文件时使用 DEFAULTS |
-| 57 | `test_config_cli_override` | config | CLI 参数覆盖配置文件和默认值 |
-| 58 | `test_config_file_load` | config | 配置文件正常加载并合并 |
-| 59 | `test_progress_bar_render` | translation_utils.ProgressBar | 渲染不崩溃 + 计数/费用正确 |
-| 60 | `test_review_generator_html` | review_generator | HTML 生成 + 内容验证 |
-| 61 | `test_lang_config_detect` | lang_config | 中日韩文字检测函数准确性 |
-| 62 | `test_lang_config_lookup` | lang_config | get_language_config 查找与回退 |
-| 63 | `test_resolve_translation_field` | lang_config | 兼容别名读取（zh/chinese/cn/translation） |
-| 64 | `test_prompt_zh_unchanged` | prompts | 中文 prompt 零变更回归（基线对比） |
-| 65 | `test_prompt_ja_generic` | prompts | 日语通用英文模板内容验证 |
-| 66 | `test_validator_lang_config` | validator | W442 使用 lang_config 参数化检测 |
-| 67 | `test_should_retry_truncation` | direct_translator | 截断检测：returned < expected*0.5 触发 needs_split + 边界（returned=0、expected=0） |
-| 68 | `test_should_retry_normal` | direct_translator | 正常返回不重试 + 丢弃率过高重试不拆分 |
-| 69 | `test_split_chunk_basic` | direct_translator | chunk 二分后行数守恒 + line_offset 正确 |
-| 70 | `test_split_chunk_at_empty_line` | direct_translator | 优先在空行处拆分验证 |
-| 71 | `test_config_validation` | config.py | Config.validate() 类型检查/范围校验/未知键告警（4 子场景） |
-| 72 | `test_fix_nvl_ids_basic` | tl_parser | 含 nvl clear 的翻译块：say-only ID 被替换为 nvl+say ID |
-| 73 | `test_fix_nvl_ids_no_nvl` | tl_parser | 不含 nvl clear 的块不受影响 |
-| 74 | `test_fix_nvl_ids_already_correct` | tl_parser | 已正确的 nvl+say ID 不会被重复修改（幂等性） |
-| 75 | `test_fix_nvl_ids_real_hashes` | tl_parser | 用 begin.rpy 真实数据验证哈希计算（2 个已知 case） |
-| 76 | `test_screen_should_skip` | screen_translator | 12 种跳过/不跳过场景（空串/纯变量/已中文/文件路径/正常文本） |
-| 77 | `test_screen_extract_basic` | screen_translator | text/textbutton/tt.Action 三种模式提取 + 纯变量跳过 + 类型正确性 |
-| 78 | `test_screen_extract_skips_underscore` | screen_translator | `_()` 包裹行被跳过（已由 tl translate strings 覆盖） |
-| 79 | `test_screen_extract_skips_outside_screen` | screen_translator | screen 定义外的 text 不提取（in_screen 上下文检测） |
-| 80 | `test_screen_dedup` | screen_translator | 相同文本去重 + 保留所有出现位置 |
-| 81 | `test_screen_replace_text` | screen_translator | text 行替换保留缩进 |
-| 82 | `test_screen_replace_textbutton_preserves_action` | screen_translator | textbutton 只替换显示文本，action/style 参数不动 |
-| 83 | `test_screen_replace_tt_action` | screen_translator | tt.Action 替换括号内字符串，focus_mask 等参数不动 |
-| 84 | `test_screen_replace_with_tags_and_vars` | screen_translator | 含 `{color}` 和 `[var]` 的复合文本正确替换 |
-| 85 | `test_screen_backup_no_overwrite` | screen_translator | .bak 仅在不存在时创建，二次调用不覆盖 |
-| 86 | `test_screen_chunks` | screen_translator | 分块行数守恒（100 条/40 per chunk → 3 chunks） |
-| 87 | `test_screen_replace_notify` | screen_translator | Notify("...") 替换正确 + action 参数不动 |
+| 56 | `test_config_load_and_defaults` | core.config | 无配置文件时使用 DEFAULTS |
+| 57 | `test_config_cli_override` | core.config | CLI 参数覆盖配置文件和默认值 |
+| 58 | `test_config_file_load` | core.config | 配置文件正常加载并合并 |
+| 59 | `test_progress_bar_render` | core.translation_utils.ProgressBar | 渲染不崩溃 + 计数/费用正确 |
+| 60 | `test_review_generator_html` | tools.review_generator | HTML 生成 + 内容验证 |
+| 61 | `test_lang_config_detect` | core.lang_config | 中日韩文字检测函数准确性 |
+| 62 | `test_lang_config_lookup` | core.lang_config | get_language_config 查找与回退 |
+| 63 | `test_resolve_translation_field` | core.lang_config | 兼容别名读取（zh/chinese/cn/translation） |
+| 64 | `test_prompt_zh_unchanged` | core.prompts | 中文 prompt 零变更回归（基线对比） |
+| 65 | `test_prompt_ja_generic` | core.prompts | 日语通用英文模板内容验证 |
+| 66 | `test_validator_lang_config` | file_processor.validator | W442 使用 lang_config 参数化检测 |
+| 67 | `test_should_retry_truncation` | translators.direct | 截断检测：returned < expected*0.5 触发 needs_split + 边界（returned=0、expected=0） |
+| 68 | `test_should_retry_normal` | translators.direct | 正常返回不重试 + 丢弃率过高重试不拆分 |
+| 69 | `test_split_chunk_basic` | translators.direct | chunk 二分后行数守恒 + line_offset 正确 |
+| 70 | `test_split_chunk_at_empty_line` | translators.direct | 优先在空行处拆分验证 |
+| 71 | `test_config_validation` | core.config | Config.validate() 类型检查/范围校验/未知键告警（4 子场景） |
+| 72 | `test_fix_nvl_ids_basic` | translators.tl_parser | 含 nvl clear 的翻译块：say-only ID 被替换为 nvl+say ID |
+| 73 | `test_fix_nvl_ids_no_nvl` | translators.tl_parser | 不含 nvl clear 的块不受影响 |
+| 74 | `test_fix_nvl_ids_already_correct` | translators.tl_parser | 已正确的 nvl+say ID 不会被重复修改（幂等性） |
+| 75 | `test_fix_nvl_ids_real_hashes` | translators.tl_parser | 用 begin.rpy 真实数据验证哈希计算（2 个已知 case） |
+| 76 | `test_screen_should_skip` | translators.screen | 12 种跳过/不跳过场景（空串/纯变量/已中文/文件路径/正常文本） |
+| 77 | `test_screen_extract_basic` | translators.screen | text/textbutton/tt.Action 三种模式提取 + 纯变量跳过 + 类型正确性 |
+| 78 | `test_screen_extract_skips_underscore` | translators.screen | `_()` 包裹行被跳过（已由 tl translate strings 覆盖） |
+| 79 | `test_screen_extract_skips_outside_screen` | translators.screen | screen 定义外的 text 不提取（in_screen 上下文检测） |
+| 80 | `test_screen_dedup` | translators.screen | 相同文本去重 + 保留所有出现位置 |
+| 81 | `test_screen_replace_text` | translators.screen | text 行替换保留缩进 |
+| 82 | `test_screen_replace_textbutton_preserves_action` | translators.screen | textbutton 只替换显示文本，action/style 参数不动 |
+| 83 | `test_screen_replace_tt_action` | translators.screen | tt.Action 替换括号内字符串，focus_mask 等参数不动 |
+| 84 | `test_screen_replace_with_tags_and_vars` | translators.screen | 含 `{color}` 和 `[var]` 的复合文本正确替换 |
+| 85 | `test_screen_backup_no_overwrite` | translators.screen | .bak 仅在不存在时创建，二次调用不覆盖 |
+| 86 | `test_screen_chunks` | translators.screen | 分块行数守恒（100 条/40 per chunk → 3 chunks） |
+| 87 | `test_screen_replace_notify` | translators.screen | Notify("...") 替换正确 + action 参数不动 |
 
 ### tests/smoke_test.py（13 个冒烟测试）
 
@@ -146,9 +146,9 @@
 | 12 | `test_w430_boundary_at_upper` | W430 边界：比例 > 2.5 触发 |
 | 13 | `test_w251_order_vs_set_same_order_no_w251` | W251 顺序相同时不触发 |
 
-### tl_parser.py 内建自测（75 个断言）
+### translators/tl_parser.py 内建自测（75 个断言）
 
-通过 `python tl_parser.py` 直接运行 `_run_self_tests()`，覆盖：
+通过 `python -m translators.tl_parser` 直接运行 `_run_self_tests()`，覆盖：
 - 状态机解析（IDLE / DIALOGUE / STRINGS / SKIP 状态切换）
 - DialogueEntry / StringEntry 字段提取
 - `extract_quoted_text` 各种引号场景
@@ -158,9 +158,9 @@
 - UTF-8 BOM 处理
 - 源注释行（`# game/script.rpy:95`）解析
 
-### screen_translator.py 内建自测（42 个断言）
+### translators/screen.py 内建自测（42 个断言）
 
-通过 `python screen_translator.py` 直接运行 `_run_self_tests()`，覆盖：
+通过 `python -m translators.screen` 直接运行 `_run_self_tests()`，覆盖：
 - `_should_skip` 12 种场景（空串/纯变量/中文/文件路径/正常文本）
 - `_line_has_underscore_wrap` 3 种场景
 - `extract_screen_strings` 完整提取（text/textbutton/tt.Action + 跳过 `_()` + 跳过 screen 外）
@@ -278,9 +278,9 @@
 
 > 已在 test_all.py #22-36 中实现（#33-36 覆盖 check_response_chunk）。
 
-#### T4. _sanitize_translation（tl_parser.py） — **已实现**
+#### T4. _sanitize_translation（translators/tl_parser.py） — **已实现**
 
-> 已在 tl_parser.py 内建自测 #11-#12 中实现（19 个断言）
+> 已在 translators/tl_parser.py 内建自测 #11-#12 中实现（19 个断言）
 
 | 用例 | 输入 | 期望输出 |
 |------|------|----------|
@@ -293,9 +293,9 @@
 | 内嵌 ASCII 引号 | `他说"你好"` | `他说\\"你好\\"` |
 | 单侧残存 | `你好世界"` | `你好世界` |
 
-#### T5. fill_translation（tl_parser.py） — **已实现**
+#### T5. fill_translation（translators/tl_parser.py） — **已实现**
 
-> 已在 tl_parser.py 内建自测 #11-#12 中实现（19 个断言）
+> 已在 translators/tl_parser.py 内建自测 #11-#12 中实现（19 个断言）
 
 | 用例 | 场景 | 期望 |
 |------|------|------|
@@ -350,10 +350,10 @@
 
 ```bash
 # 启用 --tl-priority：仅 tl/zh/script.rpy 被选
-python main.py --game-dir "tests/tl_priority_mini/game" --provider xai --dry-run --tl-priority
+python -m translators.retranslator --game-dir "tests/tl_priority_mini/game" --provider xai --dry-run --tl-priority
 
 # 不启用：script.rpy 和 tl/zh/script.rpy 均被选
-python main.py --game-dir "tests/tl_priority_mini/game" --provider xai --dry-run
+python -m translators.retranslator --game-dir "tests/tl_priority_mini/game" --provider xai --dry-run
 ```
 
 #### T10. strings 统计
@@ -375,7 +375,7 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 
 #### T11. 单文件翻译端到端
 
-使用 `test_single.py`（需 API key），验证：
+使用 `tests/test_single.py`（需 API key），验证：
 1. API 调用成功返回翻译
 2. `apply_translations` 回写无崩溃
 3. `validate_translation` 无 error 级 issue
@@ -415,43 +415,43 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 1. 单元测试（75 个）
-python test_all.py
+# 1. 单元测试（87 个）
+python tests/test_all.py
 
 # 2. 冒烟测试（13 个）
 python tests/smoke_test.py
 
 # 3. tl_parser 自测（75 个断言）
-python tl_parser.py
+python -m translators.tl_parser
 ```
 
 全部通过预期输出：
 ```
-ALL 75 TESTS PASSED          (test_all.py)
-All tests passed              (smoke_test.py)
-All 75 assertions passed.     (tl_parser.py)
+ALL 87 TESTS PASSED          (tests/test_all.py)
+All tests passed              (tests/smoke_test.py)
+All 75 assertions passed.     (translators/tl_parser.py)
 ```
 
 ### 需 API 测试
 
 ```bash
 # 单文件端到端（需 xAI API key）
-python test_single.py YOUR_API_KEY
+python tests/test_single.py YOUR_API_KEY
 
 # tl-mode 端到端
-python main.py --game-dir "tests/tl_priority_mini/game" --provider xai --api-key YOUR_KEY --tl-mode --tl-lang zh
+python -m translators.retranslator --game-dir "tests/tl_priority_mini/game" --provider xai --api-key YOUR_KEY --tl-mode --tl-lang zh
 
 # 一键流水线（需真实游戏目录）
-python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --pilot-count 3 --clean-output
+python -m translators.renpy_text_utils --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --pilot-count 3 --clean-output
 ```
 
 ### 推荐执行顺序
 
-1. **快速验证**：`python test_all.py && python tests/smoke_test.py && python tl_parser.py --test`（< 5 秒，无 API）
+1. **快速验证**：`python tests/test_all.py && python tests/smoke_test.py && python -m translators.tl_parser --test`（< 5 秒，无 API）
 2. **边界验证**：smoke_test 中的 boundary 测试已覆盖 W430/W251 边界
 3. **密度/跳过**：构造低密度文件 + define.rpy 验证 `[DENSITY]` / `[SKIP-CFG]` 日志
 4. **tl 优先**：`--dry-run` 模式验证文件选择（无需 API）
-5. **端到端**：有 API key 时运行 `test_single.py`
+5. **端到端**：有 API key 时运行 `tests/test_single.py`
 
 ---
 
@@ -466,29 +466,29 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | file_processor.protect_placeholders / restore_placeholders | 往返/去重/空文本/混合类型/{#id} | 5（test_all #22-26） |
 | file_processor.check_response_item | 正常/空译文/空原文/占位符缺失保留/line_offset | 6（test_all #27-32） |
 | file_processor.check_response_chunk | 条数匹配/不匹配/空chunk/跳过中文 | 4（test_all #33-36） |
-| api_client | APIConfig / UsageStats / RateLimiter / JSON 解析 / 定价 | 5（test_all） |
-| glossary | prompt_text / 过滤 / 去重 / 线程安全 | 4（test_all） |
-| tl_parser | 状态机 / 回填 / 清理 / 后处理 / _sanitize_translation 边界 / fill_translation 边界 | 75（内建） |
-| main.calculate_dialogue_density | 低密度/高密度/空文件 | 1（test_all #37） |
-| main.find_untranslated_lines | auto/idle/hover/image 排除 + 长英文检出 | 1（test_all #39） |
-| main._restore_placeholders_in_translations | 占位符还原辅助函数 | 1（test_all #42） |
-| translation_db.TranslationDB | save/load 往返 + upsert 去重 | 1（test_all #40） |
-| one_click_pipeline._is_untranslated_dialogue | 中文/英文/短文本判定 | 1（test_all #41） |
+| core.api_client | APIConfig / UsageStats / RateLimiter / JSON 解析 / 定价 | 5（test_all） |
+| core.glossary | prompt_text / 过滤 / 去重 / 线程安全 | 4（test_all） |
+| translators.tl_parser | 状态机 / 回填 / 清理 / 后处理 / _sanitize_translation 边界 / fill_translation 边界 | 75（内建） |
+| translators.retranslator.calculate_dialogue_density | 低密度/高密度/空文件 | 1（test_all #37） |
+| translators.retranslator.find_untranslated_lines | auto/idle/hover/image 排除 + 长英文检出 | 1（test_all #39） |
+| core.translation_utils._restore_placeholders_in_translations | 占位符还原辅助函数 | 1（test_all #42） |
+| core.translation_db.TranslationDB | save/load 往返 + upsert 去重 | 1（test_all #40） |
+| translators.renpy_text_utils._is_untranslated_dialogue | 中文/英文/短文本判定 | 1（test_all #41） |
 | file_processor.SKIP_FILES_FOR_TRANSLATION | 跳过名单完整性 | 1（test_all #38） |
-| main.ProgressTracker resume/normalize | 写入重载 + 损坏容错 | 2（test_all #43-44） |
-| main._filter_checked_translations | checker 过滤分流 | 1（test_all #45） |
-| main._deduplicate_translations | 翻译去重 | 1（test_all #46） |
-| main._match_string_entry_fallback | 四层 fallback 匹配 | 1（test_all #47） |
-| api_client.is_reasoning_model | 推理模型检测 | 1（test_all #48） |
+| core.translation_utils.ProgressTracker resume/normalize | 写入重载 + 损坏容错 | 2（test_all #43-44） |
+| core.translation_utils._filter_checked_translations | checker 过滤分流 | 1（test_all #45） |
+| core.translation_utils._deduplicate_translations | 翻译去重 | 1（test_all #46） |
+| core.translation_utils._match_string_entry_fallback | 四层 fallback 匹配 | 1（test_all #47） |
+| core.api_client.is_reasoning_model | 推理模型检测 | 1（test_all #48） |
 | main CLI 参数校验 | _positive_int/_positive_float/_ratio_float | 1（test_all #49） |
-| api_client.APIConfig 推理 timeout | auto timeout ≥ 300s | 1（test_all #50） |
-| glossary.extract_terms 连字符人名 | Mary-Jane 提取 | 1（test_all #51） |
-| glossary._memory_count 信心度 | count=1 不输出 / count=2 输出 | 1（test_all #52） |
+| core.api_client.APIConfig 推理 timeout | auto timeout ≥ 300s | 1（test_all #50） |
+| core.glossary.extract_terms 连字符人名 | Mary-Jane 提取 | 1（test_all #51） |
+| core.glossary._memory_count 信心度 | count=1 不输出 / count=2 输出 | 1（test_all #52） |
 | file_processor.protect_placeholders 控制标签 | {w}/{p}/{nw}/{fast}/{cps=N}/{done} 保护+还原 | 1（test_all #53） |
-| config.Config.validate | 类型/范围/未知键校验 | 1（test_all #71，4 子场景） |
+| core.config.Config.validate | 类型/范围/未知键校验 | 1（test_all #71，4 子场景） |
 | file_processor.validator E250/W460/W470 | 控制标签损坏 / 过度翻译 / 连续标点 | 集成于 validate_translation |
-| translation_utils.TranslationCache | get/put/confidence/stats/thread_safety | 集成测试验证 |
-| glossary.get_consistent_translation / _evict_low_frequency | 术语一致性 / 内存淘汰 | 集成测试验证 |
+| core.translation_utils.TranslationCache | get/put/confidence/stats/thread_safety | 集成测试验证 |
+| core.glossary.get_consistent_translation / _evict_low_frequency | 术语一致性 / 内存淘汰 | 集成测试验证 |
 
 ### 覆盖不足（需补充）
 
@@ -497,18 +497,18 @@ python one_click_pipeline.py --game-dir "E:\Games\MyGame" --provider xai --api-k
 | ~~高~~ | ~~`protect_placeholders` / `restore_placeholders`~~ | **已覆盖** | ~~T1~~ → test_all #22-26 |
 | ~~高~~ | ~~`check_response_item`~~ | **已覆盖** | ~~T2~~ → test_all #27-32 |
 | ~~高~~ | ~~`check_response_chunk`~~ | **已覆盖** | ~~T3~~ → test_all #33-36 |
-| ~~高~~ | ~~`_sanitize_translation`~~ | **已覆盖** | ~~T4~~ → tl_parser.py 内建自测 #11-#12（12 个断言） |
+| ~~高~~ | ~~`_sanitize_translation`~~ | **已覆盖** | ~~T4~~ → translators/tl_parser.py 内建自测 #11-#12（12 个断言） |
 | ~~中~~ | ~~`calculate_dialogue_density`~~ | **已覆盖** | ~~T6~~ → test_all.py `test_dialogue_density`（3 用例） |
 | ~~中~~ | ~~`find_untranslated_lines` 过滤~~ | **已覆盖** | ~~T8~~ → test_all.py `test_find_untranslated_lines`（多项断言） |
-| ~~中~~ | ~~`fill_translation` 边界~~ | **已覆盖** | ~~T5~~ → tl_parser.py 内建自测 #11-#12（7 个断言） |
-| ~~中~~ | ~~`TranslationDB` save/load~~ | **已覆盖** | ~~T10~~ → test_all.py `test_translation_db_roundtrip` |
-| ~~中~~ | ~~`SKIP_FILES_FOR_TRANSLATION`~~ | **已覆盖** | ~~T7~~ → test_all.py `test_skip_files` |
+| ~~中~~ | ~~`fill_translation` 边界~~ | **已覆盖** | ~~T5~~ → translators/tl_parser.py 内建自测 #11-#12（7 个断言） |
+| ~~中~~ | ~~`TranslationDB` save/load~~ | **已覆盖** | ~~T10~~ → tests/test_all.py `test_translation_db_roundtrip` |
+| ~~中~~ | ~~`SKIP_FILES_FOR_TRANSLATION`~~ | **已覆盖** | ~~T7~~ → tests/test_all.py `test_skip_files` |
 | 低 | 端到端 tl-mode | 无自动化 | T12：需 API |
 | 低 | 端到端 retranslate | 无自动化 | T13：需 API |
 
 ### 下一步行动
 
-1. ~~将 T1-T3 的代码示例加入 `test_all.py` 或新建 `test_core.py`~~ — **已完成**（test_all.py #22-36）
-2. ~~将 T4-T5 的边界场景加入 `tl_parser.py` 内建测试~~ — **已完成**（tl_parser.py 内建自测 #11-#12，19 个断言）
-3. ~~T6-T10 作为集成级测试~~ — **已完成**（test_all.py #37-42，6 个集成测试）
+1. ~~将 T1-T3 的代码示例加入 `tests/test_all.py` 或新建 `test_core.py`~~ — **已完成**（tests/test_all.py #22-36）
+2. ~~将 T4-T5 的边界场景加入 `translators/tl_parser.py` 内建测试~~ — **已完成**（translators/tl_parser.py 内建自测 #11-#12，19 个断言）
+3. ~~T6-T10 作为集成级测试~~ — **已完成**（tests/test_all.py #37-42，6 个集成测试）
 4. T11-T14 的端到端测试需 API key，建议作为 CI 中的可选步骤

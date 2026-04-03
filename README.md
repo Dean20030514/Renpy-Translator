@@ -317,9 +317,9 @@ python -m tools.renpy_upgrade_tool ./game --fix --backup
 │  patch_font_now.py       独立运行字体补丁                      │
 ├──────────────────────────────────────────────────────────────┤
 │  测试层                                                       │
-│  test_all.py             综合模块测试（71 用例）               │
+│  tests/test_all.py       综合模块测试（87 用例）               │
 │  tests/smoke_test.py     冒烟测试（13 用例）                   │
-│  test_single.py          单文件端到端测试                      │
+│  tests/test_single.py    单文件端到端测试                      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -627,7 +627,7 @@ MIT License — 详见 [LICENSE](LICENSE)。
 
 ```bash
 # 快速验证（< 5 秒，无需 API）
-python test_all.py           # 75 个单元+集成测试
+python tests/test_all.py     # 87 个单元+集成测试
 python tests/smoke_test.py   # 13 个校验规则冒烟测试
 python -m translators.tl_parser --test   # 75 个解析器断言
 ```

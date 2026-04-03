@@ -37,6 +37,44 @@
 | 第十四轮 | 全面优化（Ren'Py 专项） | 五阶段升级：基础重构 + 代码健壮性 + 性能优化 + 翻译质量 + 用户体验 |
 | 第十五轮 | nvl clear 翻译 ID 修正 | `fix_nvl_translation_ids` 自动检测 8.6+ say-only 哈希并修正为 7.x nvl+say 哈希 + 管道集成 + 测试 71→75 |
 | 第十六轮 | screen 文本翻译 + 缓存清理修复 | `screen_translator.py` screen 裸英文翻译（`--tl-screen`，含 text/textbutton/tt.Action/Notify 四模式）+ `_should_skip` 标签误杀修复 + 缓存清理 .rpymc 补全 + 流水线/启动器/打包集成 + 测试 75→87 |
+| 第十七轮 | 项目结构深度重构 | 根目录 25→5 .py：core/(7模块) + translators/(6模块) + tools/(扩充3模块)，消除 re-export 兼容层 + 循环依赖，162 测试全绿 |
+
+---
+
+## 第十七轮：项目结构深度重构
+
+> **背景**：经过 16 轮迭代，根目录积累了 ~25 个 .py 文件，`main.py` 和 `one_click_pipeline.py` 维护着大量 re-export 兼容层，`pipeline/helpers.py` 从 `one_click_pipeline.py` 反向导入常量形成循环依赖。需要按职责将模块分入包，消除兼容层，统一 import 路径。
+
+### 结构变更
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 194 | 新建 `core/` 包（7 模块）：api_client / config / lang_config / glossary / prompts / translation_db / translation_utils 从根目录迁入 | `core/`（新增） | 共享基础设施独立包 |
+| 195 | 新建 `translators/` 包（6 模块）：direct（合并 dryrun）/ tl_mode / retranslator / screen / tl_parser / renpy_text_utils 从根目录迁入 | `translators/`（新增） | 翻译引擎独立包 |
+| 196 | `tools/` 包扩充（+3 模块）：font_patch / renpy_upgrade_tool / review_generator 从根目录迁入 | `tools/`（扩充） | 工具集中管理 |
+| 197 | `direct_translator_dryrun.py` 合并入 `translators/direct.py`（3 个函数保持原名） | `translators/direct.py` | 消除 44 行独立文件 |
+| 198 | 常量迁移：`RISK_KEYWORDS` / 评分常量 / `LEN_RATIO_*` / `StageError` 从 `one_click_pipeline.py` 移入 `pipeline/helpers.py` | `pipeline/helpers.py`、`one_click_pipeline.py` | 消除循环依赖 |
+| 199 | 删除 `main.py` re-export 块（40 行）+ `one_click_pipeline.py` re-export 块（30 行） | `main.py`、`one_click_pipeline.py` | 消除兼容层 |
+| 200 | `pipeline/__init__.py` 清空 re-export（无消费者） | `pipeline/__init__.py` | 清理无用代码 |
+| 201 | 所有消费者（tests / tools / engines / pipeline）import 路径迁移到新包路径 | 20+ 文件 | 统一 import 路径 |
+| 202 | `start_launcher.py` subprocess 路径改用 `Path(__file__).resolve().parent`（PyInstaller 兼容） | `start_launcher.py` | 打包后路径正确 |
+| 203 | `build.py` hidden_imports 更新为新包路径（38 项） | `build.py` | PyInstaller 打包正确 |
+| 204 | `.github/workflows/test.yml` 全部更新（py_compile 路径 + 自测命令 + 零依赖白名单） | `test.yml` | CI 覆盖完整 |
+
+### 迁移策略
+
+采用 **shim 渐进迁移**：每移动一批文件在原位置留 `sys.modules` 重定向 shim，确保每步测试全绿；全部消费者迁移完成后统一删除 shim。12 个 Git 检查点，任何一步失败可回退。
+
+### 技术指标
+
+- 根目录 .py 文件：25 → **5**（main / gui / start_launcher / one_click_pipeline / build）
+- 新增包：`core/`（7 模块）、`translators/`（6 模块）、`tools/__init__.py`
+- 删除文件：17 个根目录 .py（迁入包）+ `direct_translator_dryrun.py`（合并）
+- 消除 re-export：main.py 40 行 + one_click_pipeline.py 30 行 + pipeline/__init__.py 30 行
+- 消除循环依赖：`pipeline/helpers.py` ↔ `one_click_pipeline.py`
+- 测试数量：162（87 + 62 + 13）全绿 + 内建自测 126 断言
+- PyInstaller 打包：31.4 MB 成功
+- 零依赖原则：保持
 
 ---
 
