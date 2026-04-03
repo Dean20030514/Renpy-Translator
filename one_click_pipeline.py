@@ -16,56 +16,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-RISK_KEYWORDS = [
-    "screen", "gui", "options", "menu", "club", "dining", "living",
-    "parents", "secret", "weekend", "v0", "help", "interaction",
-]
-
-# 风险评分常量
-MAX_FILE_RANK_SCORE = 200        # 文件大小评分上限
-RISK_KEYWORD_SCORE = 80          # 命中风险关键词加分
-SAZMOD_BONUS_SCORE = 30          # SAZMOD 模组额外加分
-
-# 翻译长度比例告警阈值（可根据需要调整）
-# 经验值：中英对话正常 ratio 往往在 0.2~0.4 之间，将下限调低以减少噪音
-LEN_RATIO_LOWER = 0.15
-LEN_RATIO_UPPER = 2.5
-
-
-class StageError(RuntimeError):
-    pass
-
-
-# ---- 向后兼容重导出（实现已迁移到 renpy_text_utils.py）----
-from renpy_text_utils import (  # noqa: F401,E402
-    _is_untranslated_dialogue,
-    _extract_dialogue_text,
-    count_untranslated_dialogues_in_file,
-    collect_untranslated_details,
-)
-
-from renpy_text_utils import _is_user_visible_string_line  # noqa: F401,E402
-
-# ---- 向后兼容重导出（实现已迁移到 pipeline/ 子包）----
-from pipeline import (  # noqa: F401,E402
-    _print,
-    resolve_scan_root,
-    list_rpy_files,
-    score_file,
-    pick_pilot_files,
-    copy_subset_to_input,
-    run_main,
-    package_output,
-    _normalize_ws,
-    evaluate_gate,
-    collect_files_with_untranslated,
-    collect_strings_stats,
-    attribute_untranslated,
-    write_report_summary_md,
-    _run_retranslate_phase,
-    _run_tl_mode_phase,
+from pipeline.helpers import StageError, _print, resolve_scan_root
+from pipeline.gate import evaluate_gate
+from pipeline.stages import (
     _run_pilot_phase,
     _run_full_translation_phase,
+    _run_retranslate_phase,
+    _run_tl_mode_phase,
     _run_final_report,
 )
 

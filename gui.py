@@ -662,7 +662,7 @@ class App:
             try:
                 import io
                 import contextlib
-                from renpy_upgrade_tool import run_scan
+                from tools.renpy_upgrade_tool import run_scan
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
                     results, file_count = run_scan(

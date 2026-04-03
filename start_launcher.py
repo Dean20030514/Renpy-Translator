@@ -75,7 +75,7 @@ def main() -> int:
             return 1
         scan_dir = str(Path(scan_dir).expanduser())
         do_fix = ask("自动修复？[y/N]（默认 N）: ", "n").lower() == "y"
-        cmd = [sys.executable, "renpy_upgrade_tool.py", scan_dir, "--backup"]
+        cmd = [sys.executable, str(Path(__file__).resolve().parent / "tools" / "renpy_upgrade_tool.py"), scan_dir, "--backup"]
         if do_fix:
             cmd.append("--fix")
         return run(cmd)

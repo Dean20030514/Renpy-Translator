@@ -50,52 +50,6 @@ def setup_logging(verbose: bool = False, quiet: bool = False, log_file: str = ""
 
 
 # ============================================================
-# 向后兼容 re-export（供 test_all.py / one_click_pipeline.py 等引用）
-# ============================================================
-
-# translation_utils 中的公共辅助
-from translation_utils import (  # noqa: E402
-    ChunkResult,
-    TranslationContext,
-    ProgressTracker,
-    ProgressBar,
-    CHECKER_DROP_RATIO_THRESHOLD,
-    MIN_DROPPED_FOR_WARNING,
-    MIN_DIALOGUE_LENGTH,
-    _CHAR_PREFIX_RE,
-    _PH_TOKEN_RE,
-    _strip_char_prefix,
-    _restore_placeholders_in_translations,
-    _build_fallback_dicts,
-    _match_string_entry_fallback,
-    _filter_checked_translations,
-    _deduplicate_translations,
-)
-
-# direct_translator 中的翻译函数
-from direct_translator import (  # noqa: E402
-    translate_file,
-    _translate_file_targeted,
-    run_pipeline,
-)
-
-# retranslator 中的补翻函数
-from retranslator import (  # noqa: E402
-    calculate_dialogue_density,
-    find_untranslated_lines,
-    build_retranslate_chunks,
-    retranslate_file,
-    run_retranslate_pipeline,
-)
-
-# tl_translator 中的 tl-mode 函数
-from tl_translator import (  # noqa: E402
-    build_tl_chunks,
-    run_tl_pipeline,
-)
-
-
-# ============================================================
 # CLI 参数校验
 # ============================================================
 
@@ -223,7 +177,7 @@ def main():
         sys.exit(1)
 
     # 加载配置文件，与 CLI 参数合并（CLI 优先）
-    from config import Config
+    from core.config import Config
     cfg = Config(game_dir=game_dir, cli_args=args, config_path=args.config)
 
     # 用 Config 三层合并填充 args 中为 None 的参数
@@ -248,7 +202,7 @@ def main():
         args.exclude = cfg.get("exclude", []) or []
 
     # 解析目标语言配置
-    from lang_config import get_language_config
+    from core.lang_config import get_language_config
     args.lang_config = get_language_config(args.target_lang)
     logger.debug(f"[LANG] 目标语言: {args.lang_config.native_name} ({args.lang_config.code})")
 
@@ -268,19 +222,22 @@ def main():
 
     engine_arg = getattr(args, "engine", "auto")
     if engine_arg in ("auto", "renpy"):
-        # Ren'Py 路径：保持现有行为完全不变
+        # Ren'Py 路径
         if tl_mode:
+            from translators.tl_mode import run_tl_pipeline
             run_tl_pipeline(args)
             if getattr(args, "tl_screen", False):
-                from screen_translator import run_screen_translate
+                from translators.screen import run_screen_translate
                 run_screen_translate(args)
         elif getattr(args, "tl_screen", False):
-            from screen_translator import run_screen_translate
+            from translators.screen import run_screen_translate
             logger.info("[SCREEN] 建议先运行 --tl-mode 完成主体翻译，再用 --tl-screen 补充 screen 文本")
             run_screen_translate(args)
         elif args.retranslate:
+            from translators.retranslator import run_retranslate_pipeline
             run_retranslate_pipeline(args)
         else:
+            from translators.direct import run_pipeline
             run_pipeline(args)
     else:
         # 非 Ren'Py 引擎路由
