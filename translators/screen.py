@@ -570,6 +570,7 @@ def run_screen_translate(args: argparse.Namespace) -> None:
             timeout=getattr(args, "timeout", 180.0),
             temperature=getattr(args, "temperature", 0.1),
             max_response_tokens=getattr(args, "max_response_tokens", 32768),
+            custom_module=getattr(args, "custom_module", ""),
         )
         client = APIClient(api_config)
 

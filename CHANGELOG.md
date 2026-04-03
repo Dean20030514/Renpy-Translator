@@ -39,6 +39,61 @@
 | 第十六轮 | screen 文本翻译 + 缓存清理修复 | `screen_translator.py` screen 裸英文翻译（`--tl-screen`，含 text/textbutton/tt.Action/Notify 四模式）+ `_should_skip` 标签误杀修复 + 缓存清理 .rpymc 补全 + 流水线/启动器/打包集成 + 测试 75→87 |
 | 第十七轮 | 项目结构深度重构 | 根目录 25→5 .py：core/(7模块) + translators/(6模块) + tools/(扩充3模块)，消除 re-export 兼容层 + 循环依赖，162 测试全绿 |
 | 第十八轮 | 预处理工具链 + 翻译增强 | RPA 解包 + rpyc 反编译（双层策略）+ Ren'Py lint 集成 + 文件级并行翻译 + locked_terms 预替换 + 跨文件去重 + Hook 模板，测试 162→225 |
+| 第十九轮 | 翻译后工具链 + 插件系统 | RPA 打包 + HTML 交互式校对 + 自定义翻译引擎 + 默认语言设置 + Lint 流水线集成 + JSON 解析失败拆分重试，测试 225→267 |
+
+---
+
+## 第十九轮：翻译后工具链 + 插件系统
+
+> **背景**：深度分析 renpy-translator-main（MIT, anonymousException）项目，识别出 6 项可借鉴功能。核心价值在于补齐「翻译后工作流」——打包分发、人工校对、引擎扩展。
+
+### 新增工具
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 210 | **RPA 打包工具**：纯标准库实现 RPA-3.0 写入（随机 XOR key + zlib + pickle），支持自动收集 tl/字体/Hook + 打包后往返验证 | `tools/rpa_packer.py`（新增 ~280 行） | 翻译→分发最后一环 |
+| 211 | **HTML 交互式校对工具**：导出翻译为可编辑 HTML（contenteditable + 搜索/过滤 + 修改跟踪），浏览器中编辑后导出 JSON，导入回写到 .rpy | `tools/translation_editor.py`（新增 ~420 行 Python + ~160 行 HTML/JS） | 人工校对工作流 |
+| 212 | **自定义翻译引擎插件**：`custom_engines/` 目录放 Python 模块，双层接口（`translate_batch` 批量优先，`translate` 单句降级），安全限制（仅加载子目录、拒绝路径遍历） | `core/api_client.py`（+~140 行）+ `custom_engines/example_echo.py`（示例） | 引擎扩展性 |
+
+### 流水线增强
+
+| # | 描述 | 涉及文件 | 影响 |
+|---|------|----------|------|
+| 213 | **默认语言设置**：打包前自动生成 `default_language.rpy`（`config.default_language = "chinese"`），已存在则跳过，通过 `lang_config` 映射语言代码→目录名 | `pipeline/stages.py` | 玩家首次启动即显示中文 |
+| 214 | **Lint 修复流水线集成**：翻译后自动运行 `run_lint()` 修复语法错误，不可用时明确告知而非静默跳过，`--no-lint-repair` 可禁用 | `pipeline/stages.py` + `one_click_pipeline.py` | 翻译质量兜底 |
+| 215 | **JSON 解析失败拆分重试**：`_should_retry` 新增判断——返回 0 条且期望 > 0 且无 API 错误时触发 chunk 拆分重试 | `translators/direct.py` | 鲁棒性提升 |
+
+### CLI 变更
+
+| 参数 | 说明 |
+|------|------|
+| `--provider custom` | 使用自定义翻译引擎（需配合 `--custom-module`） |
+| `--custom-module NAME` | 自定义引擎模块名（位于 `custom_engines/` 目录） |
+| `--no-lint-repair` | 跳过翻译后的 Lint 修复阶段 |
+
+### 测试新增
+
+| 文件 | 新增用例 | 覆盖 |
+|------|---------|------|
+| `tests/test_batch1.py` | 18 | RPA 打包（10：基本/往返/随机key/嵌套目录/空集/缺失文件/Unicode/验证/大文件/收集 + header 格式验证）+ 默认语言（5：zh/ja/ko/zh-tw/不覆盖）+ JSON 重试（1）+ Lint 集成（1） |
+| `tests/test_translation_editor.py` | 13 | 导出（4：基本/多条/空/XSS 转义）+ 提取（2：tl/db）+ 导入（6：tl 替换/空槽/db 模式/备份不覆盖/缺失文件/空译文）+ 工具（1：转义） |
+| `tests/test_custom_engine.py` | 11 | 加载（6：正常/扩展名/不存在/空名/路径遍历/无接口）+ 配置（2）+ 调用（3：批量 string/单句降级/批量 list） |
+
+### 工程配置
+
+| 文件 | 变更 |
+|------|------|
+| `build.py` | `hidden_imports` +2（`tools.rpa_packer`、`tools.translation_editor`） |
+| `.github/workflows/test.yml` | `py_compile` +3 + test runs +3 |
+| `main.py` | `--provider` choices +1（`custom`）+ `--custom-module` 参数 |
+| `translators/*.py` | 4 处 `APIConfig()` 构造加 `custom_module=` 透传 |
+
+### 技术指标
+
+- 新增文件：3（`tools/rpa_packer.py` + `tools/translation_editor.py` + `custom_engines/example_echo.py`）+ 3 测试文件
+- 修改文件：8（`core/api_client.py` + `pipeline/stages.py` + `one_click_pipeline.py` + `main.py` + `translators/direct.py` + `translators/tl_mode.py` + `translators/retranslator.py` + `translators/screen.py`）+ `build.py` + `test.yml`
+- 测试数量：225 → **267**（18 + 13 + 11 = 42 新增用例）
+- 零依赖原则：保持
 
 ---
 

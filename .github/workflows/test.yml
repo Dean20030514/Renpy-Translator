@@ -57,6 +57,10 @@ jobs:
           python -m py_compile tools/font_patch.py
           python -m py_compile tools/renpy_upgrade_tool.py
           python -m py_compile tools/review_generator.py
+          python -m py_compile tools/rpa_packer.py
+          python -m py_compile tools/translation_editor.py
+          # custom_engines
+          python -m py_compile custom_engines/example_echo.py
           # pipeline
           python -m py_compile pipeline/__init__.py
           python -m py_compile pipeline/helpers.py
@@ -79,6 +83,15 @@ jobs:
 
       - name: Run smoke tests (tests/smoke_test.py)
         run: python tests/smoke_test.py
+
+      - name: Run batch-1 tests (RPA packer, default language, JSON retry, lint)
+        run: python tests/test_batch1.py
+
+      - name: Run translation editor tests
+        run: python tests/test_translation_editor.py
+
+      - name: Run custom engine tests
+        run: python tests/test_custom_engine.py
 
       - name: Run tl_parser self-tests
         run: python -c "from translators.tl_parser import _run_self_tests; _run_self_tests()"

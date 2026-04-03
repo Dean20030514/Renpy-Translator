@@ -2,7 +2,7 @@
 
 一个纯 Python 的游戏自动汉化工具，支持 **Ren'Py**、**RPG Maker MV/MZ**、**CSV/JSONL 通用格式**，通过 LLM API 翻译为简体中文。
 
-**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM 提供商** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译** | **RPA 解包 + rpyc 反编译**
+**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM + 自定义引擎** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译** | **RPA 解包/打包 + rpyc 反编译** | **HTML 交互式校对**
 
 ### 文档索引
 
@@ -41,6 +41,10 @@
 - **锁定术语预替换**：locked_terms 在翻译前替换为令牌，翻译后还原为中文译名，作为 prompt 注入的补充保险
 - **跨文件翻译去重**：tl-mode 下相同完整句子（≥40 字符）只翻译一次，结果复用到所有重复条目，节省 ~20% API 调用
 - **Hook 模板**：运行时提取 Hook（注入游戏提取全部对话 JSON）+ 语言切换 UI 注入（自动扫描 tl/ 生成切换按钮）
+- **RPA 打包**：纯标准库生成 RPA-3.0 档案，自动收集翻译文件 + 字体 → 玩家拖入 game/ 即可使用（`python -m tools.rpa_packer`）
+- **HTML 交互式校对**：导出翻译为可编辑 HTML（搜索/过滤/修改跟踪），浏览器中编辑后导入回写（`python -m tools.translation_editor`）
+- **自定义翻译引擎**：`--provider custom --custom-module my_engine` 加载 `custom_engines/` 目录下的 Python 模块，支持批量和单句双接口
+- **默认语言自动设置**：流水线打包前自动生成 `default_language.rpy`，玩家首次启动即显示中文
 
 ---
 
@@ -332,7 +336,7 @@ python -m tools.renpy_upgrade_tool ./game --fix --backup
 │  generic_pipeline.py   通用翻译流水线（6 阶段）               │
 ├──────────────────────────────────────────────────────────────┤
 │  核心层  core/                                                │
-│  api_client.py         多提供商 API 客户端 + 限流 + 计费      │
+│  api_client.py         多提供商 API 客户端 + 限流 + 计费 + 自定义引擎加载 │
 │  config.py             全局配置（三层合并）                    │
 │  lang_config.py        目标语言抽象层                          │
 │  prompts.py            Prompt 模板工厂 + 引擎 addon + CoT     │
@@ -346,13 +350,18 @@ python -m tools.renpy_upgrade_tool ./game --fix --backup
 ├──────────────────────────────────────────────────────────────┤
 │  工具层  tools/                                               │
 │  rpa_unpacker.py         RPA-3.0/2.0 纯标准库解包             │
+│  rpa_packer.py           RPA-3.0 纯标准库打包（翻译 Mod 分发）│
 │  rpyc_decompiler.py      rpyc 反编译（双层策略）              │
 │  renpy_lint_fixer.py     lint 集成 + 自动修复                  │
+│  translation_editor.py   HTML 交互式校对工具（导出/编辑/导入） │
 │  font_patch.py           字体补丁（gui.*_font 改写）           │
 │  renpy_upgrade_tool.py   Ren'Py 7→8 升级扫描 + 自动修复       │
 │  review_generator.py     翻译审校报告生成                      │
 ├──────────────────────────────────────────────────────────────┤
-│  测试层（225 个自动化用例）                                    │
+│  插件层  custom_engines/                                      │
+│  example_echo.py         自定义翻译引擎示例（双接口）          │
+├──────────────────────────────────────────────────────────────┤
+│  测试层（267 个自动化用例）                                    │
 │  tests/test_all.py       综合模块测试（94 用例）               │
 │  tests/test_engines.py   引擎抽象层测试（62 用例）             │
 │  tests/smoke_test.py     冒烟测试（13 用例）                   │
@@ -360,6 +369,9 @@ python -m tools.renpy_upgrade_tool ./game --fix --backup
 │  tests/test_rpyc_decompiler.py  rpyc 反编译测试（17 用例）     │
 │  tests/test_lint_fixer.py    lint 修复测试（15 用例）          │
 │  tests/test_tl_dedup.py  tl 去重测试（10 用例）               │
+│  tests/test_batch1.py    批次一功能测试（18 用例）             │
+│  tests/test_translation_editor.py  翻译编辑器测试（13 用例）   │
+│  tests/test_custom_engine.py  自定义引擎测试（11 用例）        │
 │  tests/test_single.py    单文件端到端测试（需 API）            │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -395,10 +407,12 @@ main.py (CLI 入口 + --engine 路由)
   │
   ├── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线)
   │
-  └── tools/ 独立工具（可单独运行）
-       ├── rpa_unpacker.py / rpyc_decompiler.py / renpy_lint_fixer.py
-       ├── font_patch.py / renpy_upgrade_tool.py / review_generator.py
-       └── verify_alignment.py / revalidate.py / analyze_writeback_failures.py
+  ├── tools/ 独立工具（可单独运行）
+  │    ├── rpa_unpacker.py / rpa_packer.py / rpyc_decompiler.py / renpy_lint_fixer.py
+  │    ├── translation_editor.py / font_patch.py / renpy_upgrade_tool.py / review_generator.py
+  │    └── verify_alignment.py / revalidate.py / analyze_writeback_failures.py
+  │
+  └── custom_engines/ 自定义翻译引擎插件（example_echo.py 示例）
 ```
 
 所有底层模块仅依赖 Python 标准库，无循环依赖。
@@ -561,6 +575,47 @@ python -m tools.renpy_lint_fixer "E:\Games\MyGame"
 
 ---
 
+## 翻译后工具
+
+### RPA 打包（Translation Mod 分发）
+
+将翻译文件打包为 `.rpa` 档案，玩家拖入 `game/` 目录即可使用。
+
+```bash
+# 自动收集翻译文件 + 字体 + Hook 脚本
+python -m tools.rpa_packer --game-dir "E:\Games\MyGame" --tl-lang chinese --output CN_patch.rpa
+
+# 手动指定文件
+python -m tools.rpa_packer tl/chinese/ fonts/NotoSansSC.ttf --base-dir game/ -o CN_patch.rpa
+```
+
+### HTML 交互式校对
+
+导出翻译为可编辑 HTML，校对者在浏览器中搜索/过滤/编辑，然后导入修改。
+
+```bash
+# 导出（tl-mode 翻译结果）
+python -m tools.translation_editor --export --tl-dir game/tl/chinese --output review.html
+
+# 导出（translation_db.json）
+python -m tools.translation_editor --export --db output/translation_db.json --output review.html
+
+# 在浏览器中编辑后，点击"Export Edits"按钮下载 translation_edits.json，然后导入：
+python -m tools.translation_editor --import-json translation_edits.json
+```
+
+### 自定义翻译引擎
+
+在 `custom_engines/` 目录下放置 Python 模块，实现 `translate_batch()` 或 `translate()` 接口：
+
+```bash
+python main.py --game-dir "E:\Games\MyGame" --provider custom --custom-module my_engine --tl-mode --tl-lang chinese
+```
+
+参见 `custom_engines/example_echo.py` 示例。
+
+---
+
 ## 参数完整说明
 
 ### main.py
@@ -568,7 +623,7 @@ python -m tools.renpy_lint_fixer "E:\Games\MyGame"
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--game-dir` | 必填 | 游戏根目录（自动检测 `game/` 子目录，自动排除 `renpy/` 引擎文件） |
-| `--provider` | 必填 | API 提供商：`xai`/`openai`/`deepseek`/`claude`/`gemini` |
+| `--provider` | 必填 | API 提供商：`xai`/`openai`/`deepseek`/`claude`/`gemini`/`custom` |
 | `--api-key` | — | API 密钥（dry-run 模式可不填） |
 | `--model` | 自动 | 模型名称（留空使用提供商默认） |
 | `--output-dir` | `output` | 输出目录 |
@@ -605,6 +660,7 @@ python -m tools.renpy_lint_fixer "E:\Games\MyGame"
 | `--cot` | — | CoT 思维链翻译（直译→校正→意译，质量更高费用+30-50%） |
 | `--font-config` | — | 字体配置文件路径（font_config.json） |
 | `--no-clean-rpyc` | — | 跳过 tl-mode 翻译后的 .rpyc 缓存清理 |
+| `--custom-module` | — | 自定义翻译引擎模块名（位于 `custom_engines/` 目录，配合 `--provider custom`） |
 | `--config` | 自动 | 配置文件路径（默认查找 game-dir 下 renpy_translate.json） |
 
 ---
@@ -709,7 +765,7 @@ MIT License — 详见 [LICENSE](LICENSE)。
 ### 测试
 
 ```bash
-# 快速验证（< 5 秒，无需 API）
+# 快速验证（< 10 秒，无需 API）
 python tests/test_all.py             # 94 个单元+集成测试
 python tests/test_engines.py         # 62 个引擎抽象层测试
 python tests/smoke_test.py           # 13 个校验规则冒烟测试
@@ -717,8 +773,11 @@ python tests/test_rpa_unpacker.py    # 14 个 RPA 解包测试
 python tests/test_rpyc_decompiler.py # 17 个 rpyc 反编译测试
 python tests/test_lint_fixer.py      # 15 个 lint 修复测试
 python tests/test_tl_dedup.py        # 10 个 tl 去重测试
+python tests/test_batch1.py          # 18 个批次一功能测试
+python tests/test_translation_editor.py # 13 个翻译编辑器测试
+python tests/test_custom_engine.py   # 11 个自定义引擎测试
 python -m translators.tl_parser --test  # 75 个解析器断言
-# 总计 225 个自动化用例（不含内建断言）
+# 总计 267 个自动化用例（不含内建断言）
 ```
 
 ### CI

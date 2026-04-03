@@ -9,7 +9,7 @@
 一个**纯 Python（零第三方依赖）** 的 Ren'Py 游戏自动汉化工具，通过 LLM API 将 .rpy 脚本翻译为简体中文。
 
 **核心能力**：
-- 五大 LLM 提供商统一接口（xAI / OpenAI / DeepSeek / Claude / Gemini）
+- 五大 LLM 提供商统一接口（xAI / OpenAI / DeepSeek / Claude / Gemini）+ 自定义引擎插件
 - 三种翻译模式：direct-mode / tl-mode / retranslate 补翻
 - 50+ 项结构化翻译校验
 - 断点续传 + 并发翻译
@@ -19,7 +19,7 @@
 - AI 自动术语表提取（pilot 后自动生成术语表）
 - Tkinter 图形界面（gui.py）+ PyInstaller 打包为单文件 .exe（build.py）
 
-**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging / csv / tkinter / pickle / struct / zlib / subprocess），~14,000 行核心代码。代码按职责组织为 `core/`（基础设施）、`translators/`（翻译引擎）、`tools/`（辅助工具，含 RPA 解包/rpyc 反编译/lint 集成）、`engines/`（多引擎架构）、`file_processor/`（文件处理）、`pipeline/`（流水线）、`resources/hooks/`（Ren'Py Hook 模板）七个包/目录。
+**技术栈**：Python ≥ 3.9，纯标准库（threading / json / re / pathlib / urllib / logging / csv / tkinter / pickle / struct / zlib / subprocess），~15,000 行核心代码。代码按职责组织为 `core/`（基础设施）、`translators/`（翻译引擎）、`tools/`（辅助工具，含 RPA 解包/rpyc 反编译/lint 集成）、`engines/`（多引擎架构）、`file_processor/`（文件处理）、`pipeline/`（流水线）、`resources/hooks/`（Ren'Py Hook 模板）、`custom_engines/`（自定义翻译引擎插件）八个包/目录。
 
 **多引擎架构**（阶段一已完成）：
 - `EngineProfile` 参数化引擎差异 + `TranslatableUnit` 通用文本单元 + `EngineBase` ABC
@@ -115,6 +115,9 @@
 | **tools/revalidate.py** | 已翻译输出重跑闸门检查 |
 | **tools/patch_font_now.py** | 翻译后独立运行字体补丁 |
 | **tools/analyze_writeback_failures.py** | 回写失败根因分析（WF-01~08 分类统计） |
+| **tools/rpa_packer.py** | RPA-3.0 纯标准库打包（随机 XOR key + 自动收集 tl/字体/Hook + 往返验证） |
+| **tools/translation_editor.py** | HTML 交互式校对工具（导出可编辑 HTML + 浏览器编辑 + JSON 导入回写） |
+| **custom_engines/example_echo.py** | 自定义翻译引擎示例（translate_batch + translate 双接口） |
 | **gui.py** | Tkinter GUI：3 Tab + 引擎联动面板 + 命令预览 + 内嵌日志 + 进度条 + 优雅终止 |
 | **build.py** | PyInstaller 打包 → 单文件 .exe |
 | **start_launcher.py** | CLI 中文交互启动器（9 种模式菜单） |
@@ -129,6 +132,9 @@
 | **tests/test_rpyc_decompiler.py** | rpyc 反编译测试（17 个用例：二进制格式 + RestrictedUnpickler + 文本提取 + 平台检测） |
 | **tests/test_lint_fixer.py** | lint 修复测试（15 个用例：7 种错误模式解析 + 自动修复 + 降级检测） |
 | **tests/test_tl_dedup.py** | tl-mode 去重测试（10 个用例：去重逻辑 + 翻译复用 + 阈值/speaker 隔离） |
+| **tests/test_batch1.py** | 批次一功能测试（18 个用例：RPA 打包 11 + 默认语言 5 + JSON 重试 1 + Lint 集成 1） |
+| **tests/test_translation_editor.py** | HTML 校对工具测试（13 个用例：导出 4 + 提取 2 + 导入 6 + 工具 1） |
+| **tests/test_custom_engine.py** | 自定义引擎测试（11 个用例：加载 6 + 配置 2 + 调用 3） |
 | **tests/test_single.py** | 单文件端到端测试（需 API key） |
 | **tests/smoke_test.py** | 校验逻辑冒烟测试（13 个用例） |
 | **tests/fixtures/** | 测试用的 .rpy 样本文件 |
@@ -334,7 +340,7 @@ check_response_chunk():
 
 ### 7.1 支持的提供商
 
-支持 **xAI / OpenAI / DeepSeek / Claude / Gemini** 五大提供商，价格以各供应商官网为准。→ 详见 README §支持的API
+支持 **xAI / OpenAI / DeepSeek / Claude / Gemini** 五大提供商 + **自定义引擎插件**（`--provider custom --custom-module`），价格以各供应商官网为准。→ 详见 README §支持的API
 
 ### 7.2 JSON 解析容错链（6 级降级）
 
@@ -500,6 +506,15 @@ The Tyrant（~140 文件）实测：direct-mode 漏翻率 4.01%（AI 未返回 7
 204-206. Hook 模板：`extract_hook.rpy` + `language_switcher.rpy`
 207-209. 测试 162→225（test_rpa_unpacker 14 + test_rpyc_decompiler 17 + test_lint_fixer 15 + test_tl_dedup 10）
 
+### 第十九轮：翻译后工具链 + 插件系统
+210. `tools/rpa_packer.py`（RPA-3.0 纯标准库打包 + 自动收集 + 往返验证）
+211. `tools/translation_editor.py`（HTML 交互式校对：导出/浏览器编辑/JSON 导入回写）
+212. 自定义翻译引擎插件（`custom_engines/` + 双层接口 + 安全限制）+ `--provider custom --custom-module`
+213. 默认语言设置（`default_language.rpy` 自动生成，集成到流水线）
+214. Lint 修复流水线集成（`_run_lint_repair_phase` + `--no-lint-repair`）
+215. JSON 解析失败拆分重试（`_should_retry` 新增 returned==0 判断）
+216-218. 测试 225→267（test_batch1 18 + test_translation_editor 13 + test_custom_engine 11）
+
 ### 已回滚
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
 
@@ -538,15 +553,17 @@ main.py (CLI 入口 + --engine 路由)
   │    └── engines/csv_engine.py       (CSV/JSONL)
   │
   └── core/ 共享基础设施
-       ├── core/api_client.py / core/prompts.py / core/glossary.py
+       ├── core/api_client.py（含自定义引擎加载）/ core/prompts.py / core/glossary.py
        ├── core/translation_db.py / core/translation_utils.py
        ├── core/config.py / core/lang_config.py
        ├── file_processor/ (splitter/patcher/checker/validator)
-       ├── tools/font_patch.py / tools/review_generator.py
-       └── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线)
+       └── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线 + lint 修复 + 默认语言)
 
-tests/   — test_all(94) + test_engines(62) + smoke(13) + rpa(14) + rpyc(17) + lint(15) + dedup(10) = 225
-tools/   — verify_alignment / revalidate / patch_font_now / analyze_writeback
+tools/   — font_patch / review_generator / rpa_unpacker / rpa_packer / rpyc_decompiler
+           renpy_lint_fixer / renpy_upgrade_tool / translation_editor
+           verify_alignment / revalidate / patch_font_now / analyze_writeback
+custom_engines/ — 用户自定义翻译引擎插件目录（example_echo.py 示例）
+tests/   — test_all(94) + test_engines(62) + smoke(13) + rpa(14) + rpyc(17) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(11) = 267
 ```
 
 ---

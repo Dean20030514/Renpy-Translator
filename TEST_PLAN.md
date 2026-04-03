@@ -17,10 +17,13 @@
 | `tests/test_rpyc_decompiler.py` | rpyc 反编译测试 | RPYC2 二进制格式、RestrictedUnpickler、Say/Menu/TranslateString 文本提取、Unicode、平台检测 | 17 | 否 |
 | `tests/test_lint_fixer.py` | lint 修复测试 | 7 种 lint 错误模式解析、old/new 对修复、translate 块修复、连续空行清理、降级检测 | 15 | 否 |
 | `tests/test_tl_dedup.py` | tl-mode 去重测试 | 去重基础/阈值/speaker 隔离/StringEntry/apply 复用/无翻译降级 | 10 | 否 |
+| `tests/test_batch1.py` | 批次一功能测试 | RPA 打包（往返/header/随机key/嵌套/Unicode/验证）+ 默认语言（zh/ja/ko/zh-tw/不覆盖）+ JSON 解析重试 + Lint 集成 | 18 | 否 |
+| `tests/test_translation_editor.py` | HTML 校对工具测试 | 导出（基本/多条/空/XSS）+ 提取（tl/db）+ 导入（tl/空槽/db/备份/缺失/空译文）+ 转义 | 13 | 否 |
+| `tests/test_custom_engine.py` | 自定义引擎测试 | 加载（正常/扩展名/不存在/空名/路径遍历/无接口）+ 配置（2）+ 调用（batch string/single/batch list） | 11 | 否 |
 | `translators/tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
 | `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
 
-> **自动化测试总计**：94 + 62 + 13 + 14 + 17 + 15 + 10 = **225** 个用例（不含 translators/tl_parser 内建 75 断言 + translators/screen 内建 51 断言）。
+> **自动化测试总计**：94 + 62 + 13 + 14 + 17 + 15 + 10 + 18 + 13 + 11 = **267** 个用例（不含 translators/tl_parser 内建 75 断言 + translators/screen 内建 51 断言）。
 
 > **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
@@ -476,7 +479,7 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 全部 225 个自动化用例（< 5 秒）
+# 全部 267 个自动化用例（< 10 秒）
 python tests/test_all.py             # 94 个单元+集成测试
 python tests/test_engines.py         # 62 个引擎抽象层测试
 python tests/smoke_test.py           # 13 个校验规则冒烟测试
@@ -484,6 +487,9 @@ python tests/test_rpa_unpacker.py    # 14 个 RPA 解包测试
 python tests/test_rpyc_decompiler.py # 17 个 rpyc 反编译测试
 python tests/test_lint_fixer.py      # 15 个 lint 修复测试
 python tests/test_tl_dedup.py        # 10 个 tl 去重测试
+python tests/test_batch1.py          # 18 个批次一功能测试（RPA打包+默认语言+JSON重试+lint）
+python tests/test_translation_editor.py # 13 个翻译编辑器测试（HTML导出/导入）
+python tests/test_custom_engine.py   # 11 个自定义引擎测试（加载/安全/配置/调用）
 python -m translators.tl_parser --test  # 75 个解析器断言（内建）
 ```
 

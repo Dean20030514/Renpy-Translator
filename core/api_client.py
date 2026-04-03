@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""API 客户端 — 支持 xAI/OpenAI/DeepSeek/Claude"""
+"""API 客户端 — 支持 xAI/OpenAI/DeepSeek/Claude/Gemini/自定义引擎"""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import re
 import time
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Any
 from urllib import request as urlreq
 from urllib import error as urlerr
@@ -109,10 +111,84 @@ def is_reasoning_model(model: str) -> bool:
     return False
 
 
+# ============================================================
+# Custom engine plugin loader
+# ============================================================
+
+_CUSTOM_ENGINES_DIR = "custom_engines"
+
+
+def _load_custom_engine(module_name: str) -> Any:
+    """Load a custom translation engine module from ``custom_engines/`` directory.
+
+    Security: Only loads from the ``custom_engines/`` subdirectory relative to the
+    project root (the directory containing ``main.py``).  Arbitrary paths are
+    rejected.  Users should only use modules from trusted sources.
+
+    The module must implement at least one of:
+        - ``translate_batch(system_prompt, user_prompt) -> str | list[dict]``
+          (preferred — receives the full prompt, returns JSON array)
+        - ``translate(text, source_lang, target_lang) -> str``
+          (fallback — called per-item, results assembled into JSON array)
+
+    Args:
+        module_name: Module filename (e.g. ``"my_engine.py"`` or ``"my_engine"``).
+
+    Returns:
+        Loaded module object.
+
+    Raises:
+        RuntimeError: If the module cannot be found or loaded.
+    """
+    if not module_name:
+        raise RuntimeError(
+            "自定义引擎需要指定模块名: --custom-module <模块名>\n"
+            f"模块文件应放在项目目录的 {_CUSTOM_ENGINES_DIR}/ 子目录下"
+        )
+
+    # Resolve to custom_engines/ under the project root
+    project_root = Path(__file__).resolve().parent.parent
+    engines_dir = project_root / _CUSTOM_ENGINES_DIR
+
+    # Strip .py extension if present
+    if module_name.endswith(".py"):
+        module_name = module_name[:-3]
+
+    # Security: reject path separators — must be a simple filename
+    if "/" in module_name or "\\" in module_name or ".." in module_name:
+        raise RuntimeError(
+            f"自定义引擎模块名不能包含路径分隔符: '{module_name}'\n"
+            f"请将模块文件放在 {engines_dir}/ 目录下，然后只传文件名"
+        )
+
+    module_path = engines_dir / f"{module_name}.py"
+    if not module_path.is_file():
+        raise RuntimeError(
+            f"自定义引擎模块未找到: {module_path}\n"
+            f"请在 {engines_dir}/ 目录下创建 {module_name}.py 文件"
+        )
+
+    spec = importlib.util.spec_from_file_location(f"custom_engines.{module_name}", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载自定义引擎模块: {module_path}")
+
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Validate interface
+    if not hasattr(mod, "translate_batch") and not hasattr(mod, "translate"):
+        raise RuntimeError(
+            f"自定义引擎模块 {module_name} 必须实现 translate_batch() 或 translate() 函数"
+        )
+
+    logger.info("[API] 已加载自定义引擎: %s", module_path)
+    return mod
+
+
 @dataclass
 class APIConfig:
     """API 连接配置"""
-    provider: str       # xai, openai, deepseek, claude
+    provider: str       # xai, openai, deepseek, claude, gemini, custom
     api_key: str
     model: str = ""
     rpm: int = 0        # 每分钟请求数（0=不限）
@@ -121,6 +197,7 @@ class APIConfig:
     temperature: float = 0.1  # 低温保证一致性
     max_retries: int = 5
     max_response_tokens: int = 32768
+    custom_module: str = ""  # 自定义翻译引擎模块名（仅 provider="custom" 时使用）
 
     # 自动填充
     endpoint: str = field(init=False, default="")
@@ -134,6 +211,7 @@ class APIConfig:
             'deepseek': ('https://api.deepseek.com/v1/chat/completions', 'deepseek-chat'),
             'claude': ('https://api.anthropic.com/v1/messages', 'claude-sonnet-4-20250514'),
             'gemini': ('https://generativelanguage.googleapis.com/v1beta/chat/completions', 'gemini-2.5-flash'),
+            'custom': ('', 'custom'),
         }
         key = self.provider.lower()
         if key in providers:
@@ -222,12 +300,15 @@ class RateLimiter:
 
 
 class APIClient:
-    """API 客户端，支持多提供商"""
+    """API 客户端，支持多提供商（含自定义引擎插件）"""
 
     def __init__(self, config: APIConfig):
         self.config = config
         self._limiter = RateLimiter(config.rpm, config.rps) if (config.rpm or config.rps) else None
         self.usage = UsageStats(config.provider, config.model)
+        self._custom_module = None
+        if config.provider.lower() == "custom":
+            self._custom_module = _load_custom_engine(config.custom_module)
 
     def translate(self, system_prompt: str, user_prompt: str) -> list[dict]:
         """发送翻译请求，返回解析后的 JSON 数组
@@ -257,6 +338,10 @@ class APIClient:
     def _call_api(self, system_prompt: str, user_prompt: str) -> str:
         """调用 API，返回原始响应文本"""
         provider = self.config.provider.lower()
+
+        # 自定义引擎：直接调用用户模块，不走 HTTP 重试逻辑
+        if provider == "custom" and self._custom_module is not None:
+            return self._call_custom(system_prompt, user_prompt)
 
         import random
 
@@ -406,6 +491,51 @@ class APIClient:
         if not blocks:
             return ""
         return blocks[0].get("text", "")
+
+    def _call_custom(self, system_prompt: str, user_prompt: str) -> str:
+        """调用自定义翻译引擎模块。
+
+        优先使用 ``translate_batch(items, source_lang, target_lang)`` 批量接口。
+        如果模块未实现批量接口，降级为 ``translate(text, source_lang, target_lang)``
+        逐条翻译，结果包装为 JSON 数组字符串返回。
+        """
+        mod = self._custom_module
+        if mod is None:
+            raise RuntimeError("自定义引擎模块未加载")
+
+        if hasattr(mod, "translate_batch"):
+            # 批量接口：直接传 user_prompt（JSON 数组），返回 JSON 数组字符串
+            result = mod.translate_batch(system_prompt, user_prompt)
+            if isinstance(result, str):
+                return result
+            # 如果返回的是 list[dict]，序列化为 JSON 字符串
+            return json.dumps(result, ensure_ascii=False)
+
+        if hasattr(mod, "translate"):
+            # 单句降级：解析 user_prompt 中的条目，逐条调用 translate()
+            try:
+                items = json.loads(user_prompt) if user_prompt.strip().startswith("[") else []
+            except (json.JSONDecodeError, ValueError):
+                items = []
+
+            if not items:
+                # 非 JSON 数组格式，直接传整个 prompt
+                return mod.translate(user_prompt, "en", self.config.model or "zh")
+
+            results = []
+            for item in items:
+                original = item.get("original", item.get("text", ""))
+                if not original:
+                    continue
+                translated = mod.translate(original, "en", self.config.model or "zh")
+                entry = dict(item)
+                entry["zh"] = translated
+                results.append(entry)
+            return json.dumps(results, ensure_ascii=False)
+
+        raise RuntimeError(
+            f"自定义引擎模块必须实现 translate_batch() 或 translate() 函数"
+        )
 
     @staticmethod
     def _parse_json_response(text: str) -> list[dict]:

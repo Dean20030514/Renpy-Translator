@@ -40,7 +40,7 @@ def main() -> int:
         "file_processor.checker", "file_processor.validator",
         # tools
         "tools", "tools.font_patch", "tools.renpy_upgrade_tool",
-        "tools.review_generator",
+        "tools.review_generator", "tools.rpa_packer", "tools.translation_editor",
         # pipeline
         "pipeline", "pipeline.helpers", "pipeline.gate", "pipeline.stages",
         # engines

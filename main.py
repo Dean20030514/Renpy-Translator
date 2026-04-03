@@ -88,8 +88,10 @@ def main():
     )
     parser.add_argument("--game-dir", required=True, help="游戏目录（自动检测 game/ 子目录，自动排除 renpy/ 引擎文件）")
     parser.add_argument("--output-dir", default=None, help="输出目录 (默认: output)")
-    parser.add_argument("--provider", default=None, choices=['xai', 'grok', 'openai', 'deepseek', 'claude', 'gemini'],
-                        help="API 提供商")
+    parser.add_argument("--provider", default=None, choices=['xai', 'grok', 'openai', 'deepseek', 'claude', 'gemini', 'custom'],
+                        help="API 提供商（custom 需配合 --custom-module 使用）")
+    parser.add_argument("--custom-module", default="", metavar="NAME",
+                        help="自定义翻译引擎模块名（位于 custom_engines/ 目录，如 my_engine）")
     parser.add_argument("--api-key", default="", help="API 密钥（dry-run 模式可不填）")
     parser.add_argument("--model", default=None, help="模型名称 (留空使用默认)")
     parser.add_argument("--genre", default=None, choices=['adult', 'visual_novel', 'rpg', 'general'],

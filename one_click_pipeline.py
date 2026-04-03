@@ -63,6 +63,8 @@ def parse_args() -> argparse.Namespace:
                         help="tl 语言子目录名 (默认: chinese)；仅 --tl-mode 时有效")
     parser.add_argument("--tl-screen", action="store_true", default=False,
                         help="翻译 screen 中的裸英文字符串（text/textbutton/Tooltip/Notify）")
+    parser.add_argument("--no-lint-repair", action="store_true", default=False,
+                        help="跳过翻译后的 Ren'Py lint 修复阶段")
     return parser.parse_args()
 
 

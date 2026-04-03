@@ -130,6 +130,9 @@ def _should_retry(cr: ChunkResult) -> tuple[bool, bool]:
     # 截断检测：返回条数 < 期望的 50%，强烈暗示 AI 输出被截断
     if cr.expected > 0 and cr.returned < cr.expected * 0.5:
         return True, True
+    # JSON 解析全部失败：返回 0 条且期望 > 0，可能是 AI 输出过大或格式混乱，拆分后重试
+    if cr.expected > 0 and cr.returned == 0 and not cr.error:
+        return True, True
     return False, False
 
 
@@ -800,6 +803,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         timeout=args.timeout,
         temperature=args.temperature,
         max_response_tokens=args.max_response_tokens,
+        custom_module=getattr(args, "custom_module", ""),
     )
     client = APIClient(config)
     logger.info(f"[API ] 提供商: {config.provider}, 模型: {config.model}")

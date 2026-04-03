@@ -10,7 +10,7 @@
 | §4 CSV/JSONL | 通用格式支持（列名别名 + UTF-8 BOM + 多行） | ✅ Done |
 | §5 通用管线 | 6 阶段统一翻译流程 | ✅ Done |
 | §6 模块适配 | checker/prompts/glossary 引擎参数化 | ✅ Done |
-| §7 测试策略 | 多引擎回归测试（225 用例） | ✅ Done |
+| §7 测试策略 | 多引擎回归测试（267 用例） | ✅ Done |
 | §8 后续路线图 | RPG Maker VX/Ace、Godot、Unity 等 | 📋 Planned |
 
 > 各阶段详细变更记录见 CHANGELOG.md
