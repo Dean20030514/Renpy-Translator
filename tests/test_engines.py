@@ -609,7 +609,7 @@ def test_check_response_item_default_unchanged():
 
 def test_prompt_addon_none():
     """build_system_prompt(engine_profile=None) 零变更"""
-    from prompts import build_system_prompt
+    from core.prompts import build_system_prompt
     base = build_system_prompt(genre="adult")
     with_none = build_system_prompt(genre="adult", engine_profile=None)
     assert base == with_none
@@ -618,7 +618,7 @@ def test_prompt_addon_none():
 
 def test_prompt_addon_rpgmaker():
     """build_system_prompt(engine_profile=rpgmaker) 包含 addon"""
-    from prompts import build_system_prompt
+    from core.prompts import build_system_prompt
     from engines.engine_base import RPGMAKER_MV_PROFILE
     result = build_system_prompt(genre="adult", engine_profile=RPGMAKER_MV_PROFILE)
     assert "\\V[n]" in result or "RPG Maker" in result
@@ -863,7 +863,7 @@ def test_rpgm_navigate_to_node():
 
 def test_glossary_scan_rpgmaker():
     """glossary.scan_rpgmaker_database: 从 Actors.json 提取角色名"""
-    from glossary import Glossary
+    from core.glossary import Glossary
     g = Glossary()
     with tempfile.TemporaryDirectory() as d:
         data = _make_rpgm_mv_dir(d)

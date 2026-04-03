@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api_client import APIClient, APIConfig
+from core.api_client import APIClient, APIConfig
 from file_processor import split_file, apply_translations, validate_translation, read_file, estimate_tokens
-from glossary import Glossary
-from prompts import build_system_prompt, build_user_prompt
+from core.glossary import Glossary
+from core.prompts import build_system_prompt, build_user_prompt
 
 GAME_DIR = Path(os.environ.get("TEST_GAME_DIR", r"E:\浏览器下载\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed\game"))
 TEST_FILE = GAME_DIR / "tutorial.rpy"

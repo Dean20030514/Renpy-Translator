@@ -24,8 +24,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from file_processor import apply_translations, read_file
-from one_click_pipeline import evaluate_gate, list_rpy_files
-from translation_db import TranslationDB
+from pipeline.gate import evaluate_gate
+from pipeline.helpers import list_rpy_files
+from core.translation_db import TranslationDB
 
 
 def _default_paths(script_dir: Path) -> dict:

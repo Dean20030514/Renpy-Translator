@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from one_click_pipeline import evaluate_gate
+from pipeline.gate import evaluate_gate
 
 # 默认路径（可通过环境变量覆盖）
 _DEFAULT_PROJECT = r"C:\Users\16097\Desktop\Renpy翻译\Renpy汉化（我的）\output\projects\TheTyrant-0.9.4b.with.Official.SAZmod-pc-compressed"

@@ -26,7 +26,7 @@ from file_processor import (
     _extract_placeholder_sequence,
     read_file,
 )
-from one_click_pipeline import collect_strings_stats
+from pipeline.gate import collect_strings_stats
 
 
 TESTS_DIR = Path(__file__).resolve().parent

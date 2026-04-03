@@ -5,10 +5,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import api_client
+from core import api_client
 import file_processor
-import glossary
-import prompts
+from core import glossary
+from core import prompts
 
 def test_api_config():
     c = api_client.APIConfig(provider='xai', api_key='test')
@@ -319,7 +319,7 @@ def test_glossary_thread_safety():
 def test_progress_cleanup():
     """测试进度文件 results 清理"""
     import tempfile, os
-    from main import ProgressTracker
+    from core.translation_utils import ProgressTracker
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -335,7 +335,7 @@ def test_progress_cleanup():
 
 def test_pricing_lookup():
     """测试模型级定价查询和推理模型检测"""
-    from api_client import get_pricing, is_reasoning_model
+    from core.api_client import get_pricing, is_reasoning_model
 
     # 精确匹配
     pin, pout, exact = get_pricing('xai', 'grok-4-1-fast-reasoning')
@@ -543,7 +543,7 @@ def test_check_response_chunk_skip_chinese():
 
 def test_dialogue_density():
     """T6: calculate_dialogue_density 密度自适应路由"""
-    from main import calculate_dialogue_density
+    from translators.retranslator import calculate_dialogue_density
     # 低密度：多代码少对话
     low = "label start:\n    pass\n    pass\n    pass\n    pass\n" + \
           '    e "Hello"\n' + "    pass\n    pass\n    pass\n    pass\n"
@@ -572,7 +572,7 @@ def test_skip_files():
 
 def test_find_untranslated_lines():
     """T8: find_untranslated_lines 二次过滤"""
-    from main import find_untranslated_lines
+    from translators.retranslator import find_untranslated_lines
     content = (
         '    auto "path_%s.png"\n'
         '    idle "icon_hover.png"\n'
@@ -595,7 +595,7 @@ def test_translation_db_roundtrip():
     """T10: TranslationDB save/load 往返 + upsert 去重"""
     import tempfile, os
     from pathlib import Path
-    from translation_db import TranslationDB
+    from core.translation_db import TranslationDB
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp_path = f.name
     try:
@@ -625,7 +625,7 @@ def test_translation_db_roundtrip():
 
 def test_is_untranslated_dialogue():
     """测试 one_click_pipeline._is_untranslated_dialogue 辅助函数"""
-    from renpy_text_utils import _is_untranslated_dialogue
+    from translators.renpy_text_utils import _is_untranslated_dialogue
     # 纯英文长文本 → 应判定为未翻译
     assert _is_untranslated_dialogue("This is a long English sentence that should be detected as untranslated.")
     # 含中文 → 不应判定
@@ -637,7 +637,7 @@ def test_is_untranslated_dialogue():
 
 def test_restore_placeholders_in_translations():
     """测试 _restore_placeholders_in_translations 辅助函数"""
-    from main import _restore_placeholders_in_translations
+    from core.translation_utils import _restore_placeholders_in_translations
     from file_processor import protect_placeholders
     text = "Hello [name], welcome to {color=#f00}town{/color}!"
     protected, mapping = protect_placeholders(text)
@@ -659,7 +659,7 @@ def test_progress_resume():
     """T43: ProgressTracker 写入后重载，数据一致"""
     import tempfile, os
     from pathlib import Path
-    from main import ProgressTracker
+    from core.translation_utils import ProgressTracker
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp_path = f.name
     try:
@@ -679,7 +679,7 @@ def test_progress_normalize():
     """T44: 加载损坏/缺key的 progress.json 不崩溃"""
     import tempfile, os
     from pathlib import Path
-    from main import ProgressTracker
+    from core.translation_utils import ProgressTracker
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode='w') as f:
         f.write('{"completed_files": ["a.rpy"]}')  # 缺 completed_chunks 和 stats
         tmp_path = f.name
@@ -695,7 +695,7 @@ def test_progress_normalize():
 
 def test_filter_checked_translations():
     """T47: _filter_checked_translations 正常/空译文/占位符缺失"""
-    from main import _filter_checked_translations
+    from core.translation_utils import _filter_checked_translations
     items = [
         {"line": 1, "original": "Hello", "zh": "你好"},
         {"line": 2, "original": "World", "zh": ""},          # 空译文 → dropped
@@ -711,7 +711,7 @@ def test_filter_checked_translations():
 
 def test_deduplicate_translations():
     """T48: _deduplicate_translations 去重"""
-    from main import _deduplicate_translations
+    from core.translation_utils import _deduplicate_translations
     items = [
         {"line": 1, "original": "Hello", "zh": "你好"},
         {"line": 1, "original": "Hello", "zh": "你好啊"},  # 重复 key
@@ -727,7 +727,7 @@ def test_deduplicate_translations():
 
 def test_match_string_entry_fallback():
     """T49: _match_string_entry_fallback 四层 fallback"""
-    from main import _match_string_entry_fallback, _build_fallback_dicts
+    from core.translation_utils import _match_string_entry_fallback, _build_fallback_dicts
     ft = {
         "Save Game": "保存游戏",
         "  Load Game  ": "读取存档",
@@ -760,7 +760,7 @@ def test_match_string_entry_fallback():
 
 def test_api_empty_choices():
     """T50: API 返回空 choices 时不崩溃"""
-    import api_client
+    from core import api_client
     # 模拟空 choices 的情况——直接测试解析逻辑
     # _call_openai_format 需要网络，这里测试 get_pricing 和 is_reasoning_model
     assert api_client.is_reasoning_model("grok-4-1-fast-reasoning") is True
@@ -791,7 +791,7 @@ def test_positive_int_validation():
 
 def test_reasoning_model_timeout():
     """推理模型自动提升 timeout"""
-    import api_client
+    from core import api_client
     config = api_client.APIConfig(provider='xai', api_key='test', model='grok-4-1-fast-reasoning', timeout=180.0)
     assert config.timeout >= 300.0, f"Expected >= 300, got {config.timeout}"
     # 非推理模型不应提升
@@ -868,7 +868,7 @@ def test_replace_string_escaped_quotes():
 def test_config_load_and_defaults():
     """config.json 加载 + 默认值填充"""
     from pathlib import Path as _Path
-    from config import Config, DEFAULTS
+    from core.config import Config, DEFAULTS
     import tempfile
     # 无配置文件时使用默认值
     cfg = Config(game_dir=_Path(tempfile.gettempdir()), cli_args=None)
@@ -882,7 +882,7 @@ def test_config_load_and_defaults():
 def test_config_cli_override():
     """CLI 参数覆盖配置文件和默认值"""
     from pathlib import Path as _Path
-    from config import Config
+    from core.config import Config
     import types, tempfile
     # ��拟 CLI args
     cli = types.SimpleNamespace(workers=8, rpm=None, rps=None, api_key="")
@@ -895,7 +895,7 @@ def test_config_cli_override():
 def test_config_file_load():
     """配置文件正常加载"""
     from pathlib import Path as _Path
-    from config import Config
+    from core.config import Config
     import tempfile, os, json
     # 创建临时配置文件
     tmpdir = tempfile.mkdtemp()
@@ -915,7 +915,7 @@ def test_config_file_load():
 
 def test_progress_bar_render():
     """ProgressBar 渲染不崩溃（含 ASCII fallback）"""
-    from translation_utils import ProgressBar
+    from core.translation_utils import ProgressBar
     bar = ProgressBar(total=10, width=20)
     bar.update(3, cost=0.5)
     bar.update(7, cost=1.2)
@@ -927,7 +927,7 @@ def test_progress_bar_render():
 
 def test_review_generator_html():
     """review_generator 生成 HTML 不崩溃"""
-    from review_generator import generate_review_html
+    from tools.review_generator import generate_review_html
     from pathlib import Path as _Path
     import tempfile, json, os
     # 创建临时 translation_db
@@ -959,7 +959,7 @@ def test_review_generator_html():
 
 def test_lang_config_detect():
     """语言检测函数准确性"""
-    from lang_config import detect_chinese_ratio, detect_japanese_ratio, detect_korean_ratio
+    from core.lang_config import detect_chinese_ratio, detect_japanese_ratio, detect_korean_ratio
     # 中文
     assert detect_chinese_ratio("你好世界") > 0.5
     assert detect_chinese_ratio("Hello world") == 0.0
@@ -975,7 +975,7 @@ def test_lang_config_detect():
 
 def test_lang_config_lookup():
     """get_language_config 查找与回退"""
-    from lang_config import get_language_config
+    from core.lang_config import get_language_config
     zh = get_language_config("zh")
     assert zh.code == "zh" and zh.glossary_field == "zh"
     ja = get_language_config("ja")
@@ -988,7 +988,7 @@ def test_lang_config_lookup():
 
 def test_resolve_translation_field():
     """兼容读取翻译字段"""
-    from lang_config import resolve_translation_field, get_language_config
+    from core.lang_config import resolve_translation_field, get_language_config
     zh_cfg = get_language_config("zh")
     ja_cfg = get_language_config("ja")
     # 精确匹配
@@ -1006,9 +1006,9 @@ def test_resolve_translation_field():
 
 def test_prompt_zh_unchanged():
     """中文 prompt 零变更回归验证"""
-    from prompts import build_system_prompt
-    from glossary import Glossary
-    from lang_config import get_language_config
+    from core.prompts import build_system_prompt
+    from core.glossary import Glossary
+    from core.lang_config import get_language_config
     g = Glossary()
     # 不传 lang_config → 默认 zh
     prompt_default = build_system_prompt('adult', g.to_prompt_text(), 'TestProject')
@@ -1022,8 +1022,8 @@ def test_prompt_zh_unchanged():
 
 def test_prompt_ja_generic():
     """日语 prompt 使用英文通用模板"""
-    from prompts import build_system_prompt
-    from lang_config import get_language_config
+    from core.prompts import build_system_prompt
+    from core.lang_config import get_language_config
     ja = get_language_config('ja')
     prompt = build_system_prompt('adult', '', 'TestProject', lang_config=ja)
     assert 'Japanese' in prompt or '日本語' in prompt
@@ -1035,7 +1035,7 @@ def test_prompt_ja_generic():
 
 def test_validator_lang_config():
     """validator W442 使用 lang_config 参数化"""
-    from lang_config import get_language_config
+    from core.lang_config import get_language_config
     # 日语 validator：日文占比低应触发 W442
     ja = get_language_config('ja')
     orig = 'x' * 30 + '\n' + '"' + 'A' * 25 + '"'
@@ -1049,8 +1049,8 @@ def test_validator_lang_config():
 
 def test_should_retry_truncation():
     """_should_retry 截断检测：returned < expected * 0.5 → needs_split"""
-    from direct_translator import _should_retry
-    from translation_utils import ChunkResult
+    from translators.direct import _should_retry
+    from core.translation_utils import ChunkResult
     # 正常情况
     cr_ok = ChunkResult(part=1, expected=10, returned=8)
     should, split = _should_retry(cr_ok)
@@ -1076,8 +1076,8 @@ def test_should_retry_truncation():
 
 def test_should_retry_normal():
     """_should_retry 正常和丢弃率过高"""
-    from direct_translator import _should_retry
-    from translation_utils import ChunkResult
+    from translators.direct import _should_retry
+    from core.translation_utils import ChunkResult
     # 正常返回
     cr = ChunkResult(part=1, expected=10, returned=10, dropped_count=0)
     should, split = _should_retry(cr)
@@ -1091,7 +1091,7 @@ def test_should_retry_normal():
 
 def test_split_chunk_basic():
     """_split_chunk 基本拆分：行数守恒"""
-    from direct_translator import _split_chunk
+    from translators.direct import _split_chunk
     lines = [f"line {i}\n" for i in range(20)]
     chunk = {"content": "".join(lines), "line_offset": 0, "part": 1, "total": 1}
     a, b = _split_chunk(chunk)
@@ -1105,7 +1105,7 @@ def test_split_chunk_basic():
 
 def test_split_chunk_at_empty_line():
     """_split_chunk 优先在空行处拆分"""
-    from direct_translator import _split_chunk
+    from translators.direct import _split_chunk
     lines = []
     for i in range(20):
         if i == 10:
@@ -1123,7 +1123,7 @@ def test_split_chunk_at_empty_line():
 def test_config_validation():
     """配置文件 schema 校验：类型/范围/未知键"""
     from pathlib import Path as _Path
-    from config import Config
+    from core.config import Config
     import tempfile, os, json, logging
 
     # --- 1. 合法配置无警告 ---
@@ -1184,7 +1184,7 @@ def test_config_validation():
 def test_fix_nvl_ids_basic():
     """含 nvl clear 的块：say-only ID 应被替换为 nvl+say ID"""
     import tempfile
-    from tl_parser import fix_nvl_translation_ids, _compute_say_only_hash, _compute_nvl_say_hash
+    from translators.tl_parser import fix_nvl_translation_ids, _compute_say_only_hash, _compute_nvl_say_hash
     say_code = 's "Hello world"'
     say_hash = _compute_say_only_hash(say_code)
     nvl_hash = _compute_nvl_say_hash(say_code)
@@ -1214,7 +1214,7 @@ def test_fix_nvl_ids_basic():
 def test_fix_nvl_ids_no_nvl():
     """不含 nvl clear 的块不应被修改"""
     import tempfile
-    from tl_parser import fix_nvl_translation_ids
+    from translators.tl_parser import fix_nvl_translation_ids
     tl_content = (
         "# game/test.rpy:10\n"
         "translate chinese my_label_abcd1234:\n"
@@ -1236,7 +1236,7 @@ def test_fix_nvl_ids_no_nvl():
 def test_fix_nvl_ids_already_correct():
     """ID 已经是 nvl+say 哈希时不应重复修改"""
     import tempfile
-    from tl_parser import fix_nvl_translation_ids, _compute_nvl_say_hash
+    from translators.tl_parser import fix_nvl_translation_ids, _compute_nvl_say_hash
     say_code = 's "Already correct"'
     nvl_hash = _compute_nvl_say_hash(say_code)
     tl_content = (
@@ -1259,7 +1259,7 @@ def test_fix_nvl_ids_already_correct():
 
 def test_fix_nvl_ids_real_hashes():
     """用 begin.rpy 的真实数据验证 7 个已知 case"""
-    from tl_parser import _compute_say_only_hash, _compute_nvl_say_hash
+    from translators.tl_parser import _compute_say_only_hash, _compute_nvl_say_hash
     cases = [
         ('s "The {color=#3cff00}Love{/color} and {color=#ff0000}Corruption{/color}'
          ' paths have been extended to help make them more robust. There are'
@@ -1286,7 +1286,7 @@ def test_fix_nvl_ids_real_hashes():
 # ─────────────────────────────────────────────────────────────────
 
 def test_screen_should_skip():
-    from screen_translator import _should_skip
+    from translators.screen import _should_skip
     assert _should_skip("") is True
     assert _should_skip("[var]") is True
     assert _should_skip("[mother]") is True
@@ -1307,7 +1307,7 @@ def test_screen_should_skip():
 
 
 def test_screen_extract_basic():
-    from screen_translator import extract_screen_strings
+    from translators.screen import extract_screen_strings
     import tempfile, os
     content = """\
 screen test_screen():
@@ -1341,7 +1341,7 @@ screen test_screen():
 
 
 def test_screen_extract_skips_underscore():
-    from screen_translator import extract_screen_strings
+    from translators.screen import extract_screen_strings
     import tempfile, os
     content = """\
 screen menu_screen():
@@ -1364,7 +1364,7 @@ screen menu_screen():
 
 
 def test_screen_extract_skips_outside_screen():
-    from screen_translator import extract_screen_strings
+    from translators.screen import extract_screen_strings
     import tempfile, os
     content = """\
 label start:
@@ -1394,7 +1394,7 @@ define x = 1
 
 
 def test_screen_dedup():
-    from screen_translator import _deduplicate_entries, ScreenTextEntry
+    from translators.screen import _deduplicate_entries, ScreenTextEntry
     entries = [
         ScreenTextEntry("a.rpy", 1, "text", "Hello"),
         ScreenTextEntry("b.rpy", 5, "text", "Hello"),
@@ -1408,7 +1408,7 @@ def test_screen_dedup():
 
 
 def test_screen_replace_text():
-    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    from translators.screen import _replace_screen_strings_in_file, ScreenTextEntry
     import tempfile, os
     content = '    text "Save Game"\n'
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
@@ -1429,7 +1429,7 @@ def test_screen_replace_text():
 
 
 def test_screen_replace_textbutton_preserves_action():
-    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    from translators.screen import _replace_screen_strings_in_file, ScreenTextEntry
     import tempfile, os
     content = '    textbutton "Start" action Start() style "btn_style"\n'
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
@@ -1451,7 +1451,7 @@ def test_screen_replace_textbutton_preserves_action():
 
 
 def test_screen_replace_tt_action():
-    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    from translators.screen import _replace_screen_strings_in_file, ScreenTextEntry
     import tempfile, os
     content = '    imagebutton hovered tt.Action("Go closer") focus_mask True\n'
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
@@ -1472,7 +1472,7 @@ def test_screen_replace_tt_action():
 
 
 def test_screen_replace_with_tags_and_vars():
-    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    from translators.screen import _replace_screen_strings_in_file, ScreenTextEntry
     import tempfile, os
     content = '    text "Relationship: {color=3cff00}[momrelationship]{/color}"\n'
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
@@ -1495,7 +1495,7 @@ def test_screen_replace_with_tags_and_vars():
 
 
 def test_screen_replace_notify():
-    from screen_translator import _replace_screen_strings_in_file, ScreenTextEntry
+    from translators.screen import _replace_screen_strings_in_file, ScreenTextEntry
     import tempfile, os
     content = '    imagebutton action Jump("x") hovered Notify("Help needed") focus_mask True\n'
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
@@ -1517,7 +1517,7 @@ def test_screen_replace_notify():
 
 
 def test_screen_backup_no_overwrite():
-    from screen_translator import _create_backup
+    from translators.screen import _create_backup
     import tempfile, os
     with tempfile.NamedTemporaryFile(mode='w', suffix='.rpy', delete=False,
                                      encoding='utf-8') as f:
@@ -1542,7 +1542,7 @@ def test_screen_backup_no_overwrite():
 
 
 def test_screen_chunks():
-    from screen_translator import _build_screen_chunks
+    from translators.screen import _build_screen_chunks
     texts = [f"text_{i}" for i in range(100)]
     chunks = _build_screen_chunks(texts, max_per_chunk=40)
     assert len(chunks) == 3
