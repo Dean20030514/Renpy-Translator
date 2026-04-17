@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ren'Py tl 文件解析器 — 解析 translate 块并提取/回填翻译条目。
+"""Ren'Py tl 文件解析器入口 — 解析 translate 块并提取/回填翻译条目。
 
-独立模块，只依赖标准库 (os, re, dataclasses, pathlib, collections)。
+第 24 轮 (A-H-4) 起本文件被拆为 4 个模块，保持 ``translators.tl_parser``
+公开 API（``parse_tl_file`` / ``fill_translation`` / ``fix_nvl_translation_ids``
+等）不变：
+
+    translators/
+    ├── tl_parser.py              ← 本文件：核心解析（数据类 + parse + scan + fill + stats）+ re-export
+    ├── _tl_postprocess.py        ← nvl clear / empty block 后处理
+    ├── _tl_nvl_fix.py            ← Ren'Py 8.6 → 7.x 翻译块 ID 修复
+    └── _tl_parser_selftest.py    ← 内置自测套件
+
+独立模块，只依赖标准库 (os, re, hashlib, dataclasses, pathlib, collections)。
 """
+from __future__ import annotations
 
-import hashlib
+import hashlib  # noqa: F401 — 历史上有人 `from tl_parser import hashlib`
 import os
 import re
 from collections import defaultdict
@@ -441,214 +452,9 @@ def fill_translation(
     return result
 
 
-_RE_TRANSLATE_BLOCK = re.compile(r'^translate\s+\w+\s+\w+\s*:\s*$')
-
-
-def postprocess_tl_file(file_path: str) -> dict:
-    """Post-process a tl file after fill_translation to fix Ren'Py compatibility issues.
-
-    Fixes:
-    1. Remove ``nvl clear`` from inside translate blocks (Ren'Py 7.x compat).
-    2. Add ``pass`` to translate blocks left empty after removal.
-
-    Returns dict with fix counts: {"nvl_removed": int, "pass_added": int}.
-    """
-    content = Path(file_path).read_text(encoding='utf-8-sig')
-    lines = content.splitlines()
-    has_trailing_nl = content.endswith('\n')
-
-    new_lines: list[str] = []
-    stats = {"nvl_removed": 0, "pass_added": 0}
-    i = 0
-
-    while i < len(lines):
-        header = lines[i].strip()
-        if _RE_TRANSLATE_BLOCK.match(header) and 'strings' not in header:
-            new_lines.append(lines[i])
-            i += 1
-
-            block_lines: list[str] = []
-            has_code = False
-            while i < len(lines):
-                s = lines[i].strip()
-                if s == '' or s.startswith('#'):
-                    block_lines.append(lines[i])
-                    i += 1
-                    continue
-                if _RE_TRANSLATE_BLOCK.match(s) or s.startswith('translate '):
-                    break
-                if s == 'nvl clear':
-                    stats["nvl_removed"] += 1
-                    i += 1
-                    continue
-                has_code = True
-                block_lines.append(lines[i])
-                i += 1
-            if not has_code:
-                new_lines.append('    pass')
-                stats["pass_added"] += 1
-            new_lines.extend(block_lines)
-        else:
-            new_lines.append(lines[i])
-            i += 1
-
-    result = '\n'.join(new_lines)
-    if has_trailing_nl:
-        result += '\n'
-
-    if stats["nvl_removed"] or stats["pass_added"]:
-        Path(file_path).write_text(result, encoding='utf-8')
-
-    return stats
-
-
-def postprocess_tl_directory(tl_dir: str, lang: str) -> dict:
-    """Post-process all tl files in a directory after translation.
-
-    Returns aggregate stats.
-    """
-    tl_path = Path(tl_dir) / lang
-    if not tl_path.exists():
-        return {"files": 0, "nvl_removed": 0, "pass_added": 0}
-
-    totals = {"files": 0, "nvl_removed": 0, "pass_added": 0}
-    for rpy in sorted(tl_path.rglob("*.rpy")):
-        stats = postprocess_tl_file(str(rpy))
-        if stats["nvl_removed"] or stats["pass_added"]:
-            totals["files"] += 1
-            totals["nvl_removed"] += stats["nvl_removed"]
-            totals["pass_added"] += stats["pass_added"]
-
-    if totals["files"]:
-        print(f"[TL-POSTPROCESS] 修复 {totals['files']} 个文件: "
-              f"移除 {totals['nvl_removed']} 处 nvl clear, "
-              f"补 {totals['pass_added']} 处 pass")
-    return totals
-
-
-def _compute_say_only_hash(say_code: str) -> str:
-    """计算仅含 Say 语句的翻译块哈希（8 位十六进制）。"""
-    md5 = hashlib.md5()
-    md5.update(say_code.encode("utf-8") + b"\r\n")
-    return md5.hexdigest()[:8]
-
-
-def _compute_nvl_say_hash(say_code: str) -> str:
-    """计算含 nvl clear + Say 的翻译块哈希（8 位十六进制）。"""
-    md5 = hashlib.md5()
-    md5.update(b"nvl clear\r\n")
-    md5.update(say_code.encode("utf-8") + b"\r\n")
-    return md5.hexdigest()[:8]
-
-
-def fix_nvl_translation_ids(file_path: str) -> dict:
-    """修正 .tl 文件中含 nvl clear 的翻译块 ID。
-
-    Ren'Py 8.6+ 生成 .tl 模板时默认只用 Say 语句计算哈希
-    (``config.tlid_only_considers_say = True``)，但 Ren'Py 7.x 会把
-    ``nvl clear`` 也纳入哈希。本函数检测 say-only ID 并替换为 nvl+say ID。
-
-    算法：
-    1. 扫描 ``translate <lang> <id>:`` 块，检测注释中是否有 ``# nvl clear``
-    2. 提取紧随其后的 say 注释行（如 ``# s "text"``）作为 say_code
-    3. 用 say_code 计算 say-only 哈希，与当前 ID 后缀比对（防止误改）
-    4. 计算 nvl+say 哈希，替换 ID
-
-    Returns dict: ``{"ids_fixed": int}``
-    """
-    content = Path(file_path).read_text(encoding="utf-8-sig")
-    lines = content.splitlines()
-    has_trailing_nl = content.endswith("\n")
-
-    stats = {"ids_fixed": 0}
-    i = 0
-
-    while i < len(lines):
-        m = _RE_DIALOGUE_HEADER.match(lines[i].strip())
-        if not m or "strings" in lines[i]:
-            i += 1
-            continue
-
-        header_idx = i
-        identifier = m.group(1)
-        i += 1
-
-        # 收集块内注释
-        has_nvl_clear = False
-        say_code = None
-
-        while i < len(lines):
-            s = lines[i].strip()
-            if s == "" or s.startswith("#"):
-                if s == "# nvl clear":
-                    has_nvl_clear = True
-                elif has_nvl_clear and say_code is None and s.startswith("# "):
-                    # nvl clear 后的第一条非 nvl-clear 注释 = say 语句
-                    candidate = s[2:]  # 去掉 "# "
-                    if candidate and candidate[0].isalpha() and '"' in candidate:
-                        say_code = candidate
-                i += 1
-                continue
-            # 遇到非空非注释行（代码行或下一个块），结束收集
-            if _RE_TRANSLATE_BLOCK.match(s) or s.startswith("translate "):
-                break
-            i += 1
-
-        if not has_nvl_clear or say_code is None:
-            continue
-
-        # 提取当前 ID 的哈希后缀（label_XXXXXXXX 中的 XXXXXXXX）
-        underscore_pos = identifier.rfind("_")
-        if underscore_pos == -1:
-            continue
-        current_hash = identifier[underscore_pos + 1:]
-        label_prefix = identifier[:underscore_pos + 1]
-
-        # 验证当前 ID 确实是 say-only 哈希
-        expected_say_only = _compute_say_only_hash(say_code)
-        if current_hash != expected_say_only:
-            continue
-
-        # 计算 nvl+say 哈希
-        new_hash = _compute_nvl_say_hash(say_code)
-        if new_hash == current_hash:
-            continue
-
-        new_identifier = label_prefix + new_hash
-        old_line = lines[header_idx]
-        lines[header_idx] = old_line.replace(identifier, new_identifier, 1)
-        stats["ids_fixed"] += 1
-
-    if stats["ids_fixed"]:
-        result = "\n".join(lines)
-        if has_trailing_nl:
-            result += "\n"
-        Path(file_path).write_text(result, encoding="utf-8")
-
-    return stats
-
-
-def fix_nvl_ids_directory(tl_dir: str, lang: str) -> dict:
-    """批量修正目录下所有 .tl 文件的 nvl clear 翻译块 ID。
-
-    Returns aggregate stats: ``{"files": int, "ids_fixed": int}``
-    """
-    tl_path = Path(tl_dir) / lang
-    if not tl_path.exists():
-        return {"files": 0, "ids_fixed": 0}
-
-    totals = {"files": 0, "ids_fixed": 0}
-    for rpy in sorted(tl_path.rglob("*.rpy")):
-        stats = fix_nvl_translation_ids(str(rpy))
-        if stats["ids_fixed"]:
-            totals["files"] += 1
-            totals["ids_fixed"] += stats["ids_fixed"]
-
-    if totals["files"]:
-        print(f"[TL-NVL-ID-FIX] 修正 {totals['files']} 个文件中 "
-              f"{totals['ids_fixed']} 处 nvl clear 翻译块 ID")
-    return totals
-
+# ============================================================
+# 统计
+# ============================================================
 
 def print_tl_stats(results: list[TlParseResult]) -> None:
     """打印统计摘要。"""
@@ -682,401 +488,29 @@ def print_tl_stats(results: list[TlParseResult]) -> None:
 
 
 # ============================================================
-# 内置自测
+# Re-export（向后兼容）：这些符号的实际定义在子模块中，
+# 但 ``translators.tl_parser`` 接口保持不变
 # ============================================================
 
-def _run_self_tests() -> None:
-    import tempfile
+# 支持 `python translators/tl_parser.py --test` 直接运行：脚本模式下
+# ``translators`` 包不在 sys.path，手动把项目根加进去，让 re-export 的
+# ``from translators._tl_* import ...`` 正常工作。
+if __name__ == '__main__' and __package__ in (None, ''):
+    import sys as _sys
+    _root = Path(__file__).resolve().parent.parent
+    if str(_root) not in _sys.path:
+        _sys.path.insert(0, str(_root))
 
-    passed = 0
-    failed = 0
-
-    def _assert(condition: bool, msg: str):
-        nonlocal passed, failed
-        if condition:
-            passed += 1
-        else:
-            failed += 1
-            print(f"  FAIL: {msg}")
-
-    def _write_tmp(text: str) -> str:
-        f = tempfile.NamedTemporaryFile(
-            mode='w', suffix='.rpy', delete=False, encoding='utf-8')
-        f.write(text)
-        f.close()
-        return f.name
-
-    print("运行自测...\n")
-
-    # ── 1. extract_quoted_text ──
-    print("[1] extract_quoted_text")
-    _assert(extract_quoted_text('e ""') == '', 'empty string')
-    _assert(extract_quoted_text('e "Hello"') == 'Hello', 'simple text')
-    _assert(extract_quoted_text('# e "Thank you"') == 'Thank you', 'comment text')
-    _assert(extract_quoted_text(r'e "Hello \"World\""') == r'Hello \"World\"',
-            'escaped quotes')
-    _assert(extract_quoted_text(r'e "path\\to\\file"') == r'path\\to\\file',
-            'escaped backslashes')
-    _assert(extract_quoted_text('no quotes here') is None, 'no quotes')
-    _assert(extract_quoted_text('"Just narration"') == 'Just narration', 'narration')
-    _assert(extract_quoted_text('"unclosed') is None, 'unclosed quote')
-    _assert(extract_quoted_text('old "First\\nSecond"') == 'First\\nSecond',
-            'newline escape')
-    print()
-
-    # ── 2. 正常对话块（未翻译 + 已翻译） ──
-    print("[2] 对话块解析")
-    dlg_text = (
-        '# game/script.rpy:95\n'
-        'translate chinese start_636ae3f5:\n'
-        '\n'
-        '    # e "Thank you for taking a look."\n'
-        '    e ""\n'
-        '\n'
-        '# game/script.rpy:98\n'
-        'translate chinese start_abcd1234:\n'
-        '\n'
-        '    # e "This is already translated."\n'
-        '    e "这已经翻译过了。"\n'
-    )
-    p = _write_tmp(dlg_text)
-    try:
-        r = parse_tl_file(p)
-        _assert(len(r.dialogues) == 2, f'expected 2 dialogues, got {len(r.dialogues)}')
-        d0 = r.dialogues[0]
-        _assert(d0.identifier == 'start_636ae3f5', f'id={d0.identifier}')
-        _assert(d0.original == 'Thank you for taking a look.', f'orig={d0.original}')
-        _assert(d0.translation == '', f'trans should be empty, got "{d0.translation}"')
-        _assert(d0.character == 'e', f'char={d0.character}')
-        _assert(d0.source_file == 'game/script.rpy', f'src={d0.source_file}')
-        _assert(d0.source_line == 95, f'src_line={d0.source_line}')
-        _assert(d0.tl_line == 5, f'tl_line={d0.tl_line}')
-        _assert(d0.block_start_line == 2, f'block_start={d0.block_start_line}')
-
-        d1 = r.dialogues[1]
-        _assert(d1.translation == '这已经翻译过了。', f'trans={d1.translation}')
-        _assert(d1.source_line == 98, f'src_line={d1.source_line}')
-
-        ud, us = get_untranslated_entries([r])
-        _assert(len(ud) == 1, f'untranslated dialogues: {len(ud)}')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 3. 旁白（无 character） ──
-    print("[3] 旁白（无 character）")
-    nar_text = (
-        '# game/script.rpy:10\n'
-        'translate chinese narrator_0001:\n'
-        '\n'
-        '    # "You enter the dark room."\n'
-        '    ""\n'
-    )
-    p = _write_tmp(nar_text)
-    try:
-        r = parse_tl_file(p)
-        _assert(len(r.dialogues) == 1, f'count={len(r.dialogues)}')
-        d = r.dialogues[0]
-        _assert(d.character == '', f'char should be empty, got "{d.character}"')
-        _assert(d.original == 'You enter the dark room.', f'orig={d.original}')
-        _assert(d.translation == '', 'should be untranslated')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 4. 字符串块 ──
-    print("[4] 字符串块解析")
-    str_text = (
-        'translate chinese strings:\n'
-        '\n'
-        '    # game/screens.rpy:281\n'
-        '    old "History"\n'
-        '    new ""\n'
-        '\n'
-        '    # game/screens.rpy:283\n'
-        '    old "Skip"\n'
-        '    new "快进"\n'
-        '\n'
-        '    old "Save"\n'
-        '    new ""\n'
-    )
-    p = _write_tmp(str_text)
-    try:
-        r = parse_tl_file(p)
-        _assert(len(r.strings) == 3, f'expected 3 strings, got {len(r.strings)}')
-
-        s0 = r.strings[0]
-        _assert(s0.old == 'History', f'old={s0.old}')
-        _assert(s0.new == '', f'new should be empty')
-        _assert(s0.source_file == 'game/screens.rpy', f'src={s0.source_file}')
-        _assert(s0.source_line == 281, f'src_line={s0.source_line}')
-        _assert(s0.tl_line == 5, f'tl_line={s0.tl_line}')
-
-        s1 = r.strings[1]
-        _assert(s1.old == 'Skip', f'old={s1.old}')
-        _assert(s1.new == '快进', f'new={s1.new}')
-        _assert(s1.source_line == 283, f'src_line={s1.source_line}')
-
-        s2 = r.strings[2]
-        _assert(s2.source_file == '', 'no source comment')
-        _assert(s2.source_line == 0, 'no source line')
-
-        ud, us = get_untranslated_entries([r])
-        _assert(len(us) == 2, f'untranslated strings: {len(us)}')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 5. show/hide 跳过 + 复杂块 + python 块 ──
-    print("[5] 非 say 跳过 + 复杂块 + python/style 块")
-    mixed_text = (
-        '# game/script.rpy:10\n'
-        'translate chinese show_block:\n'
-        '\n'
-        '    show eileen happy\n'
-        '    with dissolve\n'
-        '    # e "Hello there!"\n'
-        '    e ""\n'
-        '\n'
-        '# game/script.rpy:20\n'
-        'translate chinese complex_block:\n'
-        '\n'
-        '    # e "Greetings"\n'
-        '    if some_flag:\n'
-        '        e "你好"\n'
-        '    else:\n'
-        '        e "您好"\n'
-        '\n'
-        'translate chinese python:\n'
-        '    pass\n'
-        '\n'
-        'translate chinese style default:\n'
-        '    font "DejaVuSans.ttf"\n'
-    )
-    p = _write_tmp(mixed_text)
-    try:
-        r = parse_tl_file(p)
-        _assert(len(r.dialogues) == 1, f'expected 1 dialogue, got {len(r.dialogues)}')
-        d = r.dialogues[0]
-        _assert(d.identifier == 'show_block', f'id={d.identifier}')
-        _assert(d.original == 'Hello there!', f'orig={d.original}')
-        _assert(d.translation == '', 'should be untranslated')
-        _assert(d.character == 'e', f'char={d.character}')
-        _assert(d.tl_line == 7, f'tl_line={d.tl_line}')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 6. fill_translation ──
-    print("[6] fill_translation")
-    fill_text = (
-        '# game/script.rpy:95\n'
-        'translate chinese start_636ae3f5:\n'
-        '\n'
-        '    # e "Hello"\n'
-        '    e ""\n'
-        '\n'
-        'translate chinese strings:\n'
-        '\n'
-        '    old "Save"\n'
-        '    new ""\n'
-    )
-    p = _write_tmp(fill_text)
-    try:
-        r = parse_tl_file(p)
-        d = r.dialogues[0]
-        s = r.strings[0]
-
-        d.translation = '你好'
-        s.new = '保存'
-        modified = fill_translation(p, [d, s])
-
-        _assert('e "你好"' in modified, 'dialogue filled')
-        _assert('new "保存"' in modified, 'string filled')
-        _assert('""' not in modified, 'no empty strings left')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 7. fill_translation 校验：已修改的行跳过 ──
-    print("[7] fill_translation 跳过已修改行")
-    skip_text = (
-        'translate chinese strings:\n'
-        '\n'
-        '    old "Hello"\n'
-        '    new "你好"\n'
-    )
-    p = _write_tmp(skip_text)
-    try:
-        r = parse_tl_file(p)
-        s = r.strings[0]
-        _assert(s.new == '你好', 'already translated')
-        s.new = '哈喽'
-        modified = fill_translation(p, [s])
-        _assert('new "你好"' in modified, 'should NOT be overwritten (no "" on that line)')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 8. 转义引号处理 ──
-    print("[8] 转义引号")
-    esc_text = (
-        '# game/script.rpy:1\n'
-        'translate chinese esc_block:\n'
-        '\n'
-        '    # e "She said \\"hello\\""\n'
-        '    e ""\n'
-    )
-    p = _write_tmp(esc_text)
-    try:
-        r = parse_tl_file(p)
-        _assert(len(r.dialogues) == 1, f'count={len(r.dialogues)}')
-        d = r.dialogues[0]
-        _assert(d.original == 'She said \\"hello\\"', f'orig={d.original!r}')
-        _assert(d.translation == '', 'untranslated')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 9. extend / nvl 角色 ──
-    print("[9] extend / nvl 角色")
-    ext_text = (
-        '# game/script.rpy:50\n'
-        'translate chinese ext_block:\n'
-        '\n'
-        '    # extend "and goodbye."\n'
-        '    extend ""\n'
-    )
-    p = _write_tmp(ext_text)
-    try:
-        r = parse_tl_file(p)
-        _assert(len(r.dialogues) == 1, f'count={len(r.dialogues)}')
-        d = r.dialogues[0]
-        _assert(d.character == 'extend', f'char={d.character}')
-        _assert(d.original == 'and goodbye.', f'orig={d.original}')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 10. 无 source 注释的对话块 ──
-    print("[10] 无 source 注释")
-    nosrc_text = (
-        'translate chinese no_source_block:\n'
-        '\n'
-        '    # e "No source line."\n'
-        '    e ""\n'
-    )
-    p = _write_tmp(nosrc_text)
-    try:
-        r = parse_tl_file(p)
-        d = r.dialogues[0]
-        _assert(d.source_file == '', f'src should be empty, got "{d.source_file}"')
-        _assert(d.source_line == 0, f'src_line should be 0, got {d.source_line}')
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 11. _sanitize_translation 边界测试 ──
-    print("[11] _sanitize_translation 边界")
-    # 无引号 → 原样
-    _assert(_sanitize_translation("你好世界") == "你好世界", "plain text unchanged")
-    # ASCII 双引号包裹 → 剥离
-    _assert(_sanitize_translation('"你好世界"') == "你好世界", "strip ASCII quotes")
-    # 弯引号包裹 → 剥离
-    _assert(_sanitize_translation("\u201c你好世界\u201d") == "你好世界", "strip curly quotes")
-    # 全角引号包裹 → 剥离
-    _assert(_sanitize_translation("\uff02你好世界\uff02") == "你好世界", "strip fullwidth quotes")
-    # 双层引号 → 循环剥离
-    _assert(_sanitize_translation('""你好世界""') == "你好世界", "strip double-layer quotes")
-    # 元数据 [ID: xxx] → 清除
-    _assert(_sanitize_translation("[ID: abc123] 你好世界") == "你好世界", "strip metadata ID")
-    # 元数据 [Char: mc] → 清除
-    _assert(_sanitize_translation("[Char: mc] 你好世界") == "你好世界", "strip metadata Char")
-    # 内嵌 ASCII 引号 → 转义
-    r = _sanitize_translation('他说"你好"')
-    _assert('\\"' in r and '他说' in r, f"escape inner quotes: got {r!r}")
-    # 单侧残存引号
-    _assert(_sanitize_translation('你好世界"') == "你好世界", "strip trailing lone quote")
-    _assert(_sanitize_translation('"你好世界') == "你好世界", "strip leading lone quote")
-    # 空字符串
-    _assert(_sanitize_translation("") == "", "empty string")
-    # 纯引号
-    _assert(_sanitize_translation('""') == "", "only quotes")
-    print()
-
-    # ── 12. fill_translation 边界测试 ──
-    print("[12] fill_translation 边界")
-    # 正常回填
-    ft_text = '    e ""\n'
-    p = _write_tmp(ft_text)
-    try:
-        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
-                              character="e", source_file="", source_line=0,
-                              tl_file=p, tl_line=1, block_start_line=0)
-        result = fill_translation(p, [entry])
-        _assert('"你好"' in result, f"normal fill: got {result!r}")
-    finally:
-        os.unlink(p)
-
-    # 多个 "" 只替换第一个
-    ft_text2 = '    e "" id "test_id"\n'
-    p = _write_tmp(ft_text2)
-    try:
-        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
-                              character="e", source_file="", source_line=0,
-                              tl_file=p, tl_line=1, block_start_line=0)
-        result = fill_translation(p, [entry])
-        _assert(result.count('"你好"') == 1, f"only first empty replaced: {result!r}")
-        _assert('"test_id"' in result, f"second quoted preserved: {result!r}")
-    finally:
-        os.unlink(p)
-
-    # 行号越界 → 跳过（不崩溃）
-    ft_text3 = '    e ""\n'
-    p = _write_tmp(ft_text3)
-    try:
-        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
-                              character="e", source_file="", source_line=0,
-                              tl_file=p, tl_line=999, block_start_line=0)
-        result = fill_translation(p, [entry])
-        _assert('""' in result, f"out-of-range skipped: {result!r}")
-    finally:
-        os.unlink(p)
-
-    # 已有翻译（不含 ""）→ 跳过
-    ft_text4 = '    e "已翻译"\n'
-    p = _write_tmp(ft_text4)
-    try:
-        entry = DialogueEntry(identifier="test", original="Hello", translation="新翻译",
-                              character="e", source_file="", source_line=0,
-                              tl_file=p, tl_line=1, block_start_line=0)
-        result = fill_translation(p, [entry])
-        _assert('"已翻译"' in result, f"already filled skipped: {result!r}")
-        _assert('"新翻译"' not in result, f"should not overwrite: {result!r}")
-    finally:
-        os.unlink(p)
-
-    # 含缩进和 character 前缀 → 保留
-    ft_text5 = '    mc ""\n'
-    p = _write_tmp(ft_text5)
-    try:
-        entry = DialogueEntry(identifier="test", original="Hello", translation="你好",
-                              character="mc", source_file="", source_line=0,
-                              tl_file=p, tl_line=1, block_start_line=0)
-        result = fill_translation(p, [entry])
-        _assert(result.startswith('    mc "你好"'), f"indent+character preserved: {result!r}")
-    finally:
-        os.unlink(p)
-    print()
-
-    # ── 汇总 ──
-    total = passed + failed
-    print(f"\n{'='*40}")
-    print(f"自测完成: {passed}/{total} 通过", end='')
-    if failed:
-        print(f", {failed} 失败")
-    else:
-        print(" OK")
+from translators._tl_postprocess import (  # noqa: E402, F401
+    postprocess_tl_file,
+    postprocess_tl_directory,
+)
+from translators._tl_nvl_fix import (  # noqa: E402, F401
+    _compute_say_only_hash,
+    _compute_nvl_say_hash,
+    fix_nvl_translation_ids,
+    fix_nvl_ids_directory,
+)
 
 
 # ============================================================
@@ -1087,7 +521,8 @@ if __name__ == '__main__':
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
-        _run_self_tests()
+        from translators._tl_parser_selftest import run_self_tests
+        run_self_tests()
     elif len(sys.argv) > 1:
         target = sys.argv[1]
         if os.path.isfile(target):

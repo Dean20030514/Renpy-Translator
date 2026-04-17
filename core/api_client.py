@@ -198,6 +198,10 @@ class APIConfig:
     max_retries: int = 5
     max_response_tokens: int = 32768
     custom_module: str = ""  # 自定义翻译引擎模块名（仅 provider="custom" 时使用）
+    # 持久 HTTPS 连接复用（True=thread-local pool, False=每次新建 urllib 连接）。
+    # 默认启用：典型游戏 600 次 API 调用可节省 ~90s 的 TCP+TLS 握手时间。
+    # 若遇到兼容问题可通过配置文件设置 "use_connection_pool": false 回退。
+    use_connection_pool: bool = True
 
     # 自动填充
     endpoint: str = field(init=False, default="")
@@ -257,6 +261,25 @@ class UsageStats:
                 f"输出 {self.total_output_tokens:,} tokens | "
                 f"估计费用 {cost_str}")
 
+    def to_dict(self) -> dict:
+        """Structured usage snapshot for JSON reports.
+
+        Companion to :meth:`summary`, which returns a human-readable log
+        string. Use :meth:`to_dict` when embedding usage in a JSON document
+        (e.g. ``pipeline_report.json``) — the string form includes pricing
+        disclaimers that would break strict JSON consumption.
+        """
+        _price_in, _price_out, exact = get_pricing(self.provider, self.model)
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "total_requests": self.total_requests,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "estimated_cost_usd": round(self.estimated_cost, 4),
+            "pricing_exact": exact,
+        }
+
 
 class RateLimiter:
     """线程安全速率限制器（不在锁内 sleep）"""
@@ -309,6 +332,11 @@ class APIClient:
         self._custom_module = None
         if config.provider.lower() == "custom":
             self._custom_module = _load_custom_engine(config.custom_module)
+        # 持久连接池（仅 HTTPS 端点；custom provider 不走 HTTP 所以也不需要）
+        self._pool = None
+        if config.use_connection_pool and config.provider.lower() != "custom":
+            from core.http_pool import HTTPSConnectionPool
+            self._pool = HTTPSConnectionPool(timeout=config.timeout)
 
     def translate(self, system_prompt: str, user_prompt: str) -> list[dict]:
         """发送翻译请求，返回解析后的 JSON 数组
@@ -421,10 +449,15 @@ class APIClient:
             "User-Agent": _USER_AGENT,
         }
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        req = urlreq.Request(self.config.endpoint, data=data, headers=headers)
 
-        with urlreq.urlopen(req, timeout=self.config.timeout) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
+        if self._pool is not None:
+            raw = self._pool.post(self.config.endpoint, data, headers)
+            result = json.loads(raw.decode('utf-8'))
+        else:
+            from core.http_pool import read_bounded
+            req = urlreq.Request(self.config.endpoint, data=data, headers=headers)
+            with urlreq.urlopen(req, timeout=self.config.timeout) as resp:
+                result = json.loads(read_bounded(resp).decode('utf-8'))
 
         # 记录 token 用量
         usage = result.get("usage", {})
@@ -475,10 +508,15 @@ class APIClient:
             "User-Agent": _USER_AGENT,
         }
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        req = urlreq.Request(self.config.endpoint, data=data, headers=headers)
 
-        with urlreq.urlopen(req, timeout=self.config.timeout) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
+        if self._pool is not None:
+            raw = self._pool.post(self.config.endpoint, data, headers)
+            result = json.loads(raw.decode('utf-8'))
+        else:
+            from core.http_pool import read_bounded
+            req = urlreq.Request(self.config.endpoint, data=data, headers=headers)
+            with urlreq.urlopen(req, timeout=self.config.timeout) as resp:
+                result = json.loads(read_bounded(resp).decode('utf-8'))
 
         # 记录 token 用量
         usage = result.get("usage", {})

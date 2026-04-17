@@ -214,9 +214,9 @@ def run_generic_pipeline(engine, args) -> None:
     config.temperature = getattr(args, 'temperature', 0.1) or 0.1
     config.max_response_tokens = getattr(args, 'max_response_tokens', 32768) or 32768
 
-    rpm = getattr(args, 'rpm', 60) or 60
-    rps = getattr(args, 'rps', 5) or 5
-    client = APIClient(config, rpm=rpm, rps=rps)
+    config.rpm = getattr(args, 'rpm', 60) or 60
+    config.rps = getattr(args, 'rps', 5) or 5
+    client = APIClient(config)
 
     glossary = Glossary()
     glossary_path = output_dir / "glossary.json"
@@ -399,7 +399,7 @@ def run_generic_pipeline(engine, args) -> None:
         "pending": pending_count,
         "translation_rate": round(translated_count / len(units), 4) if units else 0,
         "written": written,
-        "api_usage": client.usage.summary() if hasattr(client, 'usage') else {},
+        "api_usage": client.usage.to_dict() if hasattr(client, 'usage') else {},
     }
     report_path = output_dir / "pipeline_report.json"
     try:

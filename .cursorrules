@@ -3,7 +3,7 @@
 
 ## 项目身份
 
-纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，266 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。
+纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，288 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。
 
 ## 开发原则
 
@@ -27,11 +27,19 @@ gui.py (图形界面) ─── start_launcher.py (CLI 菜单) ─── tools/r
                 ▼
 main.py (CLI 入口 + --engine 路由)
   ├── [engine=auto/renpy] → translators/ Ren'Py 三条管线
-  │    ├── translators/direct.py         (direct-mode)
+  │    ├── translators/direct.py         (direct-mode 入口 + run_pipeline)
+  │    │   ├── _direct_chunk.py        (chunk 级翻译/重试/拆分)
+  │    │   ├── _direct_file.py         (file 级翻译 + targeted 低密度路径)
+  │    │   └── _direct_cli.py          (dry-run 预览/统计)
   │    ├── translators/retranslator.py   (补翻)
-  │    ├── translators/tl_mode.py        (tl-mode)
+  │    ├── translators/tl_mode.py        (tl-mode 入口 + run_tl_pipeline)
+  │    │   ├── _tl_patches.py          (font / rpyc / language switch patches)
+  │    │   └── _tl_dedup.py            (跨文件去重 + chunk 装配)
   │    ├── translators/screen.py         (screen 裸英文翻译)
-  │    ├── translators/tl_parser.py      (tl/ 解析器)
+  │    ├── translators/tl_parser.py      (tl 解析核心 + re-export)
+  │    │   ├── _tl_postprocess.py      (nvl clear / 空块后处理)
+  │    │   ├── _tl_nvl_fix.py          (Ren'Py 8.6 → 7.x 翻译 ID 修复)
+  │    │   └── _tl_parser_selftest.py  (内置 75 条自测套件)
   │    └── translators/renpy_text_utils.py (文本分析)
   │
   ├── [engine=rpgmaker/csv/jsonl] → engines/ 多引擎架构
@@ -45,6 +53,7 @@ main.py (CLI 入口 + --engine 路由)
        ├── core/api_client.py（含自定义引擎加载）/ core/prompts.py / core/glossary.py
        ├── core/translation_db.py / core/translation_utils.py
        ├── core/config.py / core/lang_config.py
+       ├── core/http_pool.py（HTTPS 线程本地连接池） / core/pickle_safe.py（白名单反序列化）
        ├── file_processor/ (splitter/patcher/checker/validator)
        └── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线 + lint 修复 + 默认语言)
 
@@ -52,7 +61,7 @@ tools/   — font_patch / review_generator / rpa_unpacker / rpa_packer / rpyc_de
            renpy_lint_fixer / renpy_upgrade_tool / translation_editor
            verify_alignment / revalidate / patch_font_now / analyze_writeback
 custom_engines/ — 用户自定义翻译引擎插件目录（example_echo.py 示例）
-tests/   — test_all(94) + test_engines(61) + smoke(13) + rpa(14) + rpyc(17) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(11) = 266
+tests/   — test_all(110) + test_engines(62) + smoke(13) + rpa(15) + rpyc(17) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(11) + direct_pipeline(2) + tl_pipeline(2) = 288
 ```
 
 **调用关系图中未标注职责的关键文件**：

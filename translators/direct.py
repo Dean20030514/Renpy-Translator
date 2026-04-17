@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""direct-mode 翻译引擎：将完整 .rpy 文件发给 AI，由 AI 自行识别可翻译内容。"""
+"""direct-mode 翻译引擎入口：将完整 .rpy 文件发给 AI，由 AI 自行识别可翻译内容。
 
+第 23 轮 (A-H-4) 起本文件被拆为 4 个模块，保持 ``translators.direct`` 公开
+API（``run_pipeline`` 等）不变：
+
+    translators/
+    ├── direct.py              ← 本文件：入口 ``run_pipeline`` + 下层模块 re-export
+    ├── _direct_chunk.py       ← chunk 级翻译与重试状态机
+    ├── _direct_file.py        ← 文件级翻译与 targeted 子路径
+    └── _direct_cli.py         ← dry-run 预览与统计
+
+使用方只需继续 ``from translators.direct import run_pipeline`` / ``translate_file`` /
+``_should_retry`` / ``_split_chunk`` 即可，re-export 在本文件下方统一维护。
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,764 +21,41 @@ import concurrent.futures
 import fnmatch
 import json
 import logging
-import os
-import re
 import signal
 import shutil
 import sys
 import time
 import threading
 from pathlib import Path
-from typing import Optional
 
-from core.api_client import APIClient, APIConfig, get_pricing, is_reasoning_model
-from file_processor import (
-    split_file,
-    apply_translations,
-    validate_translation,
-    estimate_tokens,
-    read_file,
-    protect_placeholders,
-    protect_locked_terms,
-    restore_locked_terms,
-    check_response_chunk,
-    _count_translatable_lines_in_chunk,
-    _find_block_boundaries,
-    SKIP_FILES_FOR_TRANSLATION,
-)
+from core.api_client import APIClient, APIConfig
 from core.glossary import Glossary
-from core.prompts import (
-    build_system_prompt,
-    build_user_prompt,
-    build_retranslate_system_prompt,
-    build_retranslate_user_prompt,
-)
 from core.translation_db import TranslationDB
-from tools.font_patch import resolve_font, apply_font_patch
-from translators.retranslator import calculate_dialogue_density, build_retranslate_chunks
-from core.translation_utils import (
-    ChunkResult,
-    TranslationContext,
-    ProgressTracker,
-    ProgressBar,
-    CHECKER_DROP_RATIO_THRESHOLD,
-    MIN_DROPPED_FOR_WARNING,
-    MIN_DIALOGUE_LENGTH,
-    _strip_char_prefix,
-    _restore_placeholders_in_translations,
-    _restore_locked_terms_in_translations,
-    _filter_checked_translations,
-    _deduplicate_translations,
+from core.translation_utils import ProgressTracker, ProgressBar
+from file_processor import estimate_tokens, read_file
+from tools.font_patch import apply_font_patch, resolve_font
+
+# Re-export 兼容层：下游调用方 (main.py / engines/renpy_engine.py /
+# tests/test_all.py / tests/test_batch1.py / tests/test_direct_pipeline.py)
+# 历史上从 ``translators.direct`` 导入下列符号。A-H-4 拆分后符号实际定义在
+# 子模块中，但 direct.py 仍然暴露同名别名，确保零回归。
+from translators._direct_chunk import (  # noqa: F401
+    _should_retry,
+    _split_chunk,
+    _translate_chunk,
+    _translate_chunk_with_retry,
+)
+from translators._direct_cli import (
+    _compute_file_dialogue_stats,
+    _print_density_histogram,
+    _print_term_scan_preview,
+)
+from translators._direct_file import (  # noqa: F401
+    _translate_file_targeted,
+    translate_file,
 )
 
 logger = logging.getLogger("renpy_translator")
-
-
-# ============================================================
-# Chunk 翻译（模块级函数，替代 translate_file 内的嵌套闭包）
-# ============================================================
-
-def _translate_chunk(ctx: TranslationContext, chunk: dict) -> ChunkResult:
-    """翻译单个 chunk，返回 ChunkResult。
-
-    原为 translate_file() 内的嵌套函数，通过闭包捕获 client/system_prompt/rel_path。
-    重构后通过 TranslationContext 显式传参。
-    """
-    part = chunk["part"]
-    chunk_info = {
-        "part": part,
-        "total": chunk["total"],
-        "line_offset": chunk["line_offset"],
-    }
-    expected_count = _count_translatable_lines_in_chunk(chunk["content"])
-    # 占位符保护
-    protected_content, ph_mapping = protect_placeholders(chunk["content"])
-    # 锁定术语预替换（在占位符保护之后，避免干扰 Ren'Py 语法占位符）
-    lt_mapping: list[tuple[str, str]] = []
-    if ctx.locked_terms_map:
-        protected_content, lt_mapping = protect_locked_terms(protected_content, ctx.locked_terms_map)
-    user_prompt = build_user_prompt(ctx.rel_path, protected_content, chunk_info)
-    logger.debug(f"    [API ] 块 {part}/{chunk['total']}  "
-          f"({estimate_tokens(chunk['content']):,} tokens)")
-    try:
-        translations = ctx.client.translate(ctx.system_prompt, user_prompt)
-    except Exception as e:
-        return ChunkResult(part=part, error=f"块 {part} API 调用失败: {e}", expected=expected_count)
-    # 锁定术语还原（先于占位符还原，避免令牌冲突）
-    if lt_mapping:
-        _restore_locked_terms_in_translations(translations, lt_mapping)
-    # 占位符还原
-    _restore_placeholders_in_translations(translations, ph_mapping)
-    # Chunk 级检查（条数一致）
-    chunk_warnings = check_response_chunk(protected_content, translations)
-    for w in chunk_warnings:
-        logger.debug(f"    [CHECK] {w}")
-    # 逐条检查
-    kept, dropped_count, dropped_items, check_warns = _filter_checked_translations(translations)
-    for w in check_warns:
-        logger.debug(f"    {w}")
-    if not translations:
-        logger.debug(f"    [INFO] 块 {part}: 无需翻译的内容")
-    else:
-        logger.debug(f"    [OK  ] 块 {part}: 获得 {len(translations)} 条翻译"
-              + (f", 丢弃 {dropped_count} 条" if dropped_count else ""))
-    return ChunkResult(
-        part=part, kept=kept, chunk_warnings=chunk_warnings + check_warns,
-        dropped_count=dropped_count, expected=expected_count,
-        returned=len(translations), dropped_items=dropped_items,
-    )
-
-
-def _should_retry(cr: ChunkResult) -> tuple[bool, bool]:
-    """判断 chunk 是否需要重试。
-
-    Returns: (should_retry, needs_split)
-        needs_split=True 表示应拆分后重试而非原样重试（疑似输出截断）。
-    """
-    if cr.error:
-        return True, False
-    if cr.returned > 0 and cr.dropped_count >= MIN_DROPPED_FOR_WARNING and cr.dropped_count / cr.returned > CHECKER_DROP_RATIO_THRESHOLD:
-        return True, False
-    # 截断检测：返回条数 < 期望的 50%，强烈暗示 AI 输出被截断
-    if cr.expected > 0 and cr.returned < cr.expected * 0.5:
-        return True, True
-    # JSON 解析全部失败：返回 0 条且期望 > 0，可能是 AI 输出过大或格式混乱，拆分后重试
-    if cr.expected > 0 and cr.returned == 0 and not cr.error:
-        return True, True
-    return False, False
-
-
-def _split_chunk(chunk: dict) -> tuple[dict, dict]:
-    """将 chunk 二分为两个子 chunk。
-
-    拆分点优先级：label/screen 边界 > 空行 > 直接二等分。
-    只做一层拆分（不递归），避免复杂度爆炸。
-    """
-    lines = chunk["content"].splitlines(keepends=True)
-    total_lines = len(lines)
-    if total_lines < 2:
-        # 无法拆分，返回原 chunk 和空 chunk
-        empty = {"content": "", "line_offset": chunk["line_offset"] + total_lines,
-                 "part": chunk["part"], "total": chunk["total"]}
-        return chunk, empty
-
-    mid = total_lines // 2
-    search_start = max(1, mid - total_lines // 4)
-    search_end = min(total_lines - 1, mid + total_lines // 4)
-    best_split = mid  # fallback: 直接二等分
-
-    # 优先级 1：label/screen/init 边界
-    boundaries = _find_block_boundaries(lines)
-    found_boundary = False
-    for b in boundaries:
-        if search_start <= b <= search_end:
-            best_split = b
-            found_boundary = True
-            break
-
-    if not found_boundary:
-        # 优先级 2：空行（从中间向外搜索）
-        for i in range(mid, search_end):
-            if not lines[i].strip():
-                best_split = i + 1
-                break
-        else:
-            for i in range(mid - 1, search_start - 1, -1):
-                if not lines[i].strip():
-                    best_split = i + 1
-                    break
-
-    content_a = "".join(lines[:best_split])
-    content_b = "".join(lines[best_split:])
-    base_offset = chunk["line_offset"]
-
-    chunk_a = {
-        "content": content_a,
-        "line_offset": base_offset,
-        "part": chunk["part"],
-        "total": chunk["total"],
-    }
-    if "prev_context" in chunk:
-        chunk_a["prev_context"] = chunk["prev_context"]
-
-    chunk_b = {
-        "content": content_b,
-        "line_offset": base_offset + best_split,
-        "part": chunk["part"],
-        "total": chunk["total"],
-    }
-    # chunk_b 的上下文 = chunk_a 末尾 5 行
-    context_lines = lines[max(0, best_split - 5):best_split]
-    chunk_b["prev_context"] = "".join(context_lines)
-
-    return chunk_a, chunk_b
-
-
-def _translate_chunk_with_retry(ctx: TranslationContext, chunk: dict, max_retries: int = 1) -> ChunkResult:
-    """带自动重试的 chunk 翻译。截断时自动拆分重试。"""
-    cr = _translate_chunk(ctx, chunk)
-    for attempt in range(max_retries):
-        should, needs_split = _should_retry(cr)
-        if not should:
-            break
-
-        if needs_split:
-            # 截断：拆分 chunk 后分别翻译，合并结果
-            logger.debug(f"    [SPLIT] 块 {chunk['part']}: 返回 {cr.returned}/{cr.expected}，"
-                         f"疑似截断，拆分重试")
-            chunk_a, chunk_b = _split_chunk(chunk)
-            cr_a = _translate_chunk(ctx, chunk_a)
-            cr_b = _translate_chunk(ctx, chunk_b) if chunk_b["content"] else ChunkResult(part=chunk["part"])
-            cr = ChunkResult(
-                part=chunk["part"],
-                kept=cr_a.kept + cr_b.kept,
-                chunk_warnings=cr_a.chunk_warnings + cr_b.chunk_warnings,
-                dropped_count=cr_a.dropped_count + cr_b.dropped_count,
-                expected=cr_a.expected + cr_b.expected,
-                returned=cr_a.returned + cr_b.returned,
-                dropped_items=cr_a.dropped_items + cr_b.dropped_items,
-            )
-            break  # 拆分只做一层
-        else:
-            reason = cr.error or f"丢弃率过高 ({cr.dropped_count}/{cr.returned})"
-            logger.debug(f"    [RETRY] 块 {chunk['part']}: {reason}，第 {attempt + 1} 次重试")
-            cr = _translate_chunk(ctx, chunk)
-    return cr
-
-
-# ============================================================
-
-def translate_file(
-    rpy_path: Path,
-    game_dir: Path,
-    output_dir: Path,
-    client: APIClient,
-    glossary: Glossary,
-    progress: ProgressTracker,
-    quality_report: Optional[dict[str, list[dict]]] = None,
-    genre: str = "adult",
-    max_tokens_per_chunk: int = 4000,
-    workers: int = 1,
-    *,
-    translation_db: Optional[TranslationDB] = None,
-    run_id: str = "",
-    stage: str = "single",
-    provider: str = "",
-    model: str = "",
-    min_dialogue_density: float = 0.20,
-    cot: bool = False,
-) -> tuple[int, list[str], int, list[dict]]:
-    """翻译单个 RPY 文件
-
-    Returns:
-        (translated_count, warnings, checker_dropped, chunk_stats_list)
-        checker_dropped: 因 ResponseChecker 未通过而被丢弃的条数（保留原文计漏翻）。
-        chunk_stats_list: per-chunk 指标 [{"chunk_idx": N, "expected": X, "returned": Y, "dropped": D}, ...]
-    """
-    rel_path = str(rpy_path.relative_to(game_dir))
-
-    # 纯配置/UI 文件——直接复制，不翻译
-    if rpy_path.name in SKIP_FILES_FOR_TRANSLATION:
-        out_path = output_dir / rel_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        content = read_file(rpy_path)
-        out_path.write_text(content, encoding="utf-8")
-        progress.mark_file_done(rel_path)
-        logger.debug(f"  [SKIP-CFG] {rel_path} (配置文件，跳过翻译)")
-        return 0, [], 0, []
-
-    # 断点续传：已完成则跳过
-    if progress.is_file_done(rel_path):
-        logger.debug(f"  [SKIP] {rel_path} (已完成)")
-        return 0, [], 0, []
-
-    content = read_file(rpy_path)
-    tokens = estimate_tokens(content)
-    logger.debug(f"  [FILE] {rel_path}  ({tokens:,} tokens)")
-
-    # 密度检测：低密度文件走定向翻译，避免 AI 注意力被代码行稀释
-    density = calculate_dialogue_density(content)
-    if density < min_dialogue_density:
-        logger.debug(f"    [DENSITY] 对话密度 {density * 100:.1f}% < {min_dialogue_density * 100:.0f}%，"
-              f"使用定向翻译模式")
-        return _translate_file_targeted(
-            rpy_path, game_dir, output_dir, content, rel_path,
-            client, glossary, progress, quality_report, genre,
-            translation_db=translation_db, run_id=run_id, stage=stage,
-            provider=provider, model=model,
-        )
-
-    # 拆分大文件
-    chunks = split_file(str(rpy_path), max_tokens_per_chunk)
-    if len(chunks) > 1:
-        logger.debug(f"    拆分为 {len(chunks)} 个块")
-
-    # 构建 prompt（按题材 + 术语表 + 项目名）
-    project_name = game_dir.parent.name if game_dir.name.lower() == "game" else game_dir.name
-    system_prompt = build_system_prompt(
-        genre=genre,
-        glossary_text=glossary.to_prompt_text(),
-        project_name=project_name,
-        cot=cot,
-    )
-
-    # 加载已完成的翻译（断点续传，只加载一次避免重复）
-    all_translations = list(progress.get_file_translations(rel_path))
-    all_warnings = []
-    all_dropped_items: list[dict] = []
-    chunk_stats_list: list[dict] = []
-
-    # 筛选待翻译的 chunk
-    pending_chunks = [c for c in chunks if not progress.is_chunk_done(rel_path, c["part"])]
-    done_chunks = len(chunks) - len(pending_chunks)
-    if done_chunks > 0:
-        logger.debug(f"    [SKIP] {done_chunks}/{len(chunks)} 个块已完成")
-
-    total_checker_dropped = 0
-
-    # 构建锁定术语映射（用于预替换保护）
-    locked_terms_map: dict[str, str] = {}
-    if glossary.locked_terms:
-        for en_term in glossary.locked_terms:
-            zh_term = glossary.terms.get(en_term, "")
-            if en_term and zh_term:
-                locked_terms_map[en_term] = zh_term
-
-    # 构建翻译上下文（替代嵌套函数闭包捕获）
-    ctx = TranslationContext(client=client, system_prompt=system_prompt,
-                             rel_path=rel_path, locked_terms_map=locked_terms_map)
-
-    if workers > 1 and len(pending_chunks) > 1:
-        # 并发翻译多个 chunk
-        _backpressure = threading.Semaphore(workers * 2)
-
-        def _submit_with_backpressure(pool, fn, *args):
-            _backpressure.acquire()
-            future = pool.submit(fn, *args)
-            future.add_done_callback(lambda _: _backpressure.release())
-            return future
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {_submit_with_backpressure(executor, _translate_chunk_with_retry, ctx, c): c for c in pending_chunks}
-            for future in concurrent.futures.as_completed(futures):
-                cr = future.result()
-                chunk_stats_list.append({"chunk_idx": cr.part, "expected": cr.expected, "returned": cr.returned, "dropped": cr.dropped_count})
-                if cr.error:
-                    logger.error(f"    [ERROR] {cr.error}")
-                    all_warnings.append(cr.error)
-                else:
-                    all_warnings.extend(cr.chunk_warnings)
-                    total_checker_dropped += cr.dropped_count
-                    progress.mark_chunk_done(rel_path, cr.part, cr.kept)
-                    all_translations.extend(cr.kept)
-                    all_dropped_items.extend(cr.dropped_items)
-    else:
-        # 顺序翻译
-        for chunk in pending_chunks:
-            cr = _translate_chunk_with_retry(ctx, chunk)
-            chunk_stats_list.append({"chunk_idx": cr.part, "expected": cr.expected, "returned": cr.returned, "dropped": cr.dropped_count})
-            if cr.error:
-                logger.error(f"    [ERROR] {cr.error}")
-                all_warnings.append(cr.error)
-                progress.save()
-                continue
-            all_warnings.extend(cr.chunk_warnings)
-            total_checker_dropped += cr.dropped_count
-            progress.mark_chunk_done(rel_path, cr.part, cr.kept)
-            all_translations.extend(cr.kept)
-            all_dropped_items.extend(cr.dropped_items)
-
-    if not all_translations:
-        # 没有需要翻译的内容，直接复制原文件
-        out_path = output_dir / rel_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content, encoding='utf-8')
-        progress.mark_file_done(rel_path)
-        return 0, [], total_checker_dropped, chunk_stats_list
-
-    # 去重（多 chunk 可能有重叠）
-    unique_translations = _deduplicate_translations(all_translations)
-
-    # 应用翻译
-    patched, patch_warnings, patch_stats = apply_translations(content, unique_translations)
-    all_warnings.extend(patch_warnings)
-
-    # 校验：同时传入术语表、锁定术语与禁翻片段
-    issues = validate_translation(
-        content,
-        patched,
-        rel_path,
-        glossary_terms=glossary.terms,
-        glossary_locked=glossary.locked_terms,
-        glossary_no_translate=glossary.no_translate,
-    )
-    if quality_report is not None and issues:
-        quality_report[rel_path] = issues
-    for issue in issues:
-        if issue['level'] == 'error':
-            all_warnings.append(f"行 {issue['line']}: {issue['message']}")
-
-    # 将每条翻译写入 translation_db（可选）
-    if translation_db is not None and unique_translations:
-        per_line: dict[int, dict[str, list[str]]] = {}
-        for issue in issues:
-            line_no = int(issue.get("line") or 0)
-            code = issue.get("code") or ""
-            level = issue.get("level") or ""
-            if not line_no or not code or level not in ("error", "warning"):
-                continue
-            bucket = per_line.setdefault(line_no, {"errors": [], "warnings": []})
-            if level == "error":
-                bucket["errors"].append(code)
-            else:
-                bucket["warnings"].append(code)
-
-        db_entries: list[dict] = []
-        for item in unique_translations:
-            line_no = int(item.get("line") or 0)
-            original = item.get("original", "") or ""
-            zh = item.get("zh", "") or ""
-            if not line_no or not original:
-                continue
-            info = per_line.get(line_no, {"errors": [], "warnings": []})
-            err_codes = info["errors"]
-            warn_codes = info["warnings"]
-            if err_codes:
-                status = "error"
-            elif warn_codes:
-                status = "warning"
-            else:
-                status = "ok"
-            db_entries.append(
-                {
-                    "file": rel_path,
-                    "line": line_no,
-                    "original": original,
-                    "translation": zh,
-                    "status": status,
-                    "error_codes": err_codes,
-                    "warning_codes": warn_codes,
-                    "run_id": run_id,
-                    "stage": stage,
-                    "provider": provider,
-                    "model": model,
-                }
-            )
-        if db_entries:
-            translation_db.add_entries(db_entries)
-
-    # 写入 checker 丢弃的条目（仅用于归因统计，不参与回写）
-    if translation_db is not None and all_dropped_items:
-        try:
-            dropped_db_entries: list[dict] = []
-            for item in all_dropped_items:
-                line_no = int(item.get("line") or 0)
-                original = item.get("original", "") or ""
-                zh = item.get("zh", "") or ""
-                if not line_no or not original:
-                    continue
-                # 若同一 key 已有 kept 条目，不覆盖
-                if translation_db.has_entry(rel_path, line_no, original):
-                    continue
-                dropped_db_entries.append({
-                    "file": rel_path,
-                    "line": line_no,
-                    "original": original,
-                    "translation": zh,
-                    "status": "checker_dropped",
-                    "error_codes": [],
-                    "warning_codes": [],
-                    "run_id": run_id,
-                    "stage": stage,
-                    "provider": provider,
-                    "model": model,
-                })
-            if dropped_db_entries:
-                translation_db.add_entries(dropped_db_entries)
-        except (OSError, ValueError, TypeError) as e:
-            logger.debug(f"记录 checker_dropped 到 translation_db 失败: {e}")
-
-    # 写入回写失败的条目（用于根因分析）
-    wb_failures = patch_stats.get("writeback_failures", [])
-    if translation_db is not None and wb_failures:
-        try:
-            wb_db_entries: list[dict] = []
-            for diag in wb_failures:
-                line_no = int(diag.get("line") or 0)
-                original = diag.get("original", "") or ""
-                zh = diag.get("zh", "") or ""
-                if not line_no or not original:
-                    continue
-                if translation_db.has_entry(rel_path, line_no, original):
-                    continue
-                wb_db_entries.append({
-                    "file": rel_path,
-                    "line": line_no,
-                    "original": original,
-                    "translation": zh,
-                    "status": "writeback_failed",
-                    "error_codes": [],
-                    "warning_codes": [],
-                    "run_id": run_id,
-                    "stage": stage,
-                    "provider": provider,
-                    "model": model,
-                    "diagnostic": {
-                        "failure_type": diag.get("failure_type", "WF-08"),
-                        "detail": diag.get("detail", ""),
-                    },
-                })
-            if wb_db_entries:
-                translation_db.add_entries(wb_db_entries)
-        except (OSError, ValueError, TypeError) as e:
-            logger.debug(f"记录 writeback_failed 到 translation_db 失败: {e}")
-
-    # 写出翻译后的文件
-    out_path = output_dir / rel_path
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(patched, encoding='utf-8')
-
-    # 更新术语表
-    glossary.update_from_translations(unique_translations)
-
-    # 标记完成
-    progress.mark_file_done(rel_path)
-
-    return len(unique_translations), all_warnings, total_checker_dropped, chunk_stats_list
-
-
-def _translate_file_targeted(
-    rpy_path: Path,
-    game_dir: Path,
-    output_dir: Path,
-    content: str,
-    rel_path: str,
-    client: APIClient,
-    glossary: Glossary,
-    progress: ProgressTracker,
-    quality_report: Optional[dict[str, list[dict]]] = None,
-    genre: str = "adult",
-    *,
-    translation_db: Optional[TranslationDB] = None,
-    run_id: str = "",
-    stage: str = "single",
-    provider: str = "",
-    model: str = "",
-) -> tuple[int, list[str], int, list[dict]]:
-    """低密度文件的定向翻译：提取对话行+上下文，走 retranslate 风格 prompt。
-
-    与 retranslate_file 的区别：
-    - 输入是未翻译的英文原文件（全量阶段），不是已翻译文件
-    - 检测所有 _is_user_visible_string_line 的行（而非仅检测残留英文）
-    - 输出到 output_dir（可能与 game_dir 不同）
-    - 返回值与 translate_file 一致的 4-tuple
-    """
-    from translators.renpy_text_utils import _is_user_visible_string_line
-
-    all_lines = content.splitlines()
-
-    # 提取所有对话行的 0-based 索引
-    dialogue_indices: list[int] = []
-    for i, line in enumerate(all_lines):
-        if _is_user_visible_string_line(line):
-            m = re.search(r'"([^"\\]*(?:\\.[^"\\]*)*)"', line)
-            if m and len(m.group(1)) >= MIN_DIALOGUE_LENGTH:
-                dialogue_indices.append(i)
-
-    if not dialogue_indices:
-        out_path = output_dir / rel_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content, encoding="utf-8")
-        progress.mark_file_done(rel_path)
-        return 0, [], 0, []
-
-    chunks = build_retranslate_chunks(all_lines, dialogue_indices, context=3, max_per_chunk=20)
-    logger.debug(f"    [TARGETED] {len(dialogue_indices)} 行对话，{len(chunks)} 个 chunk")
-
-    system_prompt = build_retranslate_system_prompt(
-        glossary_text=glossary.to_prompt_text()
-    )
-
-    all_translations: list[dict] = []
-    all_warnings: list[str] = []
-    chunk_stats_list: list[dict] = []
-    total_checker_dropped = 0
-
-    for ci, chunk_lines in enumerate(chunks, 1):
-        raw_for_detect = "\n".join(
-            line for _, line, _ in chunk_lines if line != "..."
-        )
-        _, ph_mapping = protect_placeholders(raw_for_detect)
-
-        if ph_mapping:
-            inv = {orig: token for token, orig in ph_mapping}
-            protected: list[tuple[int, str, bool]] = []
-            for lineno, line, is_target in chunk_lines:
-                if line == "...":
-                    protected.append((lineno, line, is_target))
-                    continue
-                pl = line
-                for orig, tok in inv.items():
-                    pl = pl.replace(orig, tok)
-                protected.append((lineno, pl, is_target))
-        else:
-            protected = list(chunk_lines)
-
-        user_prompt = build_retranslate_user_prompt(rel_path, protected)
-        target_count = sum(1 for _, _, t in chunk_lines if t)
-        logger.debug(f"    [API ] 定向块 {ci}/{len(chunks)} ({target_count} 行)")
-
-        try:
-            translations = client.translate(system_prompt, user_prompt)
-        except Exception as e:
-            warn = f"定向块 {ci} API 调用失败: {e}"
-            logger.error(f"    [ERROR] {warn}")
-            all_warnings.append(warn)
-            chunk_stats_list.append({"chunk_idx": ci, "expected": target_count,
-                                     "returned": 0, "dropped": 0})
-            continue
-
-        _restore_placeholders_in_translations(translations, ph_mapping)
-        _strip_char_prefix(translations)
-
-        kept, dropped, _, check_warns = _filter_checked_translations(translations)
-        all_warnings.extend(check_warns)
-        total_checker_dropped += dropped
-
-        chunk_stats_list.append({"chunk_idx": ci, "expected": target_count,
-                                 "returned": len(translations), "dropped": dropped})
-
-        if kept:
-            logger.debug(f"    [OK  ] 定向块 {ci}: 获得 {len(kept)} 条翻译")
-        all_translations.extend(kept)
-
-    if not all_translations:
-        out_path = output_dir / rel_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(content, encoding="utf-8")
-        progress.mark_file_done(rel_path)
-        return 0, all_warnings, total_checker_dropped, chunk_stats_list
-
-    unique = _deduplicate_translations(all_translations)
-
-    patched, patch_warnings, patch_stats_t = apply_translations(content, unique)
-    all_warnings.extend(patch_warnings)
-
-    issues = validate_translation(
-        content, patched, rel_path,
-        glossary_terms=glossary.terms,
-        glossary_locked=glossary.locked_terms,
-        glossary_no_translate=glossary.no_translate,
-    )
-    if quality_report is not None and issues:
-        quality_report[rel_path] = issues
-    for issue in issues:
-        if issue["level"] == "error":
-            all_warnings.append(f"行 {issue['line']}: {issue['message']}")
-
-    # 写入回写失败诊断（定向翻译模式）
-    wb_failures_t = patch_stats_t.get("writeback_failures", [])
-    if translation_db is not None and wb_failures_t:
-        try:
-            for diag in wb_failures_t:
-                line_no = int(diag.get("line") or 0)
-                original = diag.get("original", "") or ""
-                zh = diag.get("zh", "") or ""
-                if not line_no or not original:
-                    continue
-                if translation_db.has_entry(rel_path, line_no, original):
-                    continue
-                translation_db.upsert_entry({
-                    "file": rel_path, "line": line_no,
-                    "original": original, "translation": zh,
-                    "status": "writeback_failed",
-                    "error_codes": [], "warning_codes": [],
-                    "run_id": run_id, "stage": stage,
-                    "provider": provider, "model": model,
-                    "diagnostic": {
-                        "failure_type": diag.get("failure_type", "WF-08"),
-                        "detail": diag.get("detail", ""),
-                    },
-                })
-        except (OSError, ValueError, TypeError) as e:
-            logger.debug(f"记录 writeback_failed 到 translation_db 失败: {e}")
-
-    if translation_db is not None and unique:
-        db_entries = []
-        for item in unique:
-            line_no = int(item.get("line") or 0)
-            original = item.get("original", "") or ""
-            zh = item.get("zh", "") or ""
-            if not line_no or not original:
-                continue
-            db_entries.append({
-                "file": rel_path,
-                "line": line_no,
-                "original": original,
-                "translation": zh,
-                "status": "ok",
-                "error_codes": [],
-                "warning_codes": [],
-                "run_id": run_id,
-                "stage": stage,
-                "provider": provider,
-                "model": model,
-            })
-        if db_entries:
-            translation_db.add_entries(db_entries)
-
-    out_path = output_dir / rel_path
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(patched, encoding="utf-8")
-
-    glossary.update_from_translations(unique)
-    progress.mark_file_done(rel_path)
-
-    return len(unique), all_warnings, total_checker_dropped, chunk_stats_list
-
-
-# ---- Dry-run helpers ----
-
-
-def _compute_file_dialogue_stats(filepath: Path) -> tuple[int, float]:
-    """返回 (对话行数, 密度)，用于 dry-run 详情。"""
-    from translators.retranslator import calculate_dialogue_density
-    content = read_file(filepath)
-    density = calculate_dialogue_density(content)
-    from translators.renpy_text_utils import _is_user_visible_string_line
-    dlg_count = sum(1 for line in content.splitlines()
-                    if _is_user_visible_string_line(line))
-    return dlg_count, density
-
-
-def _print_density_histogram(densities: list[float]) -> None:
-    """输出文字版对话密度分布直方图。"""
-    if not densities:
-        return
-    buckets = [0] * 5  # [0-20%, 20-40%, 40-60%, 60-80%, 80-100%]
-    labels = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
-    for d in densities:
-        idx = min(int(d * 5), 4)
-        buckets[idx] += 1
-    max_count = max(buckets) if buckets else 1
-    logger.info("\n对话密度分布:")
-    for label, count in zip(labels, buckets):
-        bar_len = count * 30 // max_count if max_count else 0
-        bar = "#" * bar_len
-        logger.info(f"  {label:>8s} | {bar:<30s} {count}")
-
-
-def _print_term_scan_preview(glossary) -> None:
-    """输出术语扫描结果预览。"""
-    n_chars = len(getattr(glossary, 'characters', {}))
-    n_terms = len(getattr(glossary, 'terms', {}))
-    n_locked = len(getattr(glossary, 'locked_terms', []))
-    n_notrans = len(getattr(glossary, 'no_translate', []))
-    logger.info(f"\n术语扫描预览:")
-    logger.info(f"  角色名: {n_chars} 个")
-    logger.info(f"  术语表: {n_terms} 条" + (f"（其中锁定 {n_locked} 条）" if n_locked else ""))
-    if n_notrans:
-        logger.info(f"  禁翻片段: {n_notrans} 条")
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -1034,17 +323,26 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     logger.info("")
 
-    # 设置日志文件
-    log_file = None
+    # 设置日志文件：开一次句柄、复用，避免每条日志都 open/close
+    # （Windows 上 NTFS 元数据更新 + Defender 实时扫描让 open/close 格外贵）
+    log_fp = None
     if hasattr(args, 'log_file') and args.log_file:
-        log_file = Path(args.log_file)
-        log_file.parent.mkdir(parents=True, exist_ok=True)
+        _log_path = Path(args.log_file)
+        _log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            log_fp = open(_log_path, 'a', encoding='utf-8')
+        except OSError as e:
+            logger.warning(f"[LOG] 无法打开日志文件 {_log_path}: {e}")
+            log_fp = None
 
     def log(msg: str):
         """同时输出到控制台和日志文件"""
-        if log_file:
-            with open(log_file, 'a', encoding='utf-8') as f:
-                f.write(msg + '\n')
+        if log_fp is not None:
+            try:
+                log_fp.write(msg + '\n')
+                log_fp.flush()
+            except OSError:
+                pass
 
     # 开始翻译
     start_time = time.time()
@@ -1294,8 +592,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     logger.info(f"翻译报告: {report_path}")
 
-
-# ============================================================
-# 对话密度检测
-# ============================================================
-
+    # 关闭日志句柄（sys.exit 分支依赖 OS 在进程退出时自动回收；此处显式 close
+    # 处理正常路径的优雅收尾，也便于 run_pipeline 被其他模块多次调用时不泄漏句柄）
+    if log_fp is not None:
+        try:
+            log_fp.close()
+        except OSError:
+            pass

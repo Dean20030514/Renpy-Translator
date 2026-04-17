@@ -1,37 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""tl-mode 翻译引擎：扫描 Ren'Py tl/<lang>/ 目录中的空翻译槽位，AI 翻译后精确回填。"""
+"""tl-mode 翻译引擎入口：扫描 Ren'Py tl/<lang>/ 目录中的空翻译槽位，AI 翻译后精确回填。
 
+第 24 轮 (A-H-4) 起本文件被拆为 3 个模块，保持 ``translators.tl_mode`` 公开
+API（``run_tl_pipeline`` 等）不变：
+
+    translators/
+    ├── tl_mode.py             ← 本文件：入口 ``run_tl_pipeline`` + ``_translate_one_tl_chunk`` + re-export
+    ├── _tl_patches.py         ← 游戏目录补丁（字体 / 语言切换 / rpyc 清理）
+    └── _tl_dedup.py           ← 跨文件去重 + chunk 装配
+
+使用方继续 ``from translators.tl_mode import run_tl_pipeline`` / ``dedup_tl_entries`` /
+``_apply_tl_game_patches`` 等即可，re-export 在本文件下方统一维护。
+"""
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
 import json
 import logging
-import re
 import shutil
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from core.api_client import APIClient, APIConfig
-from file_processor import (
-    protect_placeholders,
-    check_response_item,
-)
 from core.glossary import Glossary
 from core.prompts import build_tl_system_prompt, build_tl_user_prompt
 from core.translation_db import TranslationDB
-from tools.font_patch import resolve_font
 from core.translation_utils import (
-    TranslationContext,
     ProgressTracker,
-    _restore_placeholders_in_translations,
-    _filter_checked_translations,
+    TranslationContext,
     _build_fallback_dicts,
+    _filter_checked_translations,
     _match_string_entry_fallback,
+    _restore_placeholders_in_translations,
+)
+from file_processor import (
+    check_response_item,
+    protect_placeholders,
+)
+
+# Re-export 兼容层：下游调用方 (main.py / engines/renpy_engine.py /
+# tests/test_tl_dedup.py / tests/test_tl_pipeline.py / tools/translation_editor.py)
+# 历史上从 ``translators.tl_mode`` 导入下列符号。A-H-4 拆分后符号实际定义在
+# 子模块中，但 tl_mode.py 仍然暴露同名别名，确保零回归。
+from translators._tl_dedup import (  # noqa: F401
+    DEDUP_MIN_LENGTH,
+    DedupResult,
+    apply_dedup_translations,
+    build_tl_chunks,
+    dedup_tl_entries,
+)
+from translators._tl_patches import (  # noqa: F401
+    _LANG_BUTTON_SNIPPET,
+    _apply_tl_game_patches,
+    _clean_rpyc,
+    _inject_language_buttons,
 )
 
 logger = logging.getLogger("renpy_translator")
@@ -68,399 +93,6 @@ def _translate_one_tl_chunk(
             if tid and zh:
                 kept_items[tid] = zh
     return rel_path, ci, kept_items, dropped, warnings
-
-
-# ============================================================
-# tl-mode（翻译框架槽位模式）
-# ============================================================
-
-# Language switch button snippet injected into screen preferences()
-_LANG_BUTTON_SNIPPET = '''
-                vbox:
-                    style_prefix "radio"
-                    label _("Language")
-                    textbutton "English" action Language(None)
-                    textbutton "中文" action Language("{lang}")
-'''
-
-
-def _clean_rpyc(game_dir: Path, modified_files: "set[str] | None" = None) -> None:
-    """Delete Ren'Py cache files to force recompilation.
-
-    Cleans: .rpyc (compiled scripts), .rpymc (compiled modules),
-    .rpyb (bytecode cache in game/cache/).
-
-    Args:
-        game_dir: Game root directory.
-        modified_files: If provided, only delete .rpyc for these .rpy relative paths.
-            Otherwise fall back to full recursive cleanup.
-    """
-    count = 0
-    if modified_files:
-        for rpy_rel in modified_files:
-            for suffix in (".rpyc", ".rpymc"):
-                cache = game_dir / (rpy_rel + suffix[4:])  # .rpy → .rpyc / .rpymc
-                if cache.is_file():
-                    cache.unlink()
-                    count += 1
-        # .rpyb 位于 game/cache/，无法按文件名精确对应，做全量清理
-        for f in game_dir.rglob("*.rpyb"):
-            if f.is_file():
-                f.unlink()
-                count += 1
-    else:
-        for ext in ("*.rpyc", "*.rpymc", "*.rpyb"):
-            for f in game_dir.rglob(ext):
-                if f.is_file():
-                    f.unlink()
-                    count += 1
-    if count:
-        logger.info(f"[RPYC] 已清理 {count} 个缓存文件")
-
-
-def _apply_tl_game_patches(game_dir: Path, tl_lang: str,
-                           font_config_path: "Path | None" = None) -> None:
-    """Apply font patch and language switch to game directory for tl-mode.
-
-    1. Copy Chinese font from resources/fonts/ into game dir.
-    2. Generate tl/<lang>/none_overlay.rpy with font overrides (不直接修改 gui.rpy).
-    3. Write chinese_language_patch.rpy with config.language setting.
-    4. Inject Language radio buttons into all screen preferences() definitions.
-
-    使用 translate None python: 覆盖模板，避免直接修改 gui.rpy。
-    游戏更新 gui.rpy 不会丢失字体补丁。
-    """
-    from tools.font_patch import load_font_config
-
-    resources_fonts = Path(__file__).parent / "resources" / "fonts"
-    font_path = resolve_font(resources_fonts)
-    if not font_path:
-        logger.info("[TL-PATCH] 未找到中文字体，跳过字体补丁")
-        logger.info("[TL-PATCH] 请将 .ttf/.otf 字体文件放入 resources/fonts/ 目录")
-        return
-
-    font_name = font_path.name
-
-    # 1. Copy font to game dir
-    dst_font = game_dir / font_name
-    if not dst_font.exists():
-        shutil.copy2(font_path, dst_font)
-        logger.info(f"[TL-PATCH] 复制字体: {font_name} -> game/")
-    else:
-        logger.info(f"[TL-PATCH] 字体已存在: {font_name}")
-
-    # 2. 直接修改所有 gui.rpy 中的字体定义（define gui.*_font = "..."）
-    #    这是最可靠的方式——style 系统在 init 阶段绑定字体，translate None python 太晚
-    font_pattern = re.compile(
-        r'^(\s*define\s+gui\.\w+_font\s*=\s*)["\']([^"\']*)["\'](\s*)$',
-        re.MULTILINE,
-    )
-    gui_files = list(game_dir.rglob("gui.rpy"))
-    for gui_rpy in gui_files:
-        text = gui_rpy.read_text(encoding="utf-8")
-        new_text, count = font_pattern.subn(
-            lambda m: m.group(1) + '"' + font_name + '"' + m.group(3),
-            text,
-        )
-        if count > 0:
-            # 备份原文件（首次）
-            bak = gui_rpy.with_suffix(".rpy.font_bak")
-            if not bak.exists():
-                shutil.copy2(gui_rpy, bak)
-            gui_rpy.write_text(new_text, encoding="utf-8")
-            rel = gui_rpy.relative_to(game_dir.parent) if game_dir.parent else gui_rpy
-            logger.info(f"[TL-PATCH] 修改字体: {rel} ({count} 处 gui.*_font → {font_name})")
-
-    # 如果有 font_config.json，应用额外的 gui_overrides
-    config = load_font_config(font_config_path)
-    overrides = config.get("gui_overrides", {})
-    if overrides:
-        for gui_rpy in gui_files:
-            text = gui_rpy.read_text(encoding="utf-8")
-            size_count = 0
-            for var_name, value in overrides.items():
-                var_pat = re.compile(
-                    rf'^(\s*define\s+{re.escape(var_name)}\s*=\s*)[\d.]+(\s*)$',
-                    re.MULTILINE,
-                )
-                text, n = var_pat.subn(rf'\g<1>{value}\2', text)
-                size_count += n
-            if size_count > 0:
-                gui_rpy.write_text(text, encoding="utf-8")
-                logger.info(f"[TL-PATCH] 应用 font_config 覆盖: {gui_rpy.name} ({size_count} 处)")
-
-    # 3. 生成 none_overlay.rpy 作为翻译激活时的额外保障
-    tl_dir = game_dir / "tl" / tl_lang
-    tl_dir.mkdir(parents=True, exist_ok=True)
-
-    overlay_lines = [
-        "# none_overlay.rpy — 自动生成的字体覆盖模板",
-        "# 作为 gui.rpy 直接修改的补充保障",
-        "",
-        "translate None python:",
-        f'    gui.text_font = "{font_name}"',
-        f'    gui.name_text_font = "{font_name}"',
-        f'    gui.interface_text_font = "{font_name}"',
-        f'    gui.button_text_font = "{font_name}"',
-        f'    gui.choice_button_text_font = "{font_name}"',
-    ]
-    overlay_rpy = tl_dir / "none_overlay.rpy"
-    overlay_rpy.write_text("\n".join(overlay_lines) + "\n", encoding="utf-8")
-    logger.info(f"[TL-PATCH] 生成覆盖模板: {overlay_rpy.relative_to(game_dir.parent)}")
-
-    # 3. Write chinese_language_patch.rpy (default language setting)
-    patch_rpy = tl_dir / "chinese_language_patch.rpy"
-    patch_content = (
-        f'init python:\n'
-        f'    config.language = "{tl_lang}"\n'
-    )
-    patch_rpy.write_text(patch_content, encoding="utf-8")
-    logger.info(f"[TL-PATCH] 写入语言补丁: {patch_rpy.relative_to(game_dir.parent)}")
-
-    # 4. Inject language buttons into screen preferences()
-    _inject_language_buttons(game_dir, tl_lang)
-
-
-def _inject_language_buttons(game_dir: Path, tl_lang: str) -> None:
-    """Find all screen preferences() in .rpy files and inject Language radio buttons."""
-    snippet = _LANG_BUTTON_SNIPPET.replace("{lang}", tl_lang)
-    marker = 'action Language('
-
-    for rpy in game_dir.rglob("*.rpy"):
-        # Skip tl directory files
-        try:
-            rpy.relative_to(game_dir / "tl")
-            continue
-        except ValueError:
-            pass
-
-        text = rpy.read_text(encoding="utf-8-sig")
-        if "screen preferences()" not in text:
-            continue
-        if marker in text:
-            logger.info(f"[TL-PATCH] 语言按钮已存在: {rpy.relative_to(game_dir.parent)}")
-            continue
-
-        # Find the Skip section's closing line to insert after
-        lines = text.splitlines(True)
-        insert_idx = None
-        in_skip = False
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if 'label _("Skip")' in stripped:
-                in_skip = True
-            if in_skip and stripped.startswith('textbutton') and 'Transitions' in stripped:
-                insert_idx = i + 1
-                break
-
-        if insert_idx is None:
-            # Fallback: find after Rollback Side section
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if 'label _("Rollback Side")' in stripped:
-                    # Find the last textbutton in this vbox
-                    for j in range(i + 1, min(i + 10, len(lines))):
-                        if lines[j].strip().startswith('textbutton') and 'right' in lines[j].lower():
-                            insert_idx = j + 1
-                            break
-                    break
-
-        if insert_idx is None:
-            logger.info(f"[TL-PATCH] 无法定位注入点: {rpy.relative_to(game_dir.parent)}")
-            continue
-
-        # Create backup
-        bak = rpy.with_suffix(".rpy.lang_bak")
-        if not bak.exists():
-            shutil.copy2(rpy, bak)
-
-        lines.insert(insert_idx, snippet)
-        rpy.write_text("".join(lines), encoding="utf-8")
-        logger.info(f"[TL-PATCH] 注入语言按钮: {rpy.relative_to(game_dir.parent)}")
-
-
-# ---------------------------------------------------------------------------
-# 跨文件翻译去重
-# ---------------------------------------------------------------------------
-
-# 源文本长度阈值：仅对 ≥ 此长度的完整句子去重。
-# 短语气词（"Hmm...", "...", "Huh?"）必须逐条翻译以保留上下文差异。
-DEDUP_MIN_LENGTH = 40
-
-
-@dataclass
-class DedupResult:
-    """去重结果"""
-    unique_entries: list          # 需要发给 API 翻译的条目（去重后）
-    dedup_groups: dict            # {(char, text) → (first_entry, [dup_entries])}
-    skipped_count: int            # 被跳过（将复用翻译）的条目数
-    total_before: int             # 去重前总数
-
-
-def dedup_tl_entries(
-    all_entries: list,
-    min_length: int = DEDUP_MIN_LENGTH,
-) -> DedupResult:
-    """跨文件去重：相同 (speaker, original_text) 只翻译一次。
-
-    仅对源文本长度 ≥ min_length 的条目去重。短句/语气词保留全部，
-    因为 LLM 会根据上下文给出不同译法。
-
-    Args:
-        all_entries: DialogueEntry + StringEntry 混合列表。
-        min_length: 源文本最小字符数。
-
-    Returns:
-        DedupResult，其中 unique_entries 为去重后需翻译的条目。
-    """
-    from translators.tl_parser import DialogueEntry, StringEntry
-
-    unique: list = []
-    # (char, text) → (first_entry, [dup_entries])
-    groups: dict[tuple[str, str], tuple[object, list]] = {}
-    skipped = 0
-
-    for entry in all_entries:
-        if isinstance(entry, DialogueEntry):
-            char = entry.character or ""
-            text = entry.original
-        elif isinstance(entry, StringEntry):
-            char = ""
-            text = entry.old
-        else:
-            unique.append(entry)
-            continue
-
-        # 短文本不去重
-        if len(text) < min_length:
-            unique.append(entry)
-            continue
-
-        key = (char, text)
-        if key not in groups:
-            groups[key] = (entry, [])
-            unique.append(entry)
-        else:
-            groups[key][1].append(entry)
-            skipped += 1
-
-    # 只保留有实际重复的 group
-    dedup_groups = {k: v for k, v in groups.items() if v[1]}
-
-    return DedupResult(
-        unique_entries=unique,
-        dedup_groups=dedup_groups,
-        skipped_count=skipped,
-        total_before=len(all_entries),
-    )
-
-
-def apply_dedup_translations(
-    dedup_result: DedupResult,
-    file_translations: dict[str, dict[str, str]],
-    game_dir: Path,
-) -> tuple[int, list[dict]]:
-    """将已翻译条目的翻译复用到去重组中的其他条目。
-
-    对于 dedup_groups 中的每个 (first_entry, [dup_entries])，查找
-    first_entry 的翻译结果，然后注入到每个 dup_entry 所属文件的
-    file_translations 中。后续回填循环会自动处理。
-
-    Args:
-        dedup_result: dedup_tl_entries 返回的去重结果。
-        file_translations: {rel_path → {identifier_or_old: translation}}。
-        game_dir: 游戏目录，用于计算相对路径。
-
-    Returns:
-        (filled_count, dedup_log) — dedup_log 记录复用来源，便于调试。
-    """
-    from translators.tl_parser import DialogueEntry, StringEntry
-
-    filled = 0
-    dedup_log: list[dict] = []
-
-    # 构建 identifier/old → translation 的全局索引
-    all_trans: dict[str, str] = {}
-    for _rel, td in file_translations.items():
-        all_trans.update(td)
-
-    for (_char, text), (first_entry, dup_entries) in dedup_result.dedup_groups.items():
-        if not dup_entries:
-            continue
-
-        # 查找 first_entry 的翻译
-        translation = None
-        source_file = ""
-        source_line = 0
-
-        if isinstance(first_entry, DialogueEntry):
-            translation = all_trans.get(first_entry.identifier)
-            source_file = first_entry.tl_file
-            source_line = first_entry.tl_line
-        elif isinstance(first_entry, StringEntry):
-            translation = all_trans.get(first_entry.old)
-            source_file = first_entry.tl_file
-            source_line = first_entry.tl_line
-
-        if not translation:
-            continue
-
-        # 将翻译注入到每个 dup_entry 所属文件的 file_translations
-        for entry in dup_entries:
-            try:
-                rel_path = str(Path(entry.tl_file).relative_to(game_dir))
-            except ValueError:
-                rel_path = entry.tl_file
-
-            if isinstance(entry, DialogueEntry):
-                file_translations.setdefault(rel_path, {})[entry.identifier] = translation
-            else:
-                file_translations.setdefault(rel_path, {})[entry.old] = translation
-
-            filled += 1
-            dedup_log.append({
-                "source_text": text[:80],
-                "translation": translation[:80],
-                "source_file": source_file,
-                "source_line": source_line,
-                "target_file": entry.tl_file,
-                "target_line": entry.tl_line,
-            })
-
-    return filled, dedup_log
-
-
-def build_tl_chunks(
-    entries: list,
-    max_per_chunk: int = 30,
-) -> list[tuple[str, list]]:
-    """将 DialogueEntry / StringEntry 列表打包为 AI 翻译 chunk。
-
-    Returns:
-        [(chunk_text, chunk_entries), ...] — chunk_text 为发给 AI 的文本，
-        chunk_entries 为该 chunk 对应的条目列表（回填时使用）。
-    """
-    from translators.tl_parser import DialogueEntry
-
-    chunks: list[tuple[str, list]] = []
-    for start in range(0, len(entries), max_per_chunk):
-        group = entries[start:start + max_per_chunk]
-        lines: list[str] = []
-        for entry in group:
-            if isinstance(entry, DialogueEntry):
-                char_part = f" [Char: {entry.character}]" if entry.character else " [Char: ]"
-                text = entry.original
-                multiline = " [MULTILINE]" if "\n" in text or "\\n" in text else ""
-                lines.append(f"[ID: {entry.identifier}]{char_part}{multiline}")
-                lines.append(f'"{text}"')
-            else:
-                text = entry.old
-                multiline = " [MULTILINE]" if "\n" in text or "\\n" in text else ""
-                lines.append(f"[STRING]{multiline}")
-                lines.append(f'"{text}"')
-            lines.append("")
-        chunks.append(("\n".join(lines), group))
-    return chunks
 
 
 def run_tl_pipeline(args: argparse.Namespace) -> None:
@@ -924,5 +556,3 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     logger.info(f"[TL-MODE] 报告: {report_path}")
-
-

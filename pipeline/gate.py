@@ -86,7 +86,7 @@ def attribute_untranslated(
 
 def evaluate_gate(original_root: Path, translated_root: Path) -> dict:
     """闸门：结构错误必须为 0；给出漏翻与长度异常统计。"""
-    from one_click_pipeline import LEN_RATIO_LOWER, LEN_RATIO_UPPER
+    from pipeline.helpers import LEN_RATIO_LOWER, LEN_RATIO_UPPER
 
     errors = 0
     warnings = 0

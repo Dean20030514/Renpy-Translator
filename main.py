@@ -211,7 +211,13 @@ def main():
     args.lang_config = get_language_config(args.target_lang)
     logger.debug(f"[LANG] 目标语言: {args.lang_config.native_name} ({args.lang_config.code})")
 
-    # API Key 解析：CLI > 配置文件(env/file) > 空
+    # API Key 解析优先级（高 → 低）：
+    #   1. --api-key CLI（显式传入；向后兼容）
+    #   2. _RENPY_TRANSLATOR_CHILD_API_KEY 子进程专用环境变量（GUI/launcher 用，读完立即 pop
+    #      防止继承到下游 subprocess，避免出现在进程列表中）
+    #   3. 配置文件的 api_key_env / api_key_file
+    if not args.api_key:
+        args.api_key = os.environ.pop("_RENPY_TRANSLATOR_CHILD_API_KEY", "")
     if not args.api_key:
         args.api_key = cfg.resolve_api_key()
 

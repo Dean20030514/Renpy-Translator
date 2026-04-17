@@ -63,6 +63,7 @@ _CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "tl_lang": {"type": str},
     "exclude": {"type": list},
     "dict": {"type": list},
+    "use_connection_pool": {"type": bool},
 }
 
 
@@ -203,14 +204,66 @@ class Config:
         # 3. 配置文件中的密钥文件路径
         key_file = self._file_config.get("api_key_file", "")
         if key_file:
-            p = Path(key_file)
-            if p.exists():
-                try:
-                    return p.read_text(encoding="utf-8").strip()
-                except OSError:
-                    pass
+            return self._read_api_key_file(key_file)
 
         return ""
+
+    # 敏感系统目录（S-H-3：拒绝 api_key_file 指向这些路径，防配置文件诱导任意文件读取）
+    _SENSITIVE_PREFIXES = [
+        Path("C:/Windows"),
+        Path("/etc"),
+        Path("/proc"),
+        Path("/sys"),
+        Path("/root"),
+    ]
+    # api_key_file 大小上限（Key 通常 < 200 字节，8 KB 留足余量同时防止误读大文件）
+    _MAX_API_KEY_FILE_BYTES = 8 * 1024
+
+    @classmethod
+    def _read_api_key_file(cls, key_file: str) -> str:
+        """Safely read an API key from a file path given in the config.
+
+        Rejects paths pointing at common sensitive system directories and
+        caps file size at ``_MAX_API_KEY_FILE_BYTES`` to prevent a malicious
+        config file from inducing arbitrary-file reads (S-H-3 hardening).
+        Returns an empty string on any safety / I/O failure and logs a warning.
+        """
+        try:
+            p = Path(key_file).expanduser().resolve(strict=False)
+        except (OSError, ValueError) as e:
+            logger.warning("[CONFIG] api_key_file 路径解析失败，跳过: %s", e)
+            return ""
+
+        for sp in cls._SENSITIVE_PREFIXES:
+            try:
+                p.relative_to(sp)
+            except ValueError:
+                continue
+            logger.warning(
+                "[CONFIG] api_key_file 指向敏感系统目录 (%s)，已拒绝: %s", sp, p
+            )
+            return ""
+
+        if not p.exists():
+            return ""
+
+        try:
+            size = p.stat().st_size
+        except OSError as e:
+            logger.warning("[CONFIG] api_key_file 无法 stat: %s", e)
+            return ""
+        if size > cls._MAX_API_KEY_FILE_BYTES:
+            logger.warning(
+                "[CONFIG] api_key_file 大小 %d 字节超过 %d 上限，疑似误配置，拒绝",
+                size, cls._MAX_API_KEY_FILE_BYTES,
+            )
+            return ""
+
+        try:
+            return p.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            logger.warning("[CONFIG] api_key_file 读取失败: %s", e)
+            return ""
 
     @property
     def file_config(self) -> dict[str, Any]:

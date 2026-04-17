@@ -415,6 +415,57 @@ def test_empty_archive():
             tmp.unlink()
 
 
+def test_rpa3_refuses_zip_slip():
+    """恶意 RPA 含 ``../../evil.py`` 类条目时，unpack_rpa 必须拒绝，
+    不在 outdir 外写入任何文件（round 25 T-H-3 — 锁定第 20 轮 ZIP Slip 防护）。
+
+    这是一个安全回归测试：第 20 轮修 S-C-1 时加了
+    ``dest.resolve().relative_to(outdir.resolve())`` 校验；本测试
+    构造合法 + 恶意混合归档验证合法条目解出、恶意条目被跳过。
+    """
+    archive_data = _build_rpa3({
+        "normal.rpy": b"# legit content",
+        "../../evil.py": b"# malicious content",
+        "sub/nested.rpy": b"# nested legit",
+    })
+
+    with tempfile.NamedTemporaryFile(suffix=".rpa", delete=False) as f:
+        f.write(archive_data)
+        tmp = Path(f.name)
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        outdir = td_path / "out"
+        outdir.mkdir()
+        try:
+            # 解包应成功（坏条目被跳过而非整个归档报错）
+            extracted = unpack_rpa(tmp, outdir)
+            # 合法条目应被解出
+            assert (outdir / "normal.rpy").exists(), \
+                "legitimate entry 'normal.rpy' was not extracted"
+            assert (outdir / "sub" / "nested.rpy").exists(), \
+                "legitimate nested entry was not extracted"
+            # 恶意条目应被拒绝 — 检查几个可能的落点
+            assert not (td_path / "evil.py").exists(), \
+                "ZIP Slip defeated: evil.py written to tempdir root"
+            assert not (td_path.parent / "evil.py").exists(), \
+                "ZIP Slip defeated: evil.py written above tempdir"
+            # 返回的 extracted 列表也不应包含 outdir 外的路径
+            for path in extracted:
+                resolved = path.resolve()
+                outdir_resolved = outdir.resolve()
+                # 解出路径必须在 outdir 内
+                try:
+                    resolved.relative_to(outdir_resolved)
+                except ValueError:
+                    raise AssertionError(
+                        f"extracted path escaped outdir: {resolved}"
+                    )
+            print("[OK] test_rpa3_refuses_zip_slip")
+        finally:
+            tmp.unlink()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -434,4 +485,5 @@ if __name__ == "__main__":
     test_unpack_all_rpa_in_dir()
     test_nested_directory_structure()
     test_empty_archive()
+    test_rpa3_refuses_zip_slip()
     print("\n=== 全部 RPA 解包测试通过 ===")

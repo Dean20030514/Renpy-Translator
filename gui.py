@@ -397,10 +397,11 @@ class App:
         # Ren'Py 一键流水线模式
         if engine in ("auto", "renpy") and self.var_renpy_mode.get() == "pipeline":
             genre = self.var_genre.get()
+            # API key 通过环境变量而非 --api-key 传递给子进程（见 _run_command）
             cmd = [
                 py, "-u", "one_click_pipeline.py",
                 "--game-dir", game_dir, "--output-dir", output_dir,
-                "--provider", provider, "--api-key", api_key,
+                "--provider", provider,
                 "--model", model, "--genre", genre,
                 "--workers", workers, "--file-workers", file_workers,
                 "--rpm", rpm, "--rps", rps,
@@ -422,8 +423,7 @@ class App:
                "--workers", workers, "--file-workers", file_workers,
                "--rpm", rpm, "--rps", rps]
 
-        if not dry_run and api_key:
-            cmd += ["--api-key", api_key]
+        # API key 不进 cmd：通过 subprocess env 传递（见 _run_command / _run_dry_run）
         if dry_run:
             cmd.append("--dry-run")
 
@@ -484,7 +484,13 @@ class App:
         return cmd
 
     def _mask_api_key(self, cmd: list[str]) -> str:
-        """命令预览中隐藏 API key。"""
+        """命令预览中隐藏 API key。
+
+        第 21 轮 (S-H-1) 起 ``_build_command`` 不再向 cmd 追加 ``--api-key``
+        （API key 改走 subprocess env），所以常规路径下 cmd 里不会有该参数。
+        此函数保留为 legacy compatibility：若用户或插件手工构造的 cmd 仍使用
+        ``--api-key <value>`` 形式，我们依然遮盖之，避免它出现在日志/预览里。
+        """
         display = []
         skip = False
         for arg in cmd:
@@ -529,11 +535,17 @@ class App:
         self._start_time = time.time()
         self._append_log(f">>> {self._mask_api_key(cmd)}\n\n")
 
+        # API key 通过私有环境变量传递；main.py / one_click_pipeline.py 读取后立即 pop
+        child_env = os.environ.copy()
+        api_key = self.var_api_key.get().strip()
+        if api_key:
+            child_env["_RENPY_TRANSLATOR_CHILD_API_KEY"] = api_key
+
         def worker():
             try:
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, cwd=str(PROJECT_ROOT),
+                    text=True, bufsize=1, cwd=str(PROJECT_ROOT), env=child_env,
                 )
                 self.process = proc
                 for line in proc.stdout:
@@ -629,11 +641,17 @@ class App:
         self._start_time = time.time()
         self._append_log(f">>> {self._mask_api_key(cmd)}\n\n")
 
+        # dry-run 无需 API key，但为一致性同样通过 env 传递（若用户已输入）
+        child_env = os.environ.copy()
+        api_key = self.var_api_key.get().strip()
+        if api_key:
+            child_env["_RENPY_TRANSLATOR_CHILD_API_KEY"] = api_key
+
         def worker():
             try:
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, cwd=str(PROJECT_ROOT),
+                    text=True, bufsize=1, cwd=str(PROJECT_ROOT), env=child_env,
                 )
                 self.process = proc
                 lines = []

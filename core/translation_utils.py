@@ -72,11 +72,19 @@ class TranslationContext:
 # ============================================================
 
 class ProgressTracker:
-    """追踪翻译进度，支持中断续传"""
+    """追踪翻译进度，支持中断续传。
+
+    并发模型：
+    - ``_lock`` 保护 ``self.data`` 的读写和 ``json.dumps`` 的快照生成
+    - ``_save_lock`` 串行化磁盘 I/O（tmp 写 + os.replace 重试）
+    - 对 ``mark_chunk_done`` 这类热路径，主锁只持有极短时间（dict 更新 + 序列化），
+      实际磁盘写在主锁外、``_save_lock`` 内执行，避免 worker 间串行化
+    """
 
     def __init__(self, progress_file: Path):
         self.path = progress_file
         self._lock = threading.Lock()
+        self._save_lock = threading.Lock()
         self._dirty = 0  # 未写入磁盘的 mark 操作计数
         self.data: dict = {"completed_files": [], "completed_chunks": {}, "stats": {}}
         self._load()
@@ -94,15 +102,31 @@ class ProgressTracker:
         self.data.setdefault("stats", {})
 
     def save(self) -> None:
+        """外部 API：同步写盘。返回时磁盘状态已落。"""
+        self._flush_to_disk()
         with self._lock:
-            self._save_unlocked()
             self._dirty = 0
 
-    def _save_unlocked(self) -> None:
+    def _flush_to_disk(self) -> None:
+        """生成当前 data 的 JSON 快照并原子落盘。
+
+        并发正确性要点（第 22 轮 P1 修复）：snapshot 生成和磁盘写入必须在
+        同一把 ``_save_lock`` 下串行，否则两个线程各自生成快照后按 save_lock
+        先后写盘，可能出现"后拿 save_lock 的线程用更旧的快照覆盖新快照"，
+        导致盘上进度回退。嵌套 ``_lock`` 仅持 ``json.dumps`` 时长，对 worker
+        竞争几乎无影响。
+        """
+        with self._save_lock:
+            with self._lock:
+                snapshot_json = json.dumps(self.data, ensure_ascii=False, indent=2)
+            self._write_atomic(snapshot_json)
+
+    def _write_atomic(self, json_str: str) -> None:
+        """原子写文件：tmp + os.replace + 重试。调用方需持有 _save_lock。"""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix('.tmp')
         try:
-            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
+            tmp.write_text(json_str, encoding='utf-8')
             # Windows 上 os.replace 可能因杀毒软件/索引服务短暂锁文件而失败，重试几次
             last_err: BaseException | None = None
             for attempt in range(5):
@@ -114,12 +138,11 @@ class ProgressTracker:
                     time.sleep(0.1 * (attempt + 1))
             # 重试全部失败，尝试回退方案：直接写目标文件
             try:
-                self.path.write_text(
-                    json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
+                self.path.write_text(json_str, encoding='utf-8')
                 tmp.unlink(missing_ok=True)
                 return
-            except OSError:
-                pass
+            except OSError as fallback_err:
+                logger.warning(f"[PROGRESS] 写磁盘最终失败: {fallback_err}")
             if last_err:
                 raise last_err
         except BaseException:
@@ -136,6 +159,7 @@ class ProgressTracker:
         return part in self.data.get("completed_chunks", {}).get(rel_path, [])
 
     def mark_chunk_done(self, rel_path: str, part: int, translations: list[dict]) -> None:
+        should_flush = False
         with self._lock:
             chunks = self.data.setdefault("completed_chunks", {})
             chunk_list = chunks.setdefault(rel_path, [])
@@ -148,8 +172,10 @@ class ProgressTracker:
             file_results.extend(translations)
             self._dirty += 1
             if self._dirty >= SAVE_INTERVAL:
-                self._save_unlocked()
                 self._dirty = 0
+                should_flush = True
+        if should_flush:
+            self._flush_to_disk()
 
     def get_file_translations(self, rel_path: str) -> list[dict]:
         """获取文件的所有已完成翻译"""
@@ -162,13 +188,13 @@ class ProgressTracker:
             # 清理 chunk 级数据（已完成文件不需要保留）
             self.data.get("completed_chunks", {}).pop(rel_path, None)
             self.data.get("results", {}).pop(rel_path, None)
-            self._save_unlocked()
             self._dirty = 0
+        self._flush_to_disk()
 
     def update_stats(self, key: str, value: object) -> None:
         with self._lock:
             self.data.setdefault("stats", {})[key] = value
-            self._save_unlocked()
+        self._flush_to_disk()
 
 
 # ============================================================

@@ -224,10 +224,43 @@ def _find_renpy_base(game_dir: Path) -> Optional[Path]:
 # It uses renpy's own code generation to produce perfect .rpy output.
 _DECOMPILE_HELPER_SCRIPT = textwrap.dedent("""\
     # -*- coding: utf-8 -*-
-    # Auto-generated decompile helper — executed by game's bundled Python.
+    # Auto-generated decompile helper - executed by game's bundled Python.
+    # Compatible with Python 2.7 (Ren'Py 7.x) and Python 3.x (Ren'Py 8.x).
+    # Whitelist sync point: the _SafeUnpickler defined below must stay in lock-step
+    # with the standalone Tier 2 _RestrictedUnpickler (further down this file). If
+    # one grows a new whitelist entry the other must grow it too — otherwise a
+    # malicious .rpyc that passes one tier may fail the other unexpectedly.
     import io, json, os, pickle, struct, sys, zlib
 
     RPYC2_HEADER = b"RENPY RPC2"
+
+    # Whitelist unpickler: allow real renpy/store classes (needed by
+    # renpy.util.get_code) plus primitive containers; reject os/subprocess/
+    # builtins.eval and anything else a malicious .rpyc might try to invoke.
+    _SAFE_BUILTINS = frozenset([
+        "list", "tuple", "dict", "str", "bytes", "bytearray",
+        "int", "long", "float", "bool", "NoneType",
+        "set", "frozenset", "complex", "unicode",
+    ])
+    _SAFE_COLLECTIONS = frozenset(["OrderedDict", "defaultdict"])
+    _SAFE_CODECS = frozenset(["encode", "decode"])
+    _SAFE_COPYREG = frozenset(["_reconstructor", "__newobj__"])
+
+    class _SafeUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if module.startswith(("renpy", "store")):
+                return pickle.Unpickler.find_class(self, module, name)
+            if module in ("builtins", "__builtin__") and name in _SAFE_BUILTINS:
+                return pickle.Unpickler.find_class(self, module, name)
+            if module == "collections" and name in _SAFE_COLLECTIONS:
+                return pickle.Unpickler.find_class(self, module, name)
+            if module == "_codecs" and name in _SAFE_CODECS:
+                return pickle.Unpickler.find_class(self, module, name)
+            if module in ("copyreg", "copy_reg") and name in _SAFE_COPYREG:
+                return pickle.Unpickler.find_class(self, module, name)
+            raise pickle.UnpicklingError(
+                "Refused to load {0}.{1} (not in safe whitelist)".format(module, name)
+            )
 
     def read_rpyc_data(f, slot):
         f.seek(0)
@@ -255,7 +288,7 @@ _DECOMPILE_HELPER_SCRIPT = textwrap.dedent("""\
             for slot in [1, 2]:
                 data = read_rpyc_data(f, slot)
                 if data:
-                    _, stmts = pickle.loads(data)
+                    _, stmts = _SafeUnpickler(io.BytesIO(data)).load()
                     import renpy.util
                     return renpy.util.get_code(stmts)
                 f.seek(0)
@@ -408,7 +441,30 @@ class _DummyClass:
 
 
 class _RestrictedUnpickler(pickle.Unpickler):
-    """Unpickler that replaces renpy/store classes with dummy stubs."""
+    """Whitelist unpickler for .rpyc AST data (Tier 2 — standalone path).
+
+    - ``renpy.*`` / ``store.*`` classes are replaced with harmless dummy stubs.
+    - A small set of primitive builtins and container types are allowed through.
+    - Everything else (``os.system``, ``subprocess.Popen``, ``builtins.eval``,
+      etc.) raises ``pickle.UnpicklingError`` — crashing loudly instead of
+      silently executing attacker-supplied code.
+
+    **Whitelist sync point**: there is a sibling whitelist in the Tier 1 injected
+    helper script (``_DECOMPILE_HELPER_SCRIPT`` near the top of this file, class
+    ``_SafeUnpickler``). If you change ``_SAFE_BUILTINS`` / ``_SAFE_COLLECTIONS``
+    / ``_SAFE_CODECS`` / ``_SAFE_COPYREG`` here, update the helper script too —
+    otherwise the two decompile paths diverge and malicious .rpyc may pass one
+    but not the other.
+    """
+
+    _SAFE_BUILTINS = frozenset({
+        "list", "tuple", "dict", "str", "bytes", "bytearray",
+        "int", "float", "bool", "NoneType",
+        "set", "frozenset", "complex",
+    })
+    _SAFE_COLLECTIONS = frozenset({"OrderedDict", "defaultdict"})
+    _SAFE_CODECS = frozenset({"encode", "decode"})
+    _SAFE_COPYREG = frozenset({"_reconstructor", "__newobj__"})
 
     def find_class(self, module: str, name: str):
         if module.startswith(("renpy", "store")):
@@ -418,7 +474,17 @@ class _RestrictedUnpickler(pickle.Unpickler):
                 "_module_name": module,
             })
             return cls
-        return super().find_class(module, name)
+        if module in ("builtins", "__builtin__") and name in self._SAFE_BUILTINS:
+            return super().find_class(module, name)
+        if module == "collections" and name in self._SAFE_COLLECTIONS:
+            return super().find_class(module, name)
+        if module == "_codecs" and name in self._SAFE_CODECS:
+            return super().find_class(module, name)
+        if module in ("copyreg", "copy_reg") and name in self._SAFE_COPYREG:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Refused to load {module}.{name} (not in safe whitelist)"
+        )
 
 
 def _read_rpyc_data(file_obj: io.BufferedIOBase, slot: int) -> Optional[bytes]:

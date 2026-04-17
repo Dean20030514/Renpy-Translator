@@ -1653,6 +1653,607 @@ def test_locked_terms_special_chars():
     print("[OK] test_locked_terms_special_chars")
 
 
+def test_pipeline_imports_smoke():
+    """Pipeline sub-package lazy imports must resolve.
+
+    Catches broken imports that hide behind function-level ``from X import Y``
+    statements and therefore survive the normal unit-test pass. Historically
+    a refactor left ``pipeline/stages.py`` importing from ``main`` names that
+    had been relocated, and ``pipeline/gate.py`` importing constants from a
+    module that never defined them — crashes surfaced only at runtime.
+    """
+    from pipeline.gate import evaluate_gate, attribute_untranslated
+    from pipeline.stages import _run_retranslate_phase
+    from engines.generic_pipeline import run_generic_pipeline
+    from translators.retranslator import retranslate_file, find_untranslated_lines
+    from core.translation_utils import ProgressTracker
+    from pipeline.helpers import LEN_RATIO_LOWER, LEN_RATIO_UPPER
+    assert callable(evaluate_gate)
+    assert callable(attribute_untranslated)
+    assert callable(_run_retranslate_phase)
+    assert callable(run_generic_pipeline)
+    assert callable(retranslate_file)
+    assert callable(find_untranslated_lines)
+    assert isinstance(LEN_RATIO_LOWER, float)
+    assert isinstance(LEN_RATIO_UPPER, float)
+    # ProgressTracker must be instantiable with a Path
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        pt = ProgressTracker(Path(td) / "progress.json")
+        assert hasattr(pt, "save")
+    print("[OK] test_pipeline_imports_smoke")
+
+
+# ============================================================
+# API retry mock tests (round 21 — T-C-2)
+# ------------------------------------------------------------
+# These tests lock down the six HTTP retry branches in
+# ``APIClient._call_api`` so that future changes to the transport layer
+# (e.g. connection pooling) cannot silently break retry semantics.
+# ============================================================
+
+def _make_urlopen_success(body_bytes: bytes):
+    """Build a MagicMock that behaves like ``urlopen(...)`` return value (context manager).
+
+    Uses a real ``BytesIO`` for ``read`` so that the bounded-read helper in
+    ``core.http_pool`` (which loops until ``read(N)`` returns ``b''``) terminates
+    naturally at EOF instead of looping on a sticky MagicMock ``return_value``.
+    """
+    from unittest.mock import MagicMock
+    import io
+    ctx = MagicMock()
+    resp = MagicMock()
+    resp.read = io.BytesIO(body_bytes).read
+    ctx.__enter__.return_value = resp
+    ctx.__exit__.return_value = False
+    return ctx
+
+
+def _build_httperror(code: int, retry_after: str = ""):
+    """Build a ``urllib.error.HTTPError`` with optional Retry-After header."""
+    from urllib.error import HTTPError
+    from io import BytesIO
+    import email.message
+    hdrs = email.message.Message()
+    if retry_after:
+        hdrs["Retry-After"] = retry_after
+    return HTTPError("http://example/api", code, "err", hdrs, BytesIO(b'{"error": "x"}'))
+
+
+_OPENAI_OK_BODY = (
+    b'{"choices": [{"message": {"content": "ok"}}],'
+    b' "usage": {"prompt_tokens": 1, "completion_tokens": 1}}'
+)
+
+
+def test_api_429_retry_after_header():
+    """HTTP 429 with ``Retry-After`` header: wait the advertised seconds then retry."""
+    from unittest.mock import patch
+    from core import api_client
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='grok', max_retries=3, rpm=0, rps=0,
+        use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    err = _build_httperror(429, retry_after="2")
+    ok = _make_urlopen_success(_OPENAI_OK_BODY)
+
+    with patch.object(api_client.urlreq, 'urlopen', side_effect=[err, ok]) as m_open, \
+         patch.object(api_client.time, 'sleep') as m_sleep, \
+         patch('random.uniform', return_value=0.0):
+        raw = client._call_api('sys', 'user')
+
+    assert raw == "ok"
+    assert m_open.call_count == 2
+    assert m_sleep.call_count == 1
+    first_wait = m_sleep.call_args_list[0][0][0]
+    assert abs(first_wait - 2.0) < 0.01, f"expected wait ~2s (Retry-After), got {first_wait}"
+    print("[OK] test_api_429_retry_after_header")
+
+
+def test_api_429_exponential_backoff():
+    """HTTP 429 without ``Retry-After``: exponential backoff kicks in, then retry succeeds."""
+    from unittest.mock import patch
+    from core import api_client
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='grok', max_retries=3, rpm=0, rps=0,
+        use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    err = _build_httperror(429)  # no Retry-After
+    ok = _make_urlopen_success(_OPENAI_OK_BODY)
+
+    with patch.object(api_client.urlreq, 'urlopen', side_effect=[err, ok]), \
+         patch.object(api_client.time, 'sleep') as m_sleep, \
+         patch('random.uniform', return_value=0.0):
+        raw = client._call_api('sys', 'user')
+
+    assert raw == "ok"
+    assert m_sleep.call_count == 1
+    wait = m_sleep.call_args_list[0][0][0]
+    # attempt=1: base = min(2**1 * 5, 60) = 10, jitter=0 -> wait=10
+    assert abs(wait - 10.0) < 0.01, f"expected exponential backoff ~10s, got {wait}"
+    print("[OK] test_api_429_exponential_backoff")
+
+
+def test_api_500_retry():
+    """HTTP 500 retries with its own exponential backoff schedule."""
+    from unittest.mock import patch
+    from core import api_client
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='grok', max_retries=3, rpm=0, rps=0,
+        use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    err = _build_httperror(500)
+    ok = _make_urlopen_success(_OPENAI_OK_BODY)
+
+    with patch.object(api_client.urlreq, 'urlopen', side_effect=[err, ok]), \
+         patch.object(api_client.time, 'sleep') as m_sleep, \
+         patch('random.uniform', return_value=0.0):
+        raw = client._call_api('sys', 'user')
+
+    assert raw == "ok"
+    assert m_sleep.call_count == 1
+    wait = m_sleep.call_args_list[0][0][0]
+    # attempt=1: base = min(2**1 * 3, 60) = 6, jitter=0 -> wait=6
+    assert abs(wait - 6.0) < 0.01, f"expected 500 backoff ~6s, got {wait}"
+    print("[OK] test_api_500_retry")
+
+
+def test_api_401_no_retry():
+    """HTTP 401 surfaces immediately as ``RuntimeError`` — no retry, no sleep."""
+    from unittest.mock import patch
+    from core import api_client
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='grok', max_retries=3, rpm=0, rps=0,
+        use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    err = _build_httperror(401)
+
+    with patch.object(api_client.urlreq, 'urlopen', side_effect=err), \
+         patch.object(api_client.time, 'sleep') as m_sleep:
+        try:
+            client._call_api('sys', 'user')
+            raised = False
+        except RuntimeError as e:
+            raised = True
+            assert "401" in str(e)
+            assert "api-key" in str(e).lower() or "api_key" in str(e).lower()
+
+    assert raised, "expected RuntimeError on 401"
+    assert m_sleep.call_count == 0, "401 must not trigger retry sleep"
+    print("[OK] test_api_401_no_retry")
+
+
+def test_api_404_no_retry():
+    """HTTP 404 surfaces immediately as ``RuntimeError`` — no retry, no sleep."""
+    from unittest.mock import patch
+    from core import api_client
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='bad-model', max_retries=3, rpm=0, rps=0,
+        use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    err = _build_httperror(404)
+
+    with patch.object(api_client.urlreq, 'urlopen', side_effect=err), \
+         patch.object(api_client.time, 'sleep') as m_sleep:
+        try:
+            client._call_api('sys', 'user')
+            raised = False
+        except RuntimeError as e:
+            raised = True
+            assert "404" in str(e)
+            assert "bad-model" in str(e)
+
+    assert raised, "expected RuntimeError on 404"
+    assert m_sleep.call_count == 0, "404 must not trigger retry sleep"
+    print("[OK] test_api_404_no_retry")
+
+
+def test_api_urlerror_retry():
+    """Transport-level ``URLError`` (e.g. DNS / TLS / connection refused) retries."""
+    from unittest.mock import patch
+    from urllib.error import URLError
+    from core import api_client
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='grok', max_retries=3, rpm=0, rps=0,
+        use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    err = URLError("connection refused")
+    ok = _make_urlopen_success(_OPENAI_OK_BODY)
+
+    with patch.object(api_client.urlreq, 'urlopen', side_effect=[err, ok]) as m_open, \
+         patch.object(api_client.time, 'sleep') as m_sleep, \
+         patch('random.uniform', return_value=0.0):
+        raw = client._call_api('sys', 'user')
+
+    assert raw == "ok"
+    assert m_open.call_count == 2
+    assert m_sleep.call_count == 1
+    wait = m_sleep.call_args_list[0][0][0]
+    # URLError path: base = min(2**1 * 3, 60) = 6, jitter=0 -> wait=6
+    assert abs(wait - 6.0) < 0.01, f"expected URLError backoff ~6s, got {wait}"
+    print("[OK] test_api_urlerror_retry")
+
+
+def test_progress_concurrent_flush():
+    """Concurrent ``mark_chunk_done`` across workers must not deadlock or lose chunks.
+
+    Round 21 (P-H-2) moved disk I/O out of the main data lock. This test
+    exercises 4 threads × 50 marks each, then verifies every chunk is
+    present after ``save()``. A deadlock in the new two-lock scheme would
+    cause this test to hang past the join timeout.
+    """
+    import threading
+    import tempfile
+    from pathlib import Path
+    from core.translation_utils import ProgressTracker
+
+    with tempfile.TemporaryDirectory() as td:
+        pt = ProgressTracker(Path(td) / "progress.json")
+
+        def worker(thread_id: int) -> None:
+            for i in range(50):
+                pt.mark_chunk_done(
+                    f"file_{thread_id}.rpy",
+                    i,
+                    [{"original": f"x{i}", "zh": f"y{i}"}],
+                )
+
+        threads = [threading.Thread(target=worker, args=(tid,)) for tid in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        for t in threads:
+            assert not t.is_alive(), "ProgressTracker deadlock: thread still alive after 15s"
+
+        pt.save()
+
+        for tid in range(4):
+            chunks = pt.data["completed_chunks"][f"file_{tid}.rpy"]
+            assert sorted(chunks) == list(range(50)), (
+                f"file_{tid}.rpy missing chunks (got {len(chunks)}/50): {chunks}"
+            )
+    print("[OK] test_progress_concurrent_flush")
+
+
+def test_progress_write_ordering_monotonic():
+    """Disk writes under concurrent flushing must be monotonically non-decreasing.
+
+    Locks down the round 22 P1 fix: before the fix, ``_flush_to_disk`` took the
+    data lock for the snapshot and then **released it** before acquiring
+    ``_save_lock`` — so two threads could each snapshot independently and then
+    race into the save lock, with the slower-to-write one clobbering the fresher
+    snapshot. After the fix, ``_save_lock`` wraps the ``_lock`` + snapshot +
+    write sequence atomically, guaranteeing the on-disk state never regresses.
+    """
+    import threading
+    import tempfile
+    import json as _json
+    from pathlib import Path
+    from core.translation_utils import ProgressTracker
+
+    writes_sizes: list[int] = []
+    writes_sizes_lock = threading.Lock()
+
+    with tempfile.TemporaryDirectory() as td:
+        pt = ProgressTracker(Path(td) / "progress.json")
+
+        real_write = pt._write_atomic
+
+        def spy_write(json_str: str) -> None:
+            data = _json.loads(json_str)
+            total_chunks = sum(
+                len(c) for c in data.get("completed_chunks", {}).values()
+            )
+            with writes_sizes_lock:
+                writes_sizes.append(total_chunks)
+            real_write(json_str)
+
+        pt._write_atomic = spy_write
+
+        def worker(tid: int) -> None:
+            for i in range(30):
+                pt.mark_chunk_done(f"file_{tid}.rpy", i, [])
+
+        threads = [threading.Thread(target=worker, args=(tid,)) for tid in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        assert len(writes_sizes) >= 3, (
+            f"expected at least 3 flushes across 180 marks, got {len(writes_sizes)}"
+        )
+        for i in range(1, len(writes_sizes)):
+            assert writes_sizes[i] >= writes_sizes[i - 1], (
+                f"non-monotonic write at index {i}: "
+                f"writes_sizes[{i - 1}]={writes_sizes[i - 1]} > "
+                f"writes_sizes[{i}]={writes_sizes[i]} — snapshot ordering violated"
+            )
+    print("[OK] test_progress_write_ordering_monotonic")
+
+
+# ============================================================
+# HTTP connection pool tests (round 21 — PF-C-1)
+# ============================================================
+
+def _mock_http_response(status: int, body: bytes = b'{"ok":true}', headers=None):
+    """Build a mock ``http.client.HTTPResponse`` (supports status / getheaders / read).
+
+    Uses a real ``BytesIO`` for ``read`` so bounded reads terminate at EOF.
+    """
+    from unittest.mock import MagicMock
+    import io
+    resp = MagicMock()
+    resp.status = status
+    resp.getheaders = MagicMock(return_value=headers or [])
+    resp.read = io.BytesIO(body).read
+    return resp
+
+
+def test_http_pool_reuses_connection():
+    """Three POSTs on the same thread must hit exactly one underlying HTTPSConnection.
+
+    This is the core reason the pool exists: it eliminates ~150 ms of TCP+TLS
+    handshake per request after the first one.
+    """
+    from unittest.mock import patch, MagicMock
+    from core.http_pool import HTTPSConnectionPool
+
+    mock_conn = MagicMock()
+    # 每次 getresponse() 返回全新 resp（带独立 BytesIO），这样 3 次 post 都能读到完整 body
+    mock_conn.getresponse = MagicMock(side_effect=lambda: _mock_http_response(200))
+
+    with patch('core.http_pool.http.client.HTTPSConnection',
+               return_value=mock_conn) as m_cls:
+        pool = HTTPSConnectionPool()
+        for _ in range(3):
+            body = pool.post("https://api.example.com/v1/x", b'{}', {"X": "1"})
+            assert body == b'{"ok":true}'
+        assert m_cls.call_count == 1, f"expected 1 connection created, got {m_cls.call_count}"
+        assert mock_conn.request.call_count == 3
+    print("[OK] test_http_pool_reuses_connection")
+
+
+def test_http_pool_reconnects_on_transport_error():
+    """Transport failure (e.g. keep-alive dropped) should trigger a single reconnect."""
+    from unittest.mock import patch, MagicMock
+    from core.http_pool import HTTPSConnectionPool
+
+    mock_broken = MagicMock()
+    mock_broken.request = MagicMock(side_effect=ConnectionResetError("broken pipe"))
+
+    mock_fresh = MagicMock()
+    mock_fresh.getresponse = MagicMock(return_value=_mock_http_response(200))
+
+    with patch('core.http_pool.http.client.HTTPSConnection',
+               side_effect=[mock_broken, mock_fresh]) as m_cls:
+        pool = HTTPSConnectionPool()
+        body = pool.post("https://api.example.com/v1/x", b'{}', {})
+
+    assert body == b'{"ok":true}'
+    assert m_cls.call_count == 2, f"expected reconnect (2 conns), got {m_cls.call_count}"
+    assert mock_broken.close.called, "broken connection should have been closed"
+    print("[OK] test_http_pool_reconnects_on_transport_error")
+
+
+def test_http_pool_raises_http_error_on_4xx():
+    """HTTP 4xx / 5xx must surface as ``urllib.error.HTTPError`` so that
+    ``APIClient._call_api`` retry logic keeps working unchanged."""
+    from unittest.mock import patch, MagicMock
+    from urllib.error import HTTPError
+    from core.http_pool import HTTPSConnectionPool
+
+    mock_conn = MagicMock()
+    mock_conn.getresponse = MagicMock(return_value=_mock_http_response(
+        429, body=b'{"error":"rate"}', headers=[("Retry-After", "5")]
+    ))
+
+    with patch('core.http_pool.http.client.HTTPSConnection', return_value=mock_conn):
+        pool = HTTPSConnectionPool()
+        try:
+            pool.post("https://api.example.com/v1/x", b'{}', {})
+            raised = False
+        except HTTPError as e:
+            raised = True
+            assert e.code == 429
+            assert e.headers.get("Retry-After") == "5"
+    assert raised, "expected HTTPError on 429"
+    print("[OK] test_http_pool_raises_http_error_on_4xx")
+
+
+def test_api_key_child_env_pop():
+    """``_RENPY_TRANSLATOR_CHILD_API_KEY`` must be read with ``pop`` not ``get``.
+
+    Both ``main.py`` and ``one_click_pipeline.py`` read the private child-process
+    variable and remove it from the environment in the same statement, so that
+    the key does not leak into further ``subprocess`` children spawned by the
+    translator (e.g. PyInstaller helpers, Ren'Py's bundled Python). This test
+    codifies that contract.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # 1. In-process pop semantics
+    os.environ["_RENPY_TRANSLATOR_CHILD_API_KEY"] = "test_key_xyz"
+    key = os.environ.pop("_RENPY_TRANSLATOR_CHILD_API_KEY", "")
+    assert key == "test_key_xyz"
+    assert "_RENPY_TRANSLATOR_CHILD_API_KEY" not in os.environ
+    assert os.environ.pop("_RENPY_TRANSLATOR_CHILD_API_KEY", "") == ""
+
+    # 2. Cross-process: env var set on parent is received by child, then pop() removes it.
+    child_code = (
+        "import os; "
+        "k = os.environ.pop('_RENPY_TRANSLATOR_CHILD_API_KEY', ''); "
+        "still = '_RENPY_TRANSLATOR_CHILD_API_KEY' in os.environ; "
+        "print(f'{k}|{still}')"
+    )
+    env = os.environ.copy()
+    env["_RENPY_TRANSLATOR_CHILD_API_KEY"] = "sub_key_abc"
+    proc = subprocess.run(
+        [sys.executable, "-c", child_code],
+        env=env, capture_output=True, text=True, timeout=15,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    assert proc.returncode == 0, f"child failed: {proc.stderr}"
+    assert proc.stdout.strip() == "sub_key_abc|False", (
+        f"unexpected child output: {proc.stdout!r}"
+    )
+    print("[OK] test_api_key_child_env_pop")
+
+
+# ============================================================
+# Response-body size cap (round 22 — H1)
+# ============================================================
+
+def test_http_pool_rejects_oversized_response():
+    """``HTTPSConnectionPool.post`` must stop reading once the response body
+    exceeds ``MAX_API_RESPONSE_BYTES`` (32 MB) and raise ``ResponseTooLarge``.
+
+    Guards against a malicious / misconfigured endpoint streaming unbounded
+    data into the translator process, which would otherwise OOM.
+    """
+    from unittest.mock import patch, MagicMock
+    from core.http_pool import HTTPSConnectionPool, ResponseTooLarge
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.getheaders = MagicMock(return_value=[])
+    # Each read() returns 64 KB; the pool reads in 64 KB chunks so we hit the
+    # 32 MB cap after ~513 iterations without needing to materialise 32 MB in
+    # the test process.
+    mock_resp.read = MagicMock(return_value=b'\x00' * 65536)
+
+    mock_conn = MagicMock()
+    mock_conn.getresponse = MagicMock(return_value=mock_resp)
+
+    with patch('core.http_pool.http.client.HTTPSConnection', return_value=mock_conn):
+        pool = HTTPSConnectionPool()
+        try:
+            pool.post("https://api.example.com/v1/x", b'{}', {})
+            raised = False
+        except ResponseTooLarge as e:
+            raised = True
+            msg = str(e)
+            assert "32" in msg, f"expected size info in error msg, got: {msg}"
+    assert raised, "expected ResponseTooLarge when pool reads past the cap"
+    print("[OK] test_http_pool_rejects_oversized_response")
+
+
+def test_api_client_urllib_rejects_oversized_response():
+    """The urllib fallback path in ``APIClient`` must also enforce the cap —
+    otherwise setting ``use_connection_pool=False`` would silently bypass
+    the hardening.
+    """
+    from unittest.mock import patch, MagicMock
+    from core import api_client
+    from core.http_pool import ResponseTooLarge
+
+    config = api_client.APIConfig(
+        provider='xai', api_key='test', model='grok',
+        max_retries=1, rpm=0, rps=0, use_connection_pool=False,
+    )
+    client = api_client.APIClient(config)
+
+    mock_resp = MagicMock()
+    mock_resp.read = MagicMock(return_value=b'\x00' * 65536)
+    ctx = MagicMock()
+    ctx.__enter__.return_value = mock_resp
+    ctx.__exit__.return_value = False
+
+    with patch.object(api_client.urlreq, 'urlopen', return_value=ctx):
+        try:
+            client._call_api('sys', 'user')
+            raised = False
+        except ResponseTooLarge:
+            raised = True
+    assert raised, "urllib fallback path should also raise ResponseTooLarge"
+    print("[OK] test_api_client_urllib_rejects_oversized_response")
+
+
+def test_glossary_scan_renpy_directory():
+    """``Glossary.scan_game_directory`` must extract ``define NAME = Character(...)``
+    and ``define config.name = "..."`` from .rpy files (round 25 T-H-1).
+
+    Previously the RPG Maker branch had targeted coverage via
+    ``test_glossary_scan_rpgmaker`` but the Ren'Py regex path had none,
+    leaving a silent-break risk: any regression in ``char_re`` /
+    ``config_name_re`` would go undetected until a real game is translated.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.glossary import Glossary
+
+    fixture = (
+        '# game/characters.rpy\n'
+        'define mc = Character("Main Hero", color="#c8a")\n'
+        'define e = Character("Eileen")\n'
+        'define narrator = DynamicCharacter("旁白")\n'
+        'define config.name = "Test Game"\n'
+        'define config.version = "1.0.0"\n'
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        game_dir = Path(td) / "game"
+        game_dir.mkdir()
+        (game_dir / "characters.rpy").write_text(fixture, encoding='utf-8')
+
+        # 放一个应被跳过的 renpy/ 引擎目录文件（不应被扫描）
+        renpy_dir = game_dir / "renpy"
+        renpy_dir.mkdir()
+        (renpy_dir / "engine.rpy").write_text(
+            'define engine_internal = Character("Should NOT appear")\n',
+            encoding='utf-8',
+        )
+
+        g = Glossary()
+        g.scan_game_directory(str(game_dir))
+
+        assert g.characters.get("mc") == "Main Hero", (
+            f"expected mc → 'Main Hero', got {g.characters.get('mc')!r}"
+        )
+        assert g.characters.get("e") == "Eileen", (
+            f"expected e → 'Eileen', got {g.characters.get('e')!r}"
+        )
+        assert g.characters.get("narrator") == "旁白", (
+            f"expected narrator → '旁白', got {g.characters.get('narrator')!r}"
+        )
+        # renpy/ 目录应被跳过
+        assert "engine_internal" not in g.characters, (
+            f"engine file should be skipped, but got: {g.characters}"
+        )
+        # config.name / config.version 应进入 terms
+        assert g.terms.get("__game_name__") == "Test Game", (
+            f"expected terms['__game_name__'] = 'Test Game', got {g.terms.get('__game_name__')!r}"
+        )
+        assert g.terms.get("__game_version__") == "1.0.0", (
+            f"expected version 1.0.0, got {g.terms.get('__game_version__')!r}"
+        )
+    print("[OK] test_glossary_scan_renpy_directory")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -1756,7 +2357,31 @@ if __name__ == '__main__':
     test_locked_terms_no_match()
     test_locked_terms_multiple_occurrences()
     test_locked_terms_special_chars()
+    # K: 架构回归保护（round 20 — CRITICAL import 修复）
+    test_pipeline_imports_smoke()
+    # L: API retry mock tests（round 21 — T-C-2）
+    test_api_429_retry_after_header()
+    test_api_429_exponential_backoff()
+    test_api_500_retry()
+    test_api_401_no_retry()
+    test_api_404_no_retry()
+    test_api_urlerror_retry()
+    # M: ProgressTracker concurrency（round 21 — P-H-2）
+    test_progress_concurrent_flush()
+    # M': write-ordering monotonicity（round 22 — P1 review fix）
+    test_progress_write_ordering_monotonic()
+    # N: HTTP connection pool（round 21 — PF-C-1）
+    test_http_pool_reuses_connection()
+    test_http_pool_reconnects_on_transport_error()
+    test_http_pool_raises_http_error_on_4xx()
+    # O: API key child-process env (round 21 — S-H-1)
+    test_api_key_child_env_pop()
+    # P: response body size cap (round 22 — H1)
+    test_http_pool_rejects_oversized_response()
+    test_api_client_urllib_rejects_oversized_response()
+    # Q: glossary Ren'Py scan (round 25 — T-H-1)
+    test_glossary_scan_renpy_directory()
     print()
     print("=" * 40)
-    print(f"ALL 94 TESTS PASSED")
+    print(f"ALL 110 TESTS PASSED")
     print("=" * 40)

@@ -30,13 +30,20 @@ def _normalize_input(s: str) -> str:
     return s
 
 
-def run(cmd: list[str]) -> int:
+def run(cmd: list[str], api_key: str = "") -> int:
+    """Spawn the child process.
+
+    API key is passed via a private environment variable rather than ``--api-key``
+    to keep it off the process command line (Windows WMI / ``ps`` etc). The
+    child (main.py / one_click_pipeline.py) reads and pops it immediately.
+    """
     print("\n============================================================")
     print("执行命令:")
-    # 隐藏 API 密钥显示
+    # Legacy compatibility mask: 第 21 轮 (S-H-1) 起 launcher 不再把 --api-key
+    # 写入 cmd（改走子进程 env），但保留下方的遮盖逻辑以兼容手工构造的 cmd。
     display_cmd = []
     skip_next = False
-    for i, arg in enumerate(cmd):
+    for arg in cmd:
         if skip_next:
             display_cmd.append("****")
             skip_next = False
@@ -47,7 +54,11 @@ def run(cmd: list[str]) -> int:
             display_cmd.append(arg)
     print(" ".join(shlex.quote(x) for x in display_cmd))
     print("============================================================\n")
-    return subprocess.call(cmd, cwd=Path(__file__).parent)
+
+    child_env = os.environ.copy()
+    if api_key:
+        child_env["_RENPY_TRANSLATOR_CHILD_API_KEY"] = api_key
+    return subprocess.call(cmd, cwd=Path(__file__).parent, env=child_env)
 
 
 def main() -> int:
@@ -124,7 +135,6 @@ def main() -> int:
             "--game-dir", game_dir,
             "--output-dir", output_dir,
             "--provider", provider,
-            "--api-key", api_key,
             "--model", model,
             "--genre", genre,
             "--rpm", rpm,
@@ -134,7 +144,7 @@ def main() -> int:
             "--tl-lang", tl_lang,
             *extra,
         ]
-        return run(cmd)
+        return run(cmd, api_key=api_key)
 
     # ── 模式 8: RPG Maker MV/MZ ──
     if mode == "8":
@@ -145,14 +155,13 @@ def main() -> int:
             "--game-dir", game_dir,
             "--output-dir", output_dir,
             "--provider", provider,
-            "--api-key", api_key,
             "--model", model,
             "--genre", genre,
             "--workers", workers,
             "--rpm", rpm,
             "--rps", rps,
         ]
-        return run(cmd)
+        return run(cmd, api_key=api_key)
 
     # ── 模式 9: CSV/JSONL 通用格式 ──
     if mode == "9":
@@ -166,13 +175,12 @@ def main() -> int:
             "--game-dir", game_dir,
             "--output-dir", output_dir,
             "--provider", provider,
-            "--api-key", api_key,
             "--model", model,
             "--workers", workers,
             "--rpm", rpm,
             "--rps", rps,
         ]
-        return run(cmd)
+        return run(cmd, api_key=api_key)
 
     workers = ask("并发线程数（默认 3）: ", "3")
 
@@ -183,7 +191,6 @@ def main() -> int:
             "--game-dir", game_dir,
             "--output-dir", output_dir,
             "--provider", provider,
-            "--api-key", api_key,
             "--model", model,
             "--genre", genre,
             "--workers", workers,
@@ -198,7 +205,7 @@ def main() -> int:
             pilot_count = ask("试跑文件数量（默认 20）: ", "20")
             gate_ratio = ask("闸门最大漏翻占比（默认 0.08）: ", "0.08")
             cmd += ["--pilot-count", pilot_count, "--gate-max-untranslated-ratio", gate_ratio]
-        return run(cmd)
+        return run(cmd, api_key=api_key)
 
     extra = ["--resume"] if mode == "2" else []
     cmd = [
@@ -206,7 +213,6 @@ def main() -> int:
         "--game-dir", game_dir,
         "--output-dir", output_dir,
         "--provider", provider,
-        "--api-key", api_key,
         "--model", model,
         "--genre", genre,
         "--workers", workers,
@@ -214,7 +220,7 @@ def main() -> int:
         "--rps", rps,
         *extra,
     ]
-    return run(cmd)
+    return run(cmd, api_key=api_key)
 
 
 if __name__ == "__main__":

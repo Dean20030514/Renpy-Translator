@@ -50,11 +50,11 @@ def _run_retranslate_phase(
         result["checker_dropped"] = 0
         return result
 
-    from main import (
+    from translators.retranslator import (
         retranslate_file as _retranslate_file,
         find_untranslated_lines as _find_untranslated_lines,
-        ProgressTracker as _ProgressTracker,
     )
+    from core.translation_utils import ProgressTracker as _ProgressTracker
     from core.api_client import APIClient as _APIClient, APIConfig as _APIConfig
     from core.glossary import Glossary as _Glossary
 
@@ -232,7 +232,7 @@ def _run_pilot_phase(
 
     Raises: StageError if structural errors found
     """
-    from one_click_pipeline import StageError
+    from pipeline.helpers import StageError
 
     pilot_files = pick_pilot_files(scan_root, args.pilot_count)
     if not pilot_files:
@@ -329,7 +329,7 @@ def _run_full_translation_phase(
 
     Raises: StageError if structural errors found
     """
-    from one_click_pipeline import StageError
+    from pipeline.helpers import StageError
 
     propagate_fn(stage2_translated)
     run_main(

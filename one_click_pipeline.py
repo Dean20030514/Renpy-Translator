@@ -72,7 +72,16 @@ def main() -> None:
     args = parse_args()
     t0 = time.time()
 
-    api_key = args.api_key or os.environ.get("XAI_API_KEY", "")
+    # API Key 解析优先级（高 → 低）：
+    #   1. --api-key CLI（显式传入）
+    #   2. _RENPY_TRANSLATOR_CHILD_API_KEY（GUI/launcher 注入的子进程专用变量，
+    #      读完立即 pop 防止继承到下游 subprocess）
+    #   3. XAI_API_KEY 通用环境变量（向后兼容 CLI 用户习惯）
+    api_key = (
+        args.api_key
+        or os.environ.pop("_RENPY_TRANSLATOR_CHILD_API_KEY", "")
+        or os.environ.get("XAI_API_KEY", "")
+    )
     if not api_key:
         raise StageError("未提供 API key，请传 --api-key 或设置 XAI_API_KEY")
     project_root = Path(args.game_dir).resolve()

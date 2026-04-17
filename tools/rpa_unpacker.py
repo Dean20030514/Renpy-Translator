@@ -39,6 +39,7 @@ Pure standard library — no external dependencies.
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import os
 import pickle
@@ -47,6 +48,8 @@ import sys
 import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from core.pickle_safe import SafeUnpickler
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +231,11 @@ def _read_index(
         ) from exc
 
     try:
-        index = pickle.loads(decompressed, encoding="bytes")
+        index = SafeUnpickler(io.BytesIO(decompressed), encoding="bytes").load()
+    except pickle.UnpicklingError as exc:
+        raise CorruptedArchive(
+            f"RPA 索引包含不受信任的对象类型，已拒绝加载: {exc}"
+        ) from exc
     except Exception as exc:
         raise CorruptedArchive(
             f"RPA 索引 pickle 反序列化失败: {exc}"
@@ -307,6 +314,16 @@ def unpack_rpa(
                     continue
 
             dest = outdir / name
+
+            # ZIP Slip guard: refuse any archive entry whose resolved path
+            # escapes outdir (e.g. ``../../evil.py`` or absolute paths).
+            try:
+                dest.resolve().relative_to(outdir.resolve())
+            except ValueError:
+                logger.warning(
+                    "[RPA] 跳过危险路径（疑似路径穿越 / ZIP Slip）: %s", name
+                )
+                continue
 
             # Skip if exists and not forcing
             if dest.exists() and not force:
