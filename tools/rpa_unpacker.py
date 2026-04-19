@@ -60,6 +60,13 @@ logger = logging.getLogger(__name__)
 _RPA3_MAGIC = b"RPA-3.0 "
 _RPA2_MAGIC = b"RPA-2.0 "
 
+# Upper bound on the size of a single extracted archive entry. Entries are
+# read into memory before being written to disk; without this guard a
+# corrupted or hostile index that claims a multi-gigabyte length would
+# allocate enough memory to OOM the host. 512 MiB is well above any
+# legitimate Ren'Py asset (videos are usually streamed, not embedded).
+_RPA_MAX_ENTRY_BYTES = 512 * 1024 * 1024
+
 # Each index entry is a list of tuples: [(offset, length, prefix_bytes), ...]
 # prefix_bytes may be empty (b"").  We always use the first tuple.
 IndexEntry = List[Tuple[int, int, bytes]]
@@ -309,7 +316,7 @@ def unpack_rpa(
         for name, (offset, length, prefix) in sorted(index.items()):
             # Extension filter
             if filter_ext:
-                ext = os.path.splitext(name)[1].lower()
+                ext = Path(name).suffix.lower()
                 if ext not in filter_ext:
                     continue
 
@@ -328,6 +335,16 @@ def unpack_rpa(
             # Skip if exists and not forcing
             if dest.exists() and not force:
                 logger.debug("[RPA] 跳过（已存在）: %s", name)
+                continue
+
+            # Pre-read size bound: refuse absurdly large (or negative) entries
+            # before any memory allocation.  A corrupted index could otherwise
+            # steer f.read() into a multi-gigabyte allocation.
+            if length < 0 or length > _RPA_MAX_ENTRY_BYTES:
+                logger.warning(
+                    "[RPA] 跳过异常大条目 (%d 字节，上限 %d): %s",
+                    length, _RPA_MAX_ENTRY_BYTES, name,
+                )
                 continue
 
             # Ensure parent directory exists

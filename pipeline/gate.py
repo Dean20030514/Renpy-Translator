@@ -120,8 +120,12 @@ def evaluate_gate(original_root: Path, translated_root: Path) -> dict:
             glossary_locked = set(locked_list) if locked_list else None
             glossary_no_translate = set(no_trans_list) if no_trans_list else None
     except (OSError, json.JSONDecodeError, KeyError) as e:
-        # 术语表缺失或解析失败不影响闸门主流程，仅跳过术语相关统计
-        logger.debug(f"闸门术语表加载失败: {e}")
+        # Round 26 H-4: a malformed glossary silently disables locked-term /
+        # no-translate checks, which the user cannot otherwise detect. Upgrade
+        # to WARNING so the pipeline log shows the degradation.
+        logger.warning(
+            "[GATE] glossary 加载失败，锁定术语/禁翻检查已跳过: %s", e
+        )
         glossary_terms = None
         glossary_locked = None
         glossary_no_translate = None
@@ -131,6 +135,10 @@ def evaluate_gate(original_root: Path, translated_root: Path) -> dict:
         rel = trans_file.relative_to(translated_root)
         orig_file = original_root / rel
         if not orig_file.exists():
+            # Round 26 M-1: surface the missing source file so the user can
+            # see which translation has no origin to compare against,
+            # instead of just counting into warnings silently.
+            logger.warning("[GATE] 缺失原文件，跳过校验: %s", rel)
             warnings += 1
             continue
 

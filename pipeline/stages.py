@@ -366,8 +366,14 @@ def _run_full_translation_phase(
             report["stages"]["full"]["chunk_stats"] = full_report.get("chunk_stats", {})
         else:
             report["stages"]["full"]["checker_dropped"] = 0
-    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+            report["stages"]["full"]["report_note"] = "full report.json 未生成（跳过 checker 统计）"
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+        # Previously this branch silently zeroed out checker_dropped; surface
+        # the failure so pipeline consumers don't mistake corrupted data for
+        # "zero dropped items". (Round 26 H-3)
+        _print(f"[WARN ] 解析 full report.json 失败，checker 统计降级为 0: {e}")
         report["stages"]["full"]["checker_dropped"] = 0
+        report["stages"]["full"]["report_error"] = f"{type(e).__name__}: {e}"
     _print(
         "[GATE-FULL] "
         f"errors={gate2['errors']} "

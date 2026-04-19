@@ -87,6 +87,35 @@ _AST_SLOT = 1
 
 
 # ---------------------------------------------------------------------------
+# Shared pickle whitelist (Tier 1 helper + Tier 2 standalone)
+# ---------------------------------------------------------------------------
+#
+# Both the Tier 1 helper script (run inside the game's bundled Python) and
+# the Tier 2 ``_RestrictedUnpickler`` (this module) must refuse to resolve
+# classes outside this allowlist — otherwise a malicious .rpyc could smuggle
+# ``os.system`` / ``builtins.eval`` through the pickle ``find_class`` hook.
+#
+# The list lives here so the two tiers cannot drift out of sync silently.
+# ``_WHITELIST_TIER1_PY2_EXTRAS`` captures the only legitimate divergence:
+# Ren'Py 7.x ships Python 2.7, which has ``long`` and ``unicode`` as
+# distinct builtins; Tier 2 runs under Python 3 only and does not need them.
+_SHARED_WHITELIST: Dict[str, List[str]] = {
+    "builtins": [
+        "list", "tuple", "dict", "str", "bytes", "bytearray",
+        "int", "float", "bool", "NoneType",
+        "set", "frozenset", "complex",
+    ],
+    "collections": ["OrderedDict", "defaultdict"],
+    "_codecs": ["encode", "decode"],
+    "copyreg": ["_reconstructor", "__newobj__"],
+}
+
+_WHITELIST_TIER1_PY2_EXTRAS: Dict[str, List[str]] = {
+    "builtins": ["long", "unicode"],
+}
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
@@ -222,14 +251,18 @@ def _find_renpy_base(game_dir: Path) -> Optional[Path]:
 
 # This script is injected into the game's Python environment.
 # It uses renpy's own code generation to produce perfect .rpy output.
-_DECOMPILE_HELPER_SCRIPT = textwrap.dedent("""\
+#
+# The ``{SAFE_BUILTINS_JSON}`` / ``{SAFE_COLLECTIONS_JSON}`` / ``{SAFE_CODECS_JSON}``
+# / ``{SAFE_COPYREG_JSON}`` placeholders are formatted in by
+# ``_render_decompile_helper()`` from ``_SHARED_WHITELIST`` + the Python-2
+# extras, so Tier 1 and Tier 2 cannot drift silently.
+_DECOMPILE_HELPER_TEMPLATE = textwrap.dedent("""\
     # -*- coding: utf-8 -*-
     # Auto-generated decompile helper - executed by game's bundled Python.
     # Compatible with Python 2.7 (Ren'Py 7.x) and Python 3.x (Ren'Py 8.x).
-    # Whitelist sync point: the _SafeUnpickler defined below must stay in lock-step
-    # with the standalone Tier 2 _RestrictedUnpickler (further down this file). If
-    # one grows a new whitelist entry the other must grow it too — otherwise a
-    # malicious .rpyc that passes one tier may fail the other unexpectedly.
+    # Whitelist is injected from the parent process's ``_SHARED_WHITELIST``
+    # so Tier 1 and Tier 2 cannot drift out of sync.  See
+    # ``tools/rpyc_decompiler._SHARED_WHITELIST`` / ``_WHITELIST_TIER1_PY2_EXTRAS``.
     import io, json, os, pickle, struct, sys, zlib
 
     RPYC2_HEADER = b"RENPY RPC2"
@@ -237,14 +270,10 @@ _DECOMPILE_HELPER_SCRIPT = textwrap.dedent("""\
     # Whitelist unpickler: allow real renpy/store classes (needed by
     # renpy.util.get_code) plus primitive containers; reject os/subprocess/
     # builtins.eval and anything else a malicious .rpyc might try to invoke.
-    _SAFE_BUILTINS = frozenset([
-        "list", "tuple", "dict", "str", "bytes", "bytearray",
-        "int", "long", "float", "bool", "NoneType",
-        "set", "frozenset", "complex", "unicode",
-    ])
-    _SAFE_COLLECTIONS = frozenset(["OrderedDict", "defaultdict"])
-    _SAFE_CODECS = frozenset(["encode", "decode"])
-    _SAFE_COPYREG = frozenset(["_reconstructor", "__newobj__"])
+    _SAFE_BUILTINS = frozenset({SAFE_BUILTINS_JSON})
+    _SAFE_COLLECTIONS = frozenset({SAFE_COLLECTIONS_JSON})
+    _SAFE_CODECS = frozenset({SAFE_CODECS_JSON})
+    _SAFE_COPYREG = frozenset({SAFE_COPYREG_JSON})
 
     class _SafeUnpickler(pickle.Unpickler):
         def find_class(self, module, name):
@@ -315,6 +344,30 @@ _DECOMPILE_HELPER_SCRIPT = textwrap.dedent("""\
 """)
 
 
+def _render_decompile_helper() -> str:
+    """Fill the Tier 1 helper template with the shared whitelist.
+
+    Injects ``_SHARED_WHITELIST`` (plus Python-2 extras for builtins) as JSON
+    lists so the helper's ``_SAFE_BUILTINS`` / ``_SAFE_COLLECTIONS`` /
+    ``_SAFE_CODECS`` / ``_SAFE_COPYREG`` frozensets are derived from the
+    single source of truth at the top of this file.
+    """
+    builtins_list = sorted(
+        set(_SHARED_WHITELIST["builtins"])
+        | set(_WHITELIST_TIER1_PY2_EXTRAS.get("builtins", []))
+    )
+    replacements = {
+        "{SAFE_BUILTINS_JSON}": json.dumps(builtins_list),
+        "{SAFE_COLLECTIONS_JSON}": json.dumps(sorted(_SHARED_WHITELIST["collections"])),
+        "{SAFE_CODECS_JSON}": json.dumps(sorted(_SHARED_WHITELIST["_codecs"])),
+        "{SAFE_COPYREG_JSON}": json.dumps(sorted(_SHARED_WHITELIST["copyreg"])),
+    }
+    rendered = _DECOMPILE_HELPER_TEMPLATE
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
+
+
 def _run_decompile_with_game_python(
     python_path: Path,
     renpy_base: Path,
@@ -332,7 +385,7 @@ def _run_decompile_with_game_python(
         script_path = tmpdir / "_decompile_helper.py"
         result_path = tmpdir / "_results.json"
 
-        script_path.write_text(_DECOMPILE_HELPER_SCRIPT, encoding="utf-8")
+        script_path.write_text(_render_decompile_helper(), encoding="utf-8")
 
         manifest = {
             "files": [str(p) for p in rpyc_files],
@@ -449,22 +502,15 @@ class _RestrictedUnpickler(pickle.Unpickler):
       etc.) raises ``pickle.UnpicklingError`` — crashing loudly instead of
       silently executing attacker-supplied code.
 
-    **Whitelist sync point**: there is a sibling whitelist in the Tier 1 injected
-    helper script (``_DECOMPILE_HELPER_SCRIPT`` near the top of this file, class
-    ``_SafeUnpickler``). If you change ``_SAFE_BUILTINS`` / ``_SAFE_COLLECTIONS``
-    / ``_SAFE_CODECS`` / ``_SAFE_COPYREG`` here, update the helper script too —
-    otherwise the two decompile paths diverge and malicious .rpyc may pass one
-    but not the other.
+    Whitelist comes from ``_SHARED_WHITELIST`` at the top of this module so it
+    cannot drift out of sync with the Tier 1 injected helper (see
+    ``_DECOMPILE_HELPER_TEMPLATE`` / ``_render_decompile_helper``).
     """
 
-    _SAFE_BUILTINS = frozenset({
-        "list", "tuple", "dict", "str", "bytes", "bytearray",
-        "int", "float", "bool", "NoneType",
-        "set", "frozenset", "complex",
-    })
-    _SAFE_COLLECTIONS = frozenset({"OrderedDict", "defaultdict"})
-    _SAFE_CODECS = frozenset({"encode", "decode"})
-    _SAFE_COPYREG = frozenset({"_reconstructor", "__newobj__"})
+    _SAFE_BUILTINS = frozenset(_SHARED_WHITELIST["builtins"])
+    _SAFE_COLLECTIONS = frozenset(_SHARED_WHITELIST["collections"])
+    _SAFE_CODECS = frozenset(_SHARED_WHITELIST["_codecs"])
+    _SAFE_COPYREG = frozenset(_SHARED_WHITELIST["copyreg"])
 
     def find_class(self, module: str, name: str):
         if module.startswith(("renpy", "store")):

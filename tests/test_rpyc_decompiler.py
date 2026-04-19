@@ -471,6 +471,71 @@ def test_detect_renpy_version():
         print("[OK] test_detect_renpy_version")
 
 
+def test_whitelist_tier1_tier2_consistent():
+    """Tier 1 (helper-script) and Tier 2 (_RestrictedUnpickler) whitelists
+    must both derive from ``_SHARED_WHITELIST`` (round 26 H-2).
+
+    Rationale: the previous implementation kept two independent copies of
+    ``_SAFE_BUILTINS`` / ``_SAFE_COLLECTIONS`` / ``_SAFE_CODECS`` /
+    ``_SAFE_COPYREG`` in sync only by comment.  This test scrapes the
+    rendered Tier 1 helper script back out and compares it against Tier 2
+    so they can never drift silently again.
+    """
+    import json as _json
+    import re as _re
+    from tools.rpyc_decompiler import (
+        _SHARED_WHITELIST,
+        _WHITELIST_TIER1_PY2_EXTRAS,
+        _RestrictedUnpickler,
+        _render_decompile_helper,
+    )
+
+    rendered = _render_decompile_helper()
+
+    def _extract(name: str) -> set:
+        m = _re.search(rf'{name} = frozenset\((\[[^\]]+\])\)', rendered)
+        assert m, f"Tier 1 {name} not found in rendered helper"
+        return set(_json.loads(m.group(1)))
+
+    tier1_builtins = _extract("_SAFE_BUILTINS")
+    tier1_collections = _extract("_SAFE_COLLECTIONS")
+    tier1_codecs = _extract("_SAFE_CODECS")
+    tier1_copyreg = _extract("_SAFE_COPYREG")
+
+    # Tier 1 = shared builtins + Py2 extras (long/unicode).
+    expected_tier1_builtins = (
+        set(_SHARED_WHITELIST["builtins"])
+        | set(_WHITELIST_TIER1_PY2_EXTRAS.get("builtins", []))
+    )
+    assert tier1_builtins == expected_tier1_builtins, (
+        f"Tier 1 builtins drift: expected {expected_tier1_builtins}, got {tier1_builtins}"
+    )
+
+    # All other categories must match the shared whitelist exactly.
+    assert tier1_collections == set(_SHARED_WHITELIST["collections"])
+    assert tier1_codecs == set(_SHARED_WHITELIST["_codecs"])
+    assert tier1_copyreg == set(_SHARED_WHITELIST["copyreg"])
+
+    # Tier 2 must match the shared whitelist verbatim (no Py2 extras).
+    assert _RestrictedUnpickler._SAFE_BUILTINS == frozenset(_SHARED_WHITELIST["builtins"])
+    assert _RestrictedUnpickler._SAFE_COLLECTIONS == frozenset(_SHARED_WHITELIST["collections"])
+    assert _RestrictedUnpickler._SAFE_CODECS == frozenset(_SHARED_WHITELIST["_codecs"])
+    assert _RestrictedUnpickler._SAFE_COPYREG == frozenset(_SHARED_WHITELIST["copyreg"])
+
+    # The non-builtins categories must be identical between tiers.
+    assert tier1_collections == set(_RestrictedUnpickler._SAFE_COLLECTIONS)
+    assert tier1_codecs == set(_RestrictedUnpickler._SAFE_CODECS)
+    assert tier1_copyreg == set(_RestrictedUnpickler._SAFE_COPYREG)
+
+    # Builtins: Tier 1 should be Tier 2 ∪ Py2 extras.
+    assert tier1_builtins == (
+        set(_RestrictedUnpickler._SAFE_BUILTINS)
+        | set(_WHITELIST_TIER1_PY2_EXTRAS.get("builtins", []))
+    )
+
+    print("[OK] test_whitelist_tier1_tier2_consistent")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -502,5 +567,8 @@ if __name__ == "__main__":
     test_find_renpy_python_not_found()
     test_find_renpy_python_with_lib()
     test_detect_renpy_version()
+
+    # Whitelist sync (round 26 H-2)
+    test_whitelist_tier1_tier2_consistent()
 
     print("\n=== 全部 RPYC 反编译测试通过 ===")

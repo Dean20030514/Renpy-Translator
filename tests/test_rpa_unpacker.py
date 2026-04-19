@@ -466,6 +466,88 @@ def test_rpa3_refuses_zip_slip():
             tmp.unlink()
 
 
+def _build_rpa3_custom(index_overrides: dict[str, tuple[int, int, bytes]],
+                       real_files: dict[str, bytes],
+                       key: int = 0xDEADBEEF) -> bytes:
+    """Build an RPA-3.0 archive with a hand-crafted index.
+
+    ``real_files`` are written to the body verbatim; ``index_overrides`` lets
+    the caller insert any ``(offset, length, prefix)`` triple — useful for
+    synthesising malicious archives whose declared length doesn't match the
+    body.  XOR obfuscation is applied to offset/length exactly like a real
+    RPA-3.0 encoder.
+    """
+    buf = io.BytesIO()
+    header_placeholder = b"RPA-3.0 0000000000000000 0000000000000000\n"
+    buf.write(header_placeholder)
+
+    # Write real body content first so offsets are stable.
+    real_offsets: dict[str, int] = {}
+    for name, data in real_files.items():
+        real_offsets[name] = buf.tell()
+        buf.write(data)
+
+    # Build index: start from real entries, then overlay custom overrides.
+    index: dict[bytes, list[tuple[int, int, bytes]]] = {}
+    for name, data in real_files.items():
+        index[name.encode("utf-8")] = [
+            (real_offsets[name] ^ key, len(data) ^ key, b"")
+        ]
+    for name, (offset, length, prefix) in index_overrides.items():
+        index[name.encode("utf-8")] = [
+            (offset ^ key, length ^ key, prefix)
+        ]
+
+    index_offset = buf.tell()
+    pickled = pickle.dumps(index, protocol=2)
+    compressed = zlib.compress(pickled)
+    buf.write(compressed)
+
+    header = f"RPA-3.0 {index_offset:016x} {key:016x}\n".encode("ascii")
+    buf.seek(0)
+    buf.write(header)
+    return buf.getvalue()
+
+
+def test_rpa_refuses_oversized_entry():
+    """A corrupted / hostile index whose declared length exceeds the 512 MiB
+    memory-safety cap must be skipped with a warning; legitimate entries in
+    the same archive must still be extracted (round 26 H-1).
+    """
+    # Build an archive with one legitimate file and one index entry whose
+    # length claims ~600 MiB while the offset points just past the legit
+    # data.  Without the bound check, f.read(600_000_000) would OOM.
+    oversized_length = 600 * 1024 * 1024  # 600 MiB > 512 MiB cap
+    archive_data = _build_rpa3_custom(
+        index_overrides={
+            "bomb.rpy": (32 + len(b"# legit"), oversized_length, b""),
+        },
+        real_files={
+            "normal.rpy": b"# legit",
+        },
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".rpa", delete=False) as f:
+        f.write(archive_data)
+        tmp = Path(f.name)
+
+    with tempfile.TemporaryDirectory() as outdir:
+        try:
+            extracted = unpack_rpa(tmp, Path(outdir))
+            # Legitimate entry was extracted.
+            assert (Path(outdir) / "normal.rpy").exists(), \
+                "legitimate entry should have been extracted"
+            # Oversized entry was refused (no file written, not in extracted list).
+            assert not (Path(outdir) / "bomb.rpy").exists(), \
+                "oversized entry must not be written to disk"
+            for p in extracted:
+                assert p.name != "bomb.rpy", \
+                    f"oversized entry leaked into extracted list: {p}"
+            print("[OK] test_rpa_refuses_oversized_entry")
+        finally:
+            tmp.unlink()
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -486,4 +568,5 @@ if __name__ == "__main__":
     test_nested_directory_structure()
     test_empty_archive()
     test_rpa3_refuses_zip_slip()
+    test_rpa_refuses_oversized_entry()
     print("\n=== 全部 RPA 解包测试通过 ===")
