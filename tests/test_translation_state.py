@@ -605,6 +605,129 @@ def test_emit_runtime_hook_skips_ui_sidecar_when_empty():
     print("[OK] emit_runtime_hook_skips_ui_sidecar_when_empty")
 
 
+def test_emit_runtime_hook_copies_font_when_path_given():
+    """Round 32 Subtask B: ``emit_runtime_hook`` with a valid ``font_path``
+    copies the font to ``<output_game>/fonts/tl_inject.ttf`` with bytes
+    identical to the source.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        # Build a synthetic font file so the test doesn't depend on the
+        # real ``resources/fonts/`` content (avoids ~10 MB I/O per run).
+        fake_font = td_path / "MyFont.ttf"
+        fake_font.write_bytes(b"TTF\x00MOCK-FONT-BYTES\x01\x02\x03")
+
+        out_game = td_path / "output" / "game"
+        emit_runtime_hook(out_game, entries, font_path=fake_font)
+
+        dst = out_game / "fonts" / "tl_inject.ttf"
+        assert dst.is_file(), "bundled font must land at fonts/tl_inject.ttf"
+        assert dst.read_bytes() == fake_font.read_bytes()
+        # Other artefacts still present.
+        assert (out_game / "translations.json").is_file()
+        assert (out_game / "zz_tl_inject_hook.rpy").is_file()
+    print("[OK] emit_runtime_hook_copies_font_when_path_given")
+
+
+def test_emit_runtime_hook_skips_font_when_none():
+    """Round 32 Subtask B: ``font_path=None`` (default) and ``font_path``
+    pointing at a non-existent file must NOT create the fonts directory —
+    keeps round 31 default output byte-compatible.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+
+    for font in (None, Path("/does/not/exist/font.ttf")):
+        with tempfile.TemporaryDirectory() as td:
+            out_game = Path(td) / "game"
+            emit_runtime_hook(out_game, entries, font_path=font)
+            assert not (out_game / "fonts").exists(), (
+                f"fonts dir must not exist for font_path={font!r}"
+            )
+            # Primary artefacts still present.
+            assert (out_game / "translations.json").is_file()
+            assert (out_game / "zz_tl_inject_hook.rpy").is_file()
+    print("[OK] emit_runtime_hook_skips_font_when_none")
+
+
+def test_emit_runtime_hook_font_same_file_tolerated():
+    """Round 32 Subtask B: passing a ``font_path`` that happens to equal the
+    destination (e.g. user re-ran the emitter against its own output) must
+    not raise ``shutil.SameFileError``.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        out_game.mkdir(parents=True, exist_ok=True)
+        fonts_dir = out_game / "fonts"
+        fonts_dir.mkdir(parents=True, exist_ok=True)
+        same_file = fonts_dir / "tl_inject.ttf"
+        same_file.write_bytes(b"MOCK-FONT")
+
+        # Must not raise SameFileError; idempotent success.
+        emit_runtime_hook(out_game, entries, font_path=same_file)
+        assert same_file.read_bytes() == b"MOCK-FONT"
+    print("[OK] emit_runtime_hook_font_same_file_tolerated")
+
+
+def test_emit_if_requested_resolves_font_from_args_font_file():
+    """Round 32 Subtask B: ``emit_if_requested`` resolves the font via
+    ``core.font_patch.resolve_font`` (honouring ``args.font_file``) and
+    forwards to the emitter so the bundled font appears in the output
+    game directory even without a direct kwarg.
+    """
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+    from core.runtime_hook_emitter import emit_if_requested
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        fake_font = td_path / "CustomFont.ttf"
+        fake_font.write_bytes(b"TTF\x00CUSTOM\x04\x05\x06")
+
+        db = TranslationDB(td_path / "translation_db.json")
+        db.upsert_entry({
+            "file": "a.rpy", "line": 1, "original": "Hello",
+            "translation": "你好", "status": "ok",
+        })
+
+        args = SimpleNamespace(
+            emit_runtime_hook=True,
+            font_file=str(fake_font),
+        )
+        emit_if_requested(args, td_path, db)
+
+        dst = td_path / "game" / "fonts" / "tl_inject.ttf"
+        assert dst.is_file()
+        assert dst.read_bytes() == fake_font.read_bytes()
+    print("[OK] emit_if_requested_resolves_font_from_args_font_file")
+
+
 def test_default_resources_fonts_dir_points_to_project_root():
     """Round 32 Commit 1: ``default_resources_fonts_dir`` resolves to
     ``<project_root>/resources/fonts`` regardless of which caller imports it.
@@ -659,6 +782,11 @@ def run_all() -> int:
         # Round 32 Commit 2 (UI whitelist sidecar)
         test_emit_runtime_hook_writes_ui_sidecar_when_extensions_set,
         test_emit_runtime_hook_skips_ui_sidecar_when_empty,
+        # Round 32 Commit 3 (font auto-bundle in emit_runtime_hook)
+        test_emit_runtime_hook_copies_font_when_path_given,
+        test_emit_runtime_hook_skips_font_when_none,
+        test_emit_runtime_hook_font_same_file_tolerated,
+        test_emit_if_requested_resolves_font_from_args_font_file,
     ]
     for t in tests:
         t()

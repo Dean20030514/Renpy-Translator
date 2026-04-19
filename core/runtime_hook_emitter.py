@@ -110,6 +110,7 @@ def emit_runtime_hook(
     hook_template_path: Path | None = None,
     hook_filename: str = "zz_tl_inject_hook.rpy",
     ui_button_extensions: Iterable[str] | None = None,
+    font_path: Path | None = None,
 ) -> tuple[Path, Path, int]:
     """Write ``translations.json`` + copy the inject hook into
     ``output_game_dir``.
@@ -132,6 +133,13 @@ def emit_runtime_hook(
             so ``inject_hook.rpy`` can mirror the Python-side extensions at
             runtime.  Empty / None → sidecar file is NOT created, keeping
             default output byte-compatible with round 31.
+        font_path: Optional path to a ``.ttf`` / ``.otf`` font file (round 32
+            Subtask B).  When set and the file exists, the font is copied to
+            ``<output_game_dir>/fonts/tl_inject.ttf`` so the hook's font
+            replacement block (keyed on the ``_TL_FONT_REL`` constant) fires
+            automatically.  None / missing file → fonts directory NOT
+            created.  ``shutil.SameFileError`` (caller passes an already-
+            correct destination) is tolerated and silently skipped.
 
     Returns:
         (translations_json_path, hook_rpy_path, entry_count)
@@ -172,6 +180,41 @@ def emit_runtime_hook(
                 "[TL-INJECT] emitted UI button sidecar: %d extensions → %s",
                 len(ext_sorted), ui_json_path.name,
             )
+
+    # Round 32 Subtask B: optional font bundle.  Target filename is fixed
+    # to ``tl_inject.ttf`` to match ``inject_hook.rpy``'s hardcoded
+    # ``_TL_FONT_REL`` constant.  Kept as a side-effect (not in the return
+    # tuple) so callers that only inspect (json_path, hook_path, count) stay
+    # byte-compatible with round 31.
+    if font_path is not None:
+        font_src = Path(font_path)
+        if font_src.is_file():
+            fonts_dir = output_game_dir / "fonts"
+            fonts_dir.mkdir(parents=True, exist_ok=True)
+            dst_font = fonts_dir / "tl_inject.ttf"
+            # Path pre-check to handle the src == dst case cross-platform:
+            # POSIX would raise ``shutil.SameFileError``; Windows raises
+            # ``PermissionError [WinError 32]`` instead.  Resolving both
+            # paths first lets us skip the copy entirely and stay portable.
+            try:
+                same = font_src.resolve() == dst_font.resolve()
+            except OSError:
+                same = False
+            if same:
+                logger.debug(
+                    "[TL-INJECT] skip font copy — src == dst (%s)", dst_font,
+                )
+            else:
+                try:
+                    shutil.copy2(str(font_src), str(dst_font))
+                    logger.info(
+                        "[TL-INJECT] bundled font: %s → %s",
+                        font_src.name, dst_font.relative_to(output_game_dir),
+                    )
+                except shutil.SameFileError:
+                    # Belt-and-braces: even if resolve() disagreed, the
+                    # POSIX SameFileError path still degrades gracefully.
+                    pass
 
     # Copy the hook .rpy — shutil.copy2 preserves mtime/permissions so
     # Ren'Py's .rpyc cache invalidation still works when the template
@@ -231,6 +274,22 @@ def emit_if_requested(
             ui_ext = get_ui_button_whitelist_extensions()
         except ImportError:
             ui_ext = None
-        emit_runtime_hook(output_game_dir, entries, ui_button_extensions=ui_ext)
+        # Round 32 Subtask B: resolve the font via the same helper static
+        # mode uses (``--font-file`` preferred, ``resources/fonts/`` fallback)
+        # and bundle into ``<output>/game/fonts/tl_inject.ttf``.  None result
+        # (no flag, no built-in font) → emit_runtime_hook silently skips the
+        # fonts directory.
+        font_source: Path | None = None
+        try:
+            from core.font_patch import resolve_font, default_resources_fonts_dir
+            explicit = getattr(args, "font_file", "") or None
+            font_source = resolve_font(default_resources_fonts_dir(), explicit)
+        except (ImportError, OSError):
+            font_source = None
+        emit_runtime_hook(
+            output_game_dir, entries,
+            ui_button_extensions=ui_ext,
+            font_path=font_source,
+        )
     except (OSError, ValueError, FileNotFoundError) as e:
         logger.warning("[TL-INJECT] emit failed, continuing: %s", e)
