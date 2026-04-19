@@ -188,6 +188,16 @@ def _extract_from_v2_envelope(
             "v2_lang": target_lang,
             "v2_default_lang": default_lang,
             "v2_langs_seen": langs_seen,
+            # Round 34 Commit 3: expose full per-language bucket dict so the
+            # HTML can swap translations in place when the operator picks a
+            # different language from the in-page dropdown (no need to re-run
+            # the CLI with a different ``--v2-lang``).  Values may be empty
+            # strings for languages that don't have a translation for this
+            # ``original`` — HTML renders those as "(empty)" just like v1.
+            "languages": {
+                k: v for k, v in bucket.items()
+                if isinstance(k, str) and isinstance(v, str)
+            },
         })
     return entries
 
@@ -196,222 +206,12 @@ def _extract_from_v2_envelope(
 # HTML generation
 # ============================================================
 
-_HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>Translation Editor</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans SC", sans-serif; background: #f5f5f5; color: #333; }
-.toolbar { position: sticky; top: 0; z-index: 100; background: #fff; padding: 8px 16px; border-bottom: 1px solid #ddd; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.toolbar input[type=text] { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; width: 260px; font-size: 14px; }
-.toolbar button { padding: 6px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
-.btn-primary { background: #1976d2; color: #fff; }
-.btn-primary:hover { background: #1565c0; }
-.btn-warn { background: #f57c00; color: #fff; }
-.btn-warn:hover { background: #e65100; }
-.stats { font-size: 13px; color: #666; margin-left: auto; }
-table { width: 100%; border-collapse: collapse; background: #fff; margin: 0 auto; }
-th { background: #e3f2fd; padding: 8px 10px; text-align: left; font-size: 13px; position: sticky; top: 49px; z-index: 50; border-bottom: 2px solid #90caf9; }
-td { padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 14px; vertical-align: top; }
-tr.modified td { background: #fff8e1; }
-tr.hidden { display: none; }
-.col-idx { width: 40px; color: #999; font-size: 12px; text-align: center; }
-.col-file { width: 180px; font-size: 12px; color: #666; word-break: break-all; }
-.col-char { width: 60px; font-size: 12px; color: #9c27b0; }
-.col-orig { width: 38%; white-space: pre-wrap; word-break: break-word; }
-.col-trans { width: 38%; white-space: pre-wrap; word-break: break-word; }
-.col-trans[contenteditable] { outline: none; border: 1px solid transparent; border-radius: 3px; min-height: 1.4em; }
-.col-trans[contenteditable]:focus { border-color: #1976d2; background: #e3f2fd; }
-.col-trans[contenteditable].dirty { background: #fff8e1; }
-.empty-trans { color: #e53935; font-style: italic; }
-.file-header { background: #eceff1; padding: 6px 10px; font-weight: bold; font-size: 13px; border-top: 2px solid #b0bec5; }
-.file-header td { padding: 6px 10px; }
-#no-results { display: none; text-align: center; padding: 40px; color: #999; font-size: 16px; }
-#v2-banner { display: none; background: #fff3e0; border-bottom: 2px solid #ffb74d; color: #e65100; padding: 8px 16px; font-size: 13px; position: sticky; top: 49px; z-index: 60; }
-#v2-banner code { background: #fff; padding: 1px 6px; border-radius: 3px; font-size: 12px; }
-</style>
-</head>
-<body>
-<div id="v2-banner"></div>
-<div class="toolbar">
-  <input type="text" id="search" placeholder="Search original or translation..." autocomplete="off">
-  <button class="btn-primary" onclick="doSearch()">Search</button>
-  <button onclick="clearSearch()">Clear</button>
-  <label><input type="checkbox" id="only-empty" onchange="doSearch()"> Untranslated only</label>
-  <label><input type="checkbox" id="only-modified" onchange="doSearch()"> Modified only</label>
-  <button class="btn-warn" onclick="exportEdits()">Export Edits</button>
-  <span class="stats" id="stats"></span>
-</div>
-<table>
-<thead><tr>
-  <th class="col-idx">#</th>
-  <th class="col-file">File</th>
-  <th class="col-char">Speaker</th>
-  <th class="col-orig">Original</th>
-  <th class="col-trans">Translation</th>
-</tr></thead>
-<tbody id="tbody"></tbody>
-</table>
-<div id="no-results">No matching entries</div>
-<script type="application/json" id="metadata">__METADATA__</script>
-<script>
-"use strict";
-const META = JSON.parse(document.getElementById("metadata").textContent);
-const tbody = document.getElementById("tbody");
-const rows = [];
-let totalModified = 0;
+# Round 34 Commit 3: extracted to ``tools/_translation_editor_html.py`` so
+# this module stays under the CLAUDE.md 800-line soft limit after the v2
+# multi-language switch UI landed.  Import aliased to the original private
+# name so the rest of this file stays byte-identical.
+from tools._translation_editor_html import HTML_TEMPLATE as _HTML_TEMPLATE
 
-function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
-
-function initV2Banner() {
-  // Round 33 Subtask 3: surface v2 envelope context so operators see
-  // which bucket they are editing and what other languages are present.
-  const v2Entry = META.find(e => e.source === "v2");
-  if (!v2Entry) return;
-  const banner = document.getElementById("v2-banner");
-  const langsSeen = v2Entry.v2_langs_seen || [];
-  const other = langsSeen.filter(l => l !== v2Entry.v2_lang);
-  const otherHtml = other.length
-    ? " | Other buckets in file: " + other.map(l => "<code>" + esc(l) + "</code>").join(", ")
-    : " | This is the only language bucket in the file.";
-  banner.innerHTML =
-    "<b>v2 envelope mode</b> — editing <code>" + esc(v2Entry.v2_lang) + "</code> bucket of <code>" +
-    esc(v2Entry.v2_path) + "</code>" + otherHtml +
-    " &nbsp;(re-run with <code>--v2-lang OTHER</code> to edit other buckets)";
-  banner.style.display = "block";
-}
-
-function init() {
-  initV2Banner();
-  let lastFile = "";
-  META.forEach((e, i) => {
-    if (e.file !== lastFile) {
-      lastFile = e.file;
-      const fh = document.createElement("tr");
-      fh.className = "file-header";
-      fh.innerHTML = '<td colspan="5">' + esc(e.file) + '</td>';
-      tbody.appendChild(fh);
-    }
-    const tr = document.createElement("tr");
-    tr.dataset.idx = i;
-    tr.dataset.orig = e.original.toLowerCase();
-    tr.dataset.trans = (e.translation || "").toLowerCase();
-    tr.dataset.empty = e.translation ? "0" : "1";
-
-    const tdIdx = '<td class="col-idx">' + (i + 1) + '</td>';
-    const shortFile = e.file.split(/[/\\]/).slice(-2).join("/");
-    const tdFile = '<td class="col-file" title="' + esc(e.file) + '">' + esc(shortFile) + ':' + e.line + '</td>';
-    const tdChar = '<td class="col-char">' + esc(e.character || "") + '</td>';
-    const tdOrig = '<td class="col-orig">' + esc(e.original) + '</td>';
-
-    let transHtml;
-    if (e.translation) {
-      transHtml = '<td class="col-trans" contenteditable="true" data-orig-trans="' + esc(e.translation) + '">' + esc(e.translation) + '</td>';
-    } else {
-      transHtml = '<td class="col-trans empty-trans" contenteditable="true" data-orig-trans="">(empty)</td>';
-    }
-    tr.innerHTML = tdIdx + tdFile + tdChar + tdOrig + transHtml;
-    tbody.appendChild(tr);
-    rows.push(tr);
-
-    // Track edits
-    const tdT = tr.querySelector(".col-trans");
-    tdT.addEventListener("input", function() {
-      const cur = this.textContent.trim();
-      const orig = this.dataset.origTrans;
-      const changed = cur !== orig;
-      this.classList.toggle("dirty", changed);
-      tr.classList.toggle("modified", changed);
-      tr.dataset.modified = changed ? "1" : "0";
-      updateStats();
-    });
-    tdT.addEventListener("paste", function(ev) {
-      ev.preventDefault();
-      const text = (ev.clipboardData || window.clipboardData).getData("text/plain");
-      document.execCommand("insertText", false, text);
-    });
-    tdT.addEventListener("keydown", function(ev) {
-      if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); }
-    });
-    tr.dataset.modified = "0";
-  });
-  updateStats();
-}
-
-function updateStats() {
-  totalModified = rows.filter(r => r.dataset.modified === "1").length;
-  const visible = rows.filter(r => !r.classList.contains("hidden")).length;
-  const empty = rows.filter(r => r.dataset.empty === "1").length;
-  document.getElementById("stats").textContent =
-    "Total: " + rows.length + " | Visible: " + visible + " | Untranslated: " + empty + " | Modified: " + totalModified;
-}
-
-function doSearch() {
-  const q = document.getElementById("search").value.toLowerCase();
-  const onlyEmpty = document.getElementById("only-empty").checked;
-  const onlyMod = document.getElementById("only-modified").checked;
-  let visCount = 0;
-  // Also hide/show file headers
-  const fileHeaders = tbody.querySelectorAll(".file-header");
-  const fileVis = {};
-  rows.forEach(r => {
-    let show = true;
-    if (q && r.dataset.orig.indexOf(q) === -1 && r.dataset.trans.indexOf(q) === -1) show = false;
-    if (onlyEmpty && r.dataset.empty !== "1") show = false;
-    if (onlyMod && r.dataset.modified !== "1") show = false;
-    r.classList.toggle("hidden", !show);
-    if (show) visCount++;
-  });
-  document.getElementById("no-results").style.display = visCount ? "none" : "block";
-  updateStats();
-}
-function clearSearch() {
-  document.getElementById("search").value = "";
-  document.getElementById("only-empty").checked = false;
-  document.getElementById("only-modified").checked = false;
-  doSearch();
-}
-
-function exportEdits() {
-  const edits = [];
-  rows.forEach(r => {
-    if (r.dataset.modified !== "1") return;
-    const idx = parseInt(r.dataset.idx);
-    const m = META[idx];
-    const newTrans = r.querySelector(".col-trans").textContent.trim();
-    const rec = {
-      source: m.source,
-      file: m.file,
-      line: m.line,
-      original: m.original,
-      old_translation: m.translation,
-      new_translation: newTrans,
-      identifier: m.identifier || "",
-    };
-    // Round 33 Subtask 3: preserve v2 routing fields so import_edits can
-    // locate the target file + language bucket without a CLI flag.
-    if (m.source === "v2") {
-      rec.v2_path = m.v2_path;
-      rec.v2_lang = m.v2_lang;
-    }
-    edits.push(rec);
-  });
-  if (!edits.length) { alert("No modifications to export."); return; }
-  const blob = new Blob([JSON.stringify(edits, null, 2)], {type: "application/json"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "translation_edits.json";
-  a.click();
-  URL.revokeObjectURL(a.href);
-  alert("Exported " + edits.length + " edits to translation_edits.json");
-}
-
-init();
-</script>
-</body>
-</html>"""
 
 
 def export_html(
@@ -440,9 +240,15 @@ def export_html(
             "source_file": e.get("source_file", ""),
             "source_line": e.get("source_line", 0),
         }
-        # Round 33 Subtask 3: preserve v2 envelope routing keys (only
-        # present for ``source == "v2"`` rows; harmless for others).
-        for v2_key in ("v2_path", "v2_lang", "v2_default_lang", "v2_langs_seen"):
+        # Round 33 Subtask 3 + Round 34 Commit 3: preserve v2 envelope
+        # routing keys (only present for ``source == "v2"`` rows; harmless
+        # for others).  ``languages`` is the full ``{lang: translation}``
+        # bucket dict used by the in-page dropdown to swap translations
+        # without re-running the CLI with a different ``--v2-lang``.
+        for v2_key in (
+            "v2_path", "v2_lang", "v2_default_lang", "v2_langs_seen",
+            "languages",
+        ):
             if v2_key in e:
                 safe[v2_key] = e[v2_key]
         safe_entries.append(safe)

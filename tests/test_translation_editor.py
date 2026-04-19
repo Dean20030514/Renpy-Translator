@@ -460,6 +460,121 @@ def test_import_to_v2_envelope():
     print("[OK] test_import_to_v2_envelope")
 
 
+def test_extract_from_v2_exposes_full_languages_dict():
+    """Round 34 C3: ``_extract_from_v2_envelope`` populates a per-entry
+    ``languages`` dict containing every language bucket for that original,
+    not just the single ``--v2-lang`` target.  Needed so the in-page
+    dropdown can swap translations without re-running the CLI.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "multi.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは", "ko": "안녕하세요"},
+            "World": {"zh": "世界"},  # only zh bucket
+        }, default_lang="zh")
+
+        entries = _extract_from_db(v2_path)
+        by_orig = {e["original"]: e for e in entries}
+
+        # "Hello" has 3 languages — all present in the per-entry dict.
+        assert by_orig["Hello"]["languages"] == {
+            "zh": "你好", "ja": "こんにちは", "ko": "안녕하세요",
+        }
+        # "World" has just zh — the dict reflects that.
+        assert by_orig["World"]["languages"] == {"zh": "世界"}
+        # v2_langs_seen still present (round 33 compat) — reflects union
+        # across every original's buckets.
+        assert by_orig["Hello"]["v2_langs_seen"] == ["ja", "ko", "zh"]
+    print("[OK] test_extract_from_v2_exposes_full_languages_dict")
+
+
+def test_v2_html_includes_language_switch_dropdown():
+    """Round 34 C3: exported HTML contains the ``<select id="v2-lang-switch">``
+    dropdown element + the ``switchV2Language`` JS function + the
+    ``_edits`` state object.  Regression guard against a future edit
+    silently removing the in-page language switch.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "multi.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは"},
+        }, default_lang="zh")
+        entries = _extract_from_db(v2_path)
+
+        out = td_path / "review.html"
+        count = export_html(entries, out)
+        assert count == 1
+        html = out.read_text(encoding="utf-8")
+        # Dropdown + label wiring present.
+        assert 'id="v2-lang-switch"' in html
+        assert 'id="v2-lang-switch-label"' in html
+        # Per-row language state machine present.
+        assert "switchV2Language" in html
+        assert "_edits" in html
+        assert "_currentV2Lang" in html
+        # ``languages`` dict gets embedded into the metadata JSON.
+        meta_start = html.index('id="metadata">') + len('id="metadata">')
+        meta_end = html.index("</script>", meta_start)
+        meta = json.loads(html[meta_start:meta_end])
+        assert meta[0]["languages"] == {"zh": "你好", "ja": "こんにちは"}
+
+        # Non-v2 HTML (tl mode): dropdown element is still there (static
+        # HTML) but label wrapper stays ``display:none`` via CSS.
+        tl_entries = [
+            {"source": "tl", "file": "game/tl/chinese/a.rpy", "line": 1,
+             "original": "Hi", "translation": "嗨",
+             "character": "", "identifier": "",
+             "source_file": "a.rpy", "source_line": 1},
+        ]
+        out2 = td_path / "tl.html"
+        export_html(tl_entries, out2)
+        html2 = out2.read_text(encoding="utf-8")
+        # Label starts hidden; JS only reveals it when a v2 entry exists.
+        assert 'id="v2-lang-switch-label" style="display:none;"' in html2
+    print("[OK] test_v2_html_includes_language_switch_dropdown")
+
+
+def test_export_edits_multi_language_produces_per_lang_records():
+    """Round 34 C3: when the exported edits JSON contains records for the
+    SAME original with DIFFERENT ``v2_lang`` values, ``_apply_v2_edits``
+    writes each to its own bucket and leaves sibling buckets untouched.
+    Simulates the browser-side multi-language edit flow.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "multi.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは"},
+        }, default_lang="zh")
+
+        # Synthesise the shape exportEdits() emits when the user edits
+        # both language buckets for the same original.
+        edits = [
+            {"source": "v2", "file": str(v2_path), "line": 1,
+             "original": "Hello", "old_translation": "你好",
+             "new_translation": "您好", "identifier": "",
+             "v2_path": str(v2_path), "v2_lang": "zh"},
+            {"source": "v2", "file": str(v2_path), "line": 1,
+             "original": "Hello", "old_translation": "こんにちは",
+             "new_translation": "こんにちは〜", "identifier": "",
+             "v2_path": str(v2_path), "v2_lang": "ja"},
+        ]
+        edits_path = td_path / "edits.json"
+        edits_path.write_text(json.dumps(edits), encoding="utf-8")
+
+        result = import_edits(edits_path, create_backup=False)
+        assert result["applied"] == 2
+        assert result["files_modified"] == 1
+
+        loaded = json.loads(v2_path.read_text(encoding="utf-8"))
+        assert loaded["translations"]["Hello"] == {
+            "zh": "您好", "ja": "こんにちは〜",
+        }
+    print("[OK] test_export_edits_multi_language_produces_per_lang_records")
+
+
 def test_v2_envelope_preserves_non_edited_languages():
     """Round 33 Subtask 3: editing one language bucket must not disturb
     any other language bucket in the same original's dict, nor any
@@ -526,6 +641,10 @@ ALL_TESTS = [
     test_extract_from_v2_envelope,
     test_import_to_v2_envelope,
     test_v2_envelope_preserves_non_edited_languages,
+    # Round 34 Commit 3 — in-page multi-language switch
+    test_extract_from_v2_exposes_full_languages_dict,
+    test_v2_html_includes_language_switch_dropdown,
+    test_export_edits_multi_language_produces_per_lang_records,
 ]
 
 
