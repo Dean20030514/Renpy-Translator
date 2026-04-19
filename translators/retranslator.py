@@ -366,7 +366,12 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
             glossary.load_dict(dict_path)
 
     # 补翻使用独立进度文件，不干扰主翻译进度
-    progress = ProgressTracker(output_dir / "retranslate_progress.json")
+    # Round 35 C1: language namespace on progress keys (retranslate prompt
+    # is Chinese-only so in practice this will always be "zh", but threading
+    # the arg keeps behaviour symmetric with direct.py and lets future
+    # per-language retranslate prompts plug in without more plumbing).
+    _progress_lang = getattr(args, "target_lang", "zh") or "zh"
+    progress = ProgressTracker(output_dir / "retranslate_progress.json", language=_progress_lang)
     if not args.resume and progress.data.get("completed_files"):
         progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
         progress.save()

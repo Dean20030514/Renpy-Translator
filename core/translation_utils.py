@@ -83,15 +83,36 @@ class ProgressTracker:
     - ``_save_lock`` 串行化磁盘 I/O（tmp 写 + os.replace 重试）
     - 对 ``mark_chunk_done`` 这类热路径，主锁只持有极短时间（dict 更新 + 序列化），
       实际磁盘写在主锁外、``_save_lock`` 内执行，避免 worker 间串行化
+
+    Round 35 C1: 可选 ``language`` kwarg 开启 language-aware namespace。
+    当设置时，所有按 ``rel_path`` 索引的 dict key 会变成 ``"<lang>:<rel_path>"``
+    形式，让同一游戏在同一输出目录并行跑多语言时不互相污染 progress 状态。
+    读路径做向后兼容：如果 namespaced key 不存在但 bare key 存在（pre-r35
+    progress 文件），仍能读到，保证 round-34 文件 resume 不失效。写路径始
+    终用 namespaced key；遗留 bare key 在 ``mark_file_done`` 时顺便清理。
+    ``language=None`` （默认）等价于 round-34 byte-identical 行为。
     """
 
-    def __init__(self, progress_file: Path):
+    def __init__(self, progress_file: Path, *, language: "str | None" = None):
         self.path = progress_file
+        self.language = language if (isinstance(language, str) and language) else None
         self._lock = threading.Lock()
         self._save_lock = threading.Lock()
         self._dirty = 0  # 未写入磁盘的 mark 操作计数
         self.data: dict = {"completed_files": [], "completed_chunks": {}, "stats": {}}
         self._load()
+
+    def _key(self, rel_path: str) -> str:
+        """Round 35 C1: language-namespaced write key for ``rel_path``.
+
+        Returns ``"<lang>:<rel_path>"`` when ``self.language`` is set, else
+        the bare ``rel_path`` (round-34 behaviour).  Read-side callers
+        should fall back to the bare key on miss for backward compat with
+        pre-round-35 ``progress.json`` files.
+        """
+        if self.language:
+            return f"{self.language}:{rel_path}"
+        return rel_path
 
     def _load(self) -> None:
         if self.path.exists():
@@ -157,22 +178,32 @@ class ProgressTracker:
             raise
 
     def is_file_done(self, rel_path: str) -> bool:
-        return rel_path in self.data["completed_files"]
+        # Round 35 C1: prefer language-namespaced key; fall back to bare
+        # key so pre-r35 progress.json still resumes correctly.
+        completed = self.data.get("completed_files", [])
+        if self.language and self._key(rel_path) in completed:
+            return True
+        return rel_path in completed
 
     def is_chunk_done(self, rel_path: str, part: int) -> bool:
-        return part in self.data.get("completed_chunks", {}).get(rel_path, [])
+        # Round 35 C1: check namespaced bucket first, then legacy bare bucket.
+        chunks = self.data.get("completed_chunks", {})
+        if self.language and part in chunks.get(self._key(rel_path), []):
+            return True
+        return part in chunks.get(rel_path, [])
 
     def mark_chunk_done(self, rel_path: str, part: int, translations: list[dict]) -> None:
         should_flush = False
+        key = self._key(rel_path)
         with self._lock:
             chunks = self.data.setdefault("completed_chunks", {})
-            chunk_list = chunks.setdefault(rel_path, [])
+            chunk_list = chunks.setdefault(key, [])
             if part not in chunk_list:
                 chunk_list.append(part)
 
             # 保存该 chunk 的翻译结果
             results = self.data.setdefault("results", {})
-            file_results = results.setdefault(rel_path, [])
+            file_results = results.setdefault(key, [])
             file_results.extend(translations)
             self._dirty += 1
             if self._dirty >= SAVE_INTERVAL:
@@ -182,15 +213,28 @@ class ProgressTracker:
             self._flush_to_disk()
 
     def get_file_translations(self, rel_path: str) -> list[dict]:
-        """获取文件的所有已完成翻译"""
-        return self.data.get("results", {}).get(rel_path, [])
+        """获取文件的所有已完成翻译.
+
+        Round 35 C1: 合并 namespaced bucket + 旧 bare bucket 的结果，
+        让从 round-34 progress.json 接续的 resume 不丢失已翻译条目。
+        """
+        results = self.data.get("results", {})
+        combined: list[dict] = []
+        if self.language:
+            combined.extend(results.get(self._key(rel_path), []))
+        combined.extend(results.get(rel_path, []))
+        return combined
 
     def mark_file_done(self, rel_path: str) -> None:
+        key = self._key(rel_path)
         with self._lock:
-            if rel_path not in self.data["completed_files"]:
-                self.data["completed_files"].append(rel_path)
-            # 清理 chunk 级数据（已完成文件不需要保留）
+            if key not in self.data["completed_files"]:
+                self.data["completed_files"].append(key)
+            # 清理 chunk 级数据（已完成文件不需要保留）— 同时清 namespaced
+            # 和 bare 两种 key，防止 pre-r35 遗留 bare bucket 跨语言污染。
+            self.data.get("completed_chunks", {}).pop(key, None)
             self.data.get("completed_chunks", {}).pop(rel_path, None)
+            self.data.get("results", {}).pop(key, None)
             self.data.get("results", {}).pop(rel_path, None)
             self._dirty = 0
         self._flush_to_disk()

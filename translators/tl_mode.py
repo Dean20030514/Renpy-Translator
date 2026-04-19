@@ -171,7 +171,10 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                 continue
             glossary.load_dict(dict_path)
 
-    progress = ProgressTracker(output_dir / "tl_progress.json")
+    # Round 35 C1: language namespace on progress keys (tl-mode prompt
+    # is Chinese-only so in practice always "zh" today; keeps symmetry).
+    _progress_lang = getattr(args, "target_lang", "zh") or "zh"
+    progress = ProgressTracker(output_dir / "tl_progress.json", language=_progress_lang)
     if not args.resume and progress.data.get("completed_files"):
         progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
         progress.save()

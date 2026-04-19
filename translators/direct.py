@@ -127,7 +127,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
           f"{len(glossary.memory)} 翻译记忆")
 
     # 初始化进度追踪
-    progress = ProgressTracker(output_dir / "progress.json")
+    # Round 35 C1: thread target_lang so multi-language runs in the same
+    # output_dir don't stomp each other's chunk state (progress key becomes
+    # ``"<lang>:<rel_path>"``).  Legacy single-lang progress files still
+    # resume correctly via the fallback read path.
+    _progress_lang = getattr(args, "target_lang", "zh") or "zh"
+    progress = ProgressTracker(output_dir / "progress.json", language=_progress_lang)
     if not args.resume and progress.data.get("completed_files"):
         logger.info(f"[INFO] 发现旧进度（已完成 {len(progress.data['completed_files'])} 个文件）")
         logger.info("[INFO] 清除旧进度，从头开始（如需续传请加 --resume）")

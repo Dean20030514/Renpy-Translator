@@ -79,7 +79,13 @@ def _run_retranslate_phase(
         for dp in args.dict:
             rt_glossary.load_dict(dp)
 
-    rt_progress = _ProgressTracker(pipeline_root / "retranslate_progress.json")
+    # Round 35 C1: ProgressTracker language namespace (same rationale as
+    # the TranslationDB default_language threading — retranslate DB below).
+    _rt_progress_lang = getattr(args, "target_lang", "zh") or "zh"
+    rt_progress = _ProgressTracker(
+        pipeline_root / "retranslate_progress.json",
+        language=_rt_progress_lang,
+    )
     rt_progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
     rt_progress.save()
 
