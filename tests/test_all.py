@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Meta-runner — delegates to the five focused test modules (round 29 split).
+"""Meta-runner — delegates to the six focused test modules.
 
 Historical callers (CI, scripts, IDE integrations) still invoke
 ``python tests/test_all.py``; that entry point remains the single
@@ -8,14 +8,18 @@ Historical callers (CI, scripts, IDE integrations) still invoke
 its own ``if __name__ == '__main__':`` block for targeted runs.
 
 Prior to round 29 this file held all 113 test function bodies
-(2,539 lines total, 3× the project's 800-line soft cap).  The bodies
-now live in:
+(2,539 lines total, 3× the project's 800-line soft cap).  Round 29
+split those bodies into five focused modules; round 33 Commit 4 prep
+added a sixth (``test_runtime_hook``) after the runtime-hook tests
+accreted in ``test_translation_state`` from rounds 31–33 pushed the
+latter past the same 800-line limit.
 
 * ``test_api_client.py``            — APIClient / retries / HTTP pool
 * ``test_file_processor.py``        — splitter / checker / patcher / validator
 * ``test_translators.py``           — direct / tl_parser / retranslator / screen
 * ``test_glossary_prompts_config.py`` — Glossary / prompts / Config / lang_config
 * ``test_translation_state.py``     — ProgressTracker / TranslationDB / dedupe
+* ``test_runtime_hook.py``          — runtime-hook emitter + v2 schema + gui overrides
 """
 
 import sys
@@ -28,6 +32,7 @@ from tests import (
     test_translators,
     test_glossary_prompts_config,
     test_translation_state,
+    test_runtime_hook,
 )
 
 
@@ -38,6 +43,7 @@ def main() -> int:
     total += test_translators.run_all()
     total += test_glossary_prompts_config.run_all()
     total += test_translation_state.run_all()
+    total += test_runtime_hook.run_all()
     print()
     print("=" * 40)
     print(f"ALL {total} TESTS PASSED")
