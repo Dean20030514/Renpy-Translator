@@ -31,54 +31,9 @@
 - 第二十三轮：A-H-4 Part 1 — `translators/direct.py` 1301 → 584 + 新建 `_direct_chunk` / `_direct_file` / `_direct_cli` 三个子模块；re-export 保持公共 API，T-C-3 集成测试护航零回归
 - 第二十四轮：A-H-4 Part 2 — `translators/tl_mode.py` 928 → 558（+ `_tl_patches` / `_tl_dedup`），`translators/tl_parser.py` 1106 → 532（+ `_tl_postprocess` / `_tl_nvl_fix` / `_tl_parser_selftest`）；286 测试零回归
 - 第二十五轮：七项 HIGH/MEDIUM 收敛 — A-H-1 尾巴（pipeline StageError 反向 import）+ A-H-6（UsageStats.to_dict）+ S-H-3（api_key_file 路径校验）+ PF-H-2（direct.py log 句柄复用）+ PF-C-2（validator 正则预编译）+ T-H-1 / T-H-3 新测试；测试 286→288
+- 第二十六轮：综合包（A+B+C） — TranslationDB 三件套（RLock + 原子写 + line=0 + dirty flag）+ RPA 大小预检查 + RPYC 白名单同步 + stages/gate 可见化 + screen.py 拆分 + quality_report 加锁 + patcher 反向索引 + RateLimiter 批量清理 + os.path→pathlib；测试 288→293
 
 ## 详细记录
-
-### 第二十六轮：综合收敛包（A+B+C） — 数据完整性 / 安全加固 / screen 拆分 / 微优化
-
-本轮按新一次深度审查结果，把 HANDOFF.md 未覆盖的 3 项 CRITICAL + 4 项 HIGH 与 HANDOFF 优先级 A + C 的 6 项微优化一起收敛，遵守"隔离变量、小步提交"原则，每阶段独立验证。
-
-**A · TranslationDB 数据完整性**（CRITICAL，`core/translation_db.py`）：
-
-266. [C-1] 加 `threading.RLock`，把 `load / save / upsert_entry / add_entries / has_entry / filter_by_status / _rebuild_index` 全部包在锁内。`engines/generic_pipeline.py::_translate_one_chunk` 的 `ThreadPoolExecutor` 并发调用从此无数据竞争
-267. [C-2] `save()` 改为"temp 文件 + `os.replace`"原子替换，失败路径清理 tmp 并 re-raise（与 `generic_progress.json` 的原子写法对齐）。崩溃/并发下不再留下半写的 JSON
-268. [C-3] `upsert_entry` 的 `if not line` 判断改为 `line is None`，并同步 `_rebuild_index` 的 key 过滤。`engines/generic_pipeline.py:330` 写 `"line": 0` 的兜底条目从此不再被静默丢弃
-269. [PF-M-2] 加 `_dirty` flag：`upsert/add` 成功后置 True，`save()` 开头 False 即返回，`load()` 末尾置 False。未变更时 `save()` 直接 no-op，100 文件翻译约省 30-50ms × N 次
-
-**A 测试**（`tests/test_all.py` 110 → 113）：
-- `test_translation_db_concurrent_upsert`：32 线程 × 100 条 upsert → 断言 entries 数正确 + index 完整 + 全部 has_entry 命中
-- `test_translation_db_save_atomic`：save 中途 mock `os.replace` 抛 OSError → 断言原文件不变 + tmp 被清理 + JSON 仍可解
-- `test_translation_db_accepts_line_zero`：upsert `line=0` → has_entry/filter_by_status 均命中 + save/load round-trip 保留
-
-**B · 安全加固 + 静默失败可见化**（HIGH）：
-
-270. [B.1 · H-1] `tools/rpa_unpacker.py` 加常量 `_RPA_MAX_ENTRY_BYTES = 512 MiB`，`unpack_rpa` 在 `f.read(length)` 前预检查 `length` 范围。被篡改的恶意索引不再能触发 OOM。新增 `test_rpa_refuses_oversized_entry` 回归
-271. [B.2 · H-2] `tools/rpyc_decompiler.py` 抽出模块级共享常量 `_SHARED_WHITELIST` + `_WHITELIST_TIER1_PY2_EXTRAS`。Tier 1 helper 从模板 `_DECOMPILE_HELPER_TEMPLATE` 渲染（`_render_decompile_helper`）时 `json.dumps` 注入，Tier 2 `_RestrictedUnpickler` 直接引用。新增 `test_whitelist_tier1_tier2_consistent` 锁定两侧同步（含 Py2 long/unicode 兼容校验）
-272. [B.3 · H-3] `pipeline/stages.py` 唯一"静默降级"分支（第 361-370 行 `full report.json` 解析失败 silent zero）改为显式 `[WARN ]` 输出 + `report_error` 字段存进 report 供下游消费
-273. [B.4 · H-4] `pipeline/gate.py` `glossary.json` 加载失败从 `logger.debug` 升级为 `logger.warning`，明确提示"锁定术语/禁翻检查已跳过"
-274. [B.5 · M-1] `pipeline/gate.py` 缺失原文件场景从 `warnings += 1` 额外打印 `logger.warning("[GATE] 缺失原文件, 跳过校验: ...")`
-
-**C · HANDOFF 优先级 A + C 微优化**：
-
-275. [C.1 · A-H-4 补] `translators/screen.py` 877 → 478 行，拆出两个子模块：
-   - `translators/_screen_extract.py`（172 行）：`ScreenTextEntry` + 4 条正则 + `_should_skip` + `_line_has_underscore_wrap` + `scan_screen_files` + `extract_screen_strings`
-   - `translators/_screen_patch.py`（346 行）：`SCREEN_TRANSLATE_SYSTEM_PROMPT` + chunk 装配 + `_translate_screen_chunk` + `_deduplicate_entries` + `_escape_for_screen` + `_replace_screen_strings_in_file` + 进度 + backup
-   - 保留 `run_screen_translate` + 9 条自测 + re-export 清单在 `screen.py`。下游 `main.py` / `pipeline/stages.py` / `tests/test_all.py` 的 `from translators.screen import ...` 零改动
-276. [C.2 · PF-H-1] `translators/_direct_file.py` 加模块级 `_quality_report_lock = threading.Lock()`，包裹两处 `quality_report[rel_path] = issues` 写入。文件级并行下 dict 结构更新不再依赖 GIL 隐式保护
-277. [C.3 · PF-H-3] `file_processor/patcher.py::_diagnose_writeback_failure` 加可选 `norm_lines` 参数 + 新建 `_build_writeback_diag_index()` 辅助。`apply_translations` 的 fourth-pass 失败循环里只在首次触发时构建 NFKC 缓存，后续复用。大文件多失败场景省 n² 次 Unicode 规范化
-278. [C.4 · PF-H-4] `core/api_client.py::RateLimiter` 加 `_CLEANUP_INTERVAL = 64` + `_cleanup_counter`。过期桶清理从"每次 acquire 扫描"改为"每 64 次 acquire 批量清理"，持锁时间显著下降
-279. [C.5 · P-H-3/4] `os.path` 遗留用法改 `pathlib`：`translators/tl_parser.py:528/531` 改 `Path.is_file()/is_dir()`；`tools/rpa_unpacker.py:319` 改 `Path(name).suffix`；`tools/renpy_upgrade_tool.py:618-619` 改 `Path.resolve()/is_dir()`
-
-**结果**：
-- 12 测试套件 286 → 293（+5 新测试）+ tl_parser 内建 75 自测全绿，零回归
-- `translators/` 所有 .py 继续 < 800 行（screen.py 478 / direct.py 601 / tl_mode.py 558 / tl_parser.py 541，其余均 < 500）
-- A-H-4 所有目标（direct / tl_mode / tl_parser / screen）全部达成
-
-**本轮未做**（留给第 27+ 轮）：
-- A-H-2：`core/translation_utils.py` ↔ `file_processor/` 反向依赖
-- A-H-3：`translators/` 与 `engines/` 两套概念统一（大重构）
-- S-H-4：插件 subprocess 沙箱真正隔离
-- A-H-5：`tools/font_patch` 迁移到 `core/`（与 A-H-2 耦合，建议联合处理）
 
 ### 第二十七轮：分层收尾 — A-H-2（反向依赖消除）+ A-H-5（font_patch 迁移）
 
@@ -141,6 +96,42 @@
 - A-H-3 Medium / Deep：Ren'Py 通过 adapter 层走 generic_pipeline 6 阶段，或完全退役 DialogueEntry → TranslatableUnit 统一。需真实 API key + 真实游戏做漏翻率 / 成功率回归验证
 - S-H-4 Breaking：强制所有插件走 subprocess，retire importlib 路径。当前 dual-mode 已足够，等社区反馈再决定是否切换
 - `tools/patch_font_now.py:27` 疑似路径错位（`Path(__file__).parent / "resources" / "fonts"` 解析为 `tools/resources/fonts/`，但实际资源在项目根 `resources/fonts/`）— 独立小项
+
+### 第二十九轮：Priority B 持续优化 — test_all.py 拆分 + 路径 bug + 文档刷新
+
+HANDOFF.md round 28 把 Priority A 四项全部清零；本轮进入"持续优化"阶段，
+一次收敛测试文件拆分、遗留路径 bug 修复、以及第 26-28 轮后的文档陈旧点。
+没有代码行为变更，只有结构/文档整理。
+
+**A · `tests/test_all.py` 2,539 行拆为 5 个聚焦文件 + meta-runner**：
+
+303. `tests/test_all.py` 历经 29 轮迭代后已达 **2,539 行**（113 个 `test_*` 函数 + 3 个 `_mock_*` 辅助），3 倍超过 CLAUDE.md 800 行软上限。按模块边界拆成：
+   - `tests/test_api_client.py`（578 行，19 测试 + 3 辅助）：`APIConfig` / `UsageStats` / `RateLimiter` / `json_parse` / 定价 / 推理 timeout / HTTP 429/500/401/404 重试 / URLError / 连接池 / 响应体上限 / `API Key subprocess env`
+   - `tests/test_file_processor.py`（500 行，33 测试）：splitter（`estimate_tokens` / `_find_block_boundaries` / `force_split`）+ checker（`protect_placeholders` / `restore_placeholders` / `check_response_item` × 6 / `check_response_chunk` × 4 / `_filter_checked_translations` / `_restore_placeholders_in_translations`）+ patcher（`apply_translations` × 6 / 转义）+ validator（menu id / lang_config / W442）
+   - `tests/test_translators.py`（604 行，24 测试）：`dialogue_density` / `find_untranslated_lines` / `is_untranslated_dialogue` / `_should_retry` / `_split_chunk` / `fix_nvl_ids` × 4 / `screen_extract/replace` × 12 / `pipeline_imports_smoke`
+   - `tests/test_glossary_prompts_config.py`（525 行，24 测试）：Glossary 基础/dedup/线程安全/Ren'Py 扫描/memory confidence + `locked_terms` × 7 + prompts（zh/ja/system）+ config（load/CLI/validate/lang_config）
+   - `tests/test_translation_state.py`（483 行，13 测试）：ProgressTracker（cleanup/resume/normalize/并发 flush/write ordering）+ TranslationDB（roundtrip/concurrent upsert/atomic save/line=0）+ `_deduplicate_translations` / `_match_string_entry_fallback` / `ProgressBar` / `review_generator_html`
+304. `tests/test_all.py` 重写为 49 行 meta-runner：`import` 5 个拆分模块 + 调用各自的 `run_all()` 函数 + 打印合计计数。`python tests/test_all.py` 命令保持工作（CI / scripts / IDE 集成无需改动）
+305. 每个拆分文件同时暴露 `if __name__ == "__main__":` 入口，支持 `python tests/test_translation_state.py` 单独运行某类。`run_all()` 返回该文件的测试数，便于聚合
+306. **验证**：5 个文件单独跑均绿（19+33+24+24+13 = 113），`test_all.py` meta-runner 打印 `ALL 113 TESTS PASSED`；全套 12 套件 + tl_parser 内建 75 自测零回归
+307. **为何不用 unittest/pytest**：现有测试风格是"def 函数 + 内联 print `[OK]`"，没有 framework 依赖；拆分后每个文件仍然是纯 stdlib Python 脚本，可直接 `python xxx.py` 运行，符合项目零依赖原则
+
+**B · `tools/patch_font_now.py:27` 路径 bug 修复**：
+
+308. 第 27 行 `Path(__file__).parent / "resources" / "fonts"` 解析为 `tools/resources/fonts/`（不存在），因 `__file__` 是 `tools/patch_font_now.py`。改为 `Path(__file__).resolve().parent.parent / "resources" / "fonts"` 正确指向项目根 `resources/fonts/`。`python tools/patch_font_now.py` CLI 调用之前一直静默走到 "fonts dir not found" 分支，现在能正确加载 `NotoSansSC-Regular.ttf` / `SourceHanSansSC-Regular.otf`。不是单元测试覆盖的路径（该脚本需要真实 translation output 目录），但 round 28 HANDOFF 已标记，round 29 顺手修
+
+**C · 文档刷新**：
+
+309. `TEST_PLAN.md`：现有测试文件表格从 1 个入口 `test_all.py(94)` 扩成 7 个条目（meta-runner + 5 个拆分文件 + 原 94 细分仍保留作历史引用）。总计从 267 更新到 301。执行方法段新增 5 个拆分文件的独立命令行示例。test_rpa_unpacker/test_rpyc_decompiler/test_custom_engine 用例数同步到 round 26/28 后的 16/18/19
+310. `docs/dataflow_pipeline.md`：新增"CLI 入口统一路由（round 28 A-H-3）"段落，记录 main.py 现在统一走 `engines.resolve_engine(...).run(args)`，Ren'Py 子分支由 `RenPyEngine.run` 分派到 translators 管线
+311. `docs/dataflow_translate.md`：已有 `fix_nvl_ids_directory()` 引用（第 15 轮添加），无需修改
+312. `CLAUDE.md` 模块图已在 round 28 同步，本轮只更新测试计数行与拆分描述
+313. `HANDOFF.md`：round 29 → 30 handoff，Priority A 保持清空，新增"架构健康度"一栏记录 `test_all.py` 拆分完成、`patch_font_now` 修复
+
+**本轮未做**（留给第 30+ 轮）：
+- CI 增加 Windows runner（外部基础设施）
+- docs/ 其他按需加载文档的深度复查
+- 任何 A-H-3 Medium/Deep 或 S-H-4 Breaking 的进一步推进
 
 ## 已回滚
 
