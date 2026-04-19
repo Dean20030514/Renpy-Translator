@@ -13,6 +13,7 @@
 | [docs/](docs/) | AI 助手 / 开发者 | 按需加载专题文档（数据流、校验、常量、引擎指南、路线图） |
 | [CHANGELOG_RECENT.md](CHANGELOG_RECENT.md) | 开发者 | 最近 3 轮变更详情 + 历史摘要 |
 | [TEST_PLAN.md](TEST_PLAN.md) | 开发者 | 测试覆盖明细、缺口分析、执行方法 |
+| `tests/test_all.py` + 5 拆分文件 | 开发者 | meta-runner 聚合 `test_api_client` / `test_file_processor` / `test_translators` / `test_glossary_prompts_config` / `test_translation_state`（round 29 拆分） |
 | [_archive/](_archive/) | 开发者 | 完整历史文档归档 |
 
 ---
