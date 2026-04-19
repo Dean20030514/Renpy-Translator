@@ -274,6 +274,35 @@ def test_main_cli_strict_conflict_returns_1():
     print("[OK] test_main_cli_strict_conflict_returns_1")
 
 
+def test_merge_rejects_oversized_envelope():
+    """Round 37 M2: ``_load_v2_envelope`` rejects inputs above the 50 MB
+    cap via ``MergeError`` — propagates to CLI exit=1 so an operator
+    passing a malformed / attacker-crafted artefact sees an actionable
+    error instead of the process OOMing on the full read.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        big = td_path / "big.json"
+        # 51 MB sparse file (stat() reports 51 MB; disk allocation
+        # OS-dependent but the size gate fires before the full read).
+        with open(big, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        raised = False
+        try:
+            merge_v2_translations([big], strict=False)
+        except MergeError as e:
+            assert "too large" in str(e), f"M2: unexpected error: {e}"
+            raised = True
+        assert raised, "M2: merge must raise MergeError on oversized input"
+
+        # CLI path: exit=1 from main().
+        rc = main([str(big), "-o", str(td_path / "out.json")])
+        assert rc == 1, "M2: CLI must exit 1 on oversized input"
+    print("[OK] test_merge_rejects_oversized_envelope")
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -291,4 +320,6 @@ if __name__ == "__main__":
     test_main_cli_happy_path()
     test_main_cli_missing_file_returns_1()
     test_main_cli_strict_conflict_returns_1()
+    # Round 37 M2
+    test_merge_rejects_oversized_envelope()
     print("\n=== 全部 v2 merge tool 测试通过 ===")

@@ -48,6 +48,13 @@ class TranslationDB:
     #: when per-entry ``language`` fields + 4-tuple index keys were added.
     SCHEMA_VERSION: int = 2
 
+    #: Round 37 M2: reject translation_db.json files above this size to bound
+    #: memory usage.  A 50 MB DB would hold tens of thousands of entries even
+    #: at verbose status / error_codes fields, so this is orders-of-magnitude
+    #: headroom over legitimate use; anything larger is almost certainly
+    #: malformed or an attacker-crafted artefact worth rejecting up front.
+    _MAX_DB_FILE_SIZE: int = 50 * 1024 * 1024
+
     def __init__(
         self,
         path: Path,
@@ -124,6 +131,25 @@ class TranslationDB:
         """
         with self._lock:
             if not self.path.exists():
+                self.entries = []
+                self._index = {}
+                self._dirty = False
+                return
+            # Round 37 M2: bound memory before read.  Reject oversize DB
+            # files the same way we treat corruption — drop to an empty
+            # in-memory state without overwriting the on-disk copy, so
+            # an operator can inspect and recover if needed.
+            try:
+                file_size = self.path.stat().st_size
+            except OSError:
+                file_size = 0
+            if file_size > self._MAX_DB_FILE_SIZE:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "[DB] %s too large (%d bytes > %d-byte cap), "
+                    "refusing to load to protect memory",
+                    self.path, file_size, self._MAX_DB_FILE_SIZE,
+                )
                 self.entries = []
                 self._index = {}
                 self._dirty = False

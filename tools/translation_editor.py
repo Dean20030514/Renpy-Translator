@@ -45,6 +45,14 @@ from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+# Round 37 M2: reject v2 envelope files referenced by ``v2_path`` above
+# this cap.  The :func:`_apply_v2_edits` reader follows an operator-
+# supplied path (resolved against CWD per M4 whitelist); this cap bounds
+# memory even for legitimate CWD-rooted files that happen to be malformed
+# or huge.  50 MB matches the cap in ``tools/merge_translations_v2.py``
+# / ``core/translation_db.py`` / ``core/font_patch.py`` for consistency.
+_MAX_V2_APPLY_SIZE = 50 * 1024 * 1024
+
 
 # ============================================================
 # Data extraction
@@ -439,6 +447,21 @@ def _apply_v2_edits(
         if not path.is_file():
             logger.warning("[V2-EDIT] file not found, skipping %d edits: %s",
                            len(path_edits), path)
+            skipped += len(path_edits)
+            continue
+        # Round 37 M2: bound memory on the envelope read.  Even after M4
+        # path whitelisting (CWD-rooted only), a legitimate CWD file can
+        # be malformed / huge — this protects the editor process heap.
+        try:
+            file_size = path.stat().st_size
+        except OSError:
+            file_size = 0
+        if file_size > _MAX_V2_APPLY_SIZE:
+            logger.warning(
+                "[V2-EDIT] %s too large (%d bytes > %d-byte cap), "
+                "skipping %d edits",
+                path, file_size, _MAX_V2_APPLY_SIZE, len(path_edits),
+            )
             skipped += len(path_edits)
             continue
         try:

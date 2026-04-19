@@ -42,6 +42,12 @@ from typing import Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Round 37 M2: reject v2 envelope input files above 50 MB to bound memory
+# usage when the caller passes an attacker-crafted or accidentally huge
+# translations.json.  Even a polyglot-translated game DB typically sits
+# in the single-digit MB range, so 50 MB is generous headroom.
+_MAX_V2_ENVELOPE_SIZE = 50 * 1024 * 1024
+
 
 class MergeError(Exception):
     """Raised when merge inputs are incompatible (missing, malformed, v1
@@ -56,6 +62,19 @@ def _load_v2_envelope(path: Path) -> dict:
     """
     if not path.is_file():
         raise MergeError(f"input file not found: {path}")
+    # Round 37 M2: bound memory before the full read — raise with an
+    # actionable message so the CLI propagates exit=1 to the operator.
+    try:
+        file_size = path.stat().st_size
+    except OSError as e:
+        raise MergeError(f"cannot stat {path}: {e}") from e
+    if file_size > _MAX_V2_ENVELOPE_SIZE:
+        raise MergeError(
+            f"{path} too large ({file_size} bytes > {_MAX_V2_ENVELOPE_SIZE} "
+            "byte cap); refuse to load to protect memory. If this is "
+            "legitimate, split the file into smaller language buckets "
+            "before merging."
+        )
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:

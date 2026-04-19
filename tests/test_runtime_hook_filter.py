@@ -10,6 +10,11 @@
   (where r34/r35 override tests live) because that file hit the CLAUDE.md
   800-line soft limit after round 36 H1 added a regression test.
   Conceptually adjacent: both guard the emit pipeline from bad input.
+- Round 37 M2: JSON loader 50 MB caps for ``core.font_patch.load_font_config``
+  and ``tools.translation_editor._apply_v2_edits``.  Two other M2 sites
+  (``core.translation_db.load`` and ``tools.merge_translations_v2``) live
+  in their own test files where theme-matched.  Kept here for the two
+  sites that don't have a natural theme-matched test file.
 
 Kept in a dedicated file because ``tests/test_runtime_hook.py`` is already
 at 794 lines and cannot absorb new tests without overflow.
@@ -125,6 +130,69 @@ def test_sanitise_overrides_rejects_non_finite_floats():
     print("[OK] sanitise_overrides_rejects_non_finite_floats")
 
 
+def test_load_font_config_rejects_oversized_file():
+    """Round 37 M2: ``load_font_config`` rejects files above the 50 MB
+    cap before attempting to read them.  A legitimate font_config.json
+    is a few hundred bytes of gui_overrides / config_overrides; 50 MB+
+    is almost certainly malformed or an attacker-crafted artefact, so
+    returning ``{}`` (treated as "no overrides") is the safe response.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.font_patch import load_font_config
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "font_config.json"
+        # 51 MB sparse file — stat() reports 51 MB without actually
+        # allocating 51 MB on disk (OS-specific but works on NTFS / ext4).
+        with open(p, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        assert load_font_config(p) == {}, (
+            "M2: oversized font_config must return empty dict"
+        )
+    print("[OK] test_load_font_config_rejects_oversized_file")
+
+
+def test_apply_v2_edits_rejects_oversized_envelope():
+    """Round 37 M2: ``_apply_v2_edits`` skips edits whose ``v2_path``
+    points to a file above the 50 MB cap.  Even after the M4 path
+    whitelist (CWD-rooted only) lands, this cap still guards memory
+    against a legitimate CWD-rooted file that happens to be huge /
+    malformed.
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from tools.translation_editor import _apply_v2_edits
+
+    # Create the sparse file UNDER CWD so the M4 path whitelist (round
+    # 37 later commit) still accepts it — this test passes before M4
+    # and after M4 lands.
+    test_dir = Path(tempfile.mkdtemp(prefix="_m2_apply_", dir=str(Path.cwd())))
+    try:
+        p = test_dir / "big.json"
+        with open(p, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        edits = [{
+            "v2_path": str(p),
+            "v2_lang": "zh",
+            "original": "Hi",
+            "new_translation": "\u55e8",
+        }]
+        result = _apply_v2_edits(edits, create_backup=False)
+        assert result["applied"] == 0, (
+            "M2: oversized envelope must not apply edits"
+        )
+        assert result["skipped"] == 1, (
+            "M2: oversized envelope must skip all edits"
+        )
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+    print("[OK] test_apply_v2_edits_rejects_oversized_envelope")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -132,6 +200,9 @@ def run_all() -> int:
         test_build_translations_map_filter_none_means_no_filter,
         # Round 36 H2: non-finite float rejection in _sanitise_overrides
         test_sanitise_overrides_rejects_non_finite_floats,
+        # Round 37 M2: JSON loader 50 MB caps (2 of 4 sites)
+        test_load_font_config_rejects_oversized_file,
+        test_apply_v2_edits_rejects_oversized_envelope,
     ]
     for t in tests:
         t()

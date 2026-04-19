@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 # Only .ttf and .otf are accepted; no hardcoded font names.
 FONT_EXTENSIONS = (".ttf", ".otf")
 
+# Round 37 M2: reject font_config JSON files above 50 MB to bound memory
+# usage when the caller supplies an attacker-crafted or accidentally
+# huge file.  Legitimate font_config.json is typically a few hundred
+# bytes of gui_overrides / config_overrides — 50 MB is several orders
+# of magnitude headroom.
+_MAX_FONT_CONFIG_SIZE = 50 * 1024 * 1024
+
 
 def default_resources_fonts_dir() -> Path:
     """Return canonical absolute path to ``resources/fonts/`` at project root.
@@ -86,6 +93,20 @@ def load_font_config(config_path: "Path | None") -> dict:
     config_path = Path(config_path)
     if not config_path.is_file():
         logger.warning(f"font_config 文件不存在: {config_path}")
+        return {}
+    # Round 37 M2: bound memory before the full read.  A 51 MB font_config
+    # is almost certainly malformed / malicious; reject early so an unwary
+    # operator (or an untrusted artefact generator) cannot blow up the
+    # process heap before JSON parsing even starts.
+    try:
+        file_size = config_path.stat().st_size
+    except OSError:
+        file_size = 0
+    if file_size > _MAX_FONT_CONFIG_SIZE:
+        logger.warning(
+            f"font_config 文件过大（{file_size} 字节 > "
+            f"{_MAX_FONT_CONFIG_SIZE} 字节上限），跳过: {config_path}"
+        )
         return {}
     try:
         return _json.loads(config_path.read_text(encoding="utf-8"))

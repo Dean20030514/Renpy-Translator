@@ -329,6 +329,39 @@ def test_load_backfills_v2_entries_missing_language():
     print("[OK] test_load_backfills_v2_entries_missing_language")
 
 
+def test_load_rejects_oversized_db_file():
+    """Round 37 M2: ``TranslationDB.load()`` rejects files above the 50 MB
+    cap before reading.  Legitimate DB files fit in single-digit MB even
+    at tens of thousands of entries; 50 MB+ is almost certainly malformed
+    or an attacker-crafted artefact.  On rejection the in-memory state
+    stays empty (entries + index + dirty cleared), mirroring the existing
+    "corrupted file" branch so the on-disk file is preserved for recovery.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "db.json"
+        # 51 MB sparse file (stat() reports full size; disk allocation
+        # is OS-dependent, but we only test the size-check gate).
+        with open(p, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        db = TranslationDB(p)
+        db.load()
+        assert db.entries == [], (
+            "M2: oversized DB file must not load entries"
+        )
+        assert db._index == {}, (
+            "M2: oversized DB file must leave index empty"
+        )
+        assert db._dirty is False, (
+            "M2: oversized-file skip must not mark dirty (protect on-disk)"
+        )
+    print("[OK] test_load_rejects_oversized_db_file")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -344,6 +377,8 @@ def run_all() -> int:
         test_save_load_roundtrip_version_bumps_to_2,
         # Round 37 M1: v2 partial-coverage backfill
         test_load_backfills_v2_entries_missing_language,
+        # Round 37 M2: file-size cap (DB-side)
+        test_load_rejects_oversized_db_file,
     ]
     for t in tests:
         t()
