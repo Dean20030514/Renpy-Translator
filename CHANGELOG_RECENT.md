@@ -37,139 +37,9 @@
 - 第二十九轮：Priority B 持续优化 — `tests/test_all.py` 2539 行拆为 5 个聚焦文件 + 49 行 meta-runner（113 tests/1 命令）+ `tools/patch_font_now.py:27` 路径 bug（`__file__.parent` 少一层）修复 + TEST_PLAN/dataflow_pipeline 文档刷新；测试 301 保持
 - 第三十轮：冷启动审计后的 4 项 robustness 加固 — `_SubprocessPluginClient` stderr 10 KB 上限 + Popen 异常 atexit 兜底 + http_pool `except Exception` 收窄 + `retranslator.quality_report` 死代码清理；README/engine_guide 刷新；测试 301→302
 - 第三十一轮：从竞品 renpy_hook_template 提炼 3 项技巧 — checker UI 白名单 / 占位符漂移修正 / strip_tags L5 fallback + inject_hook.rpy 模板（270 行）+ `--emit-runtime-hook` opt-in CLI（core/runtime_hook_emitter.py + 4 管线 tail 统一调用）；测试 302→307
+- 第三十二轮：round 31 续做全包 — UI 白名单可配置化（sidecar JSON + `--ui-button-whitelist`）+ 字体自动打包（emit 时拷 `game/fonts/tl_inject.ttf`）+ `translations.json` v2 多语言 schema（`--runtime-hook-schema v2` + `RENPY_TL_INJECT_LANG` env 选运行时语言）+ Commit 1 prep（抽 `default_resources_fonts_dir` helper 修 `direct.py:523` / `_tl_patches.py:88` 两处 `__file__.parent` 少一层 bug）；测试 307→326
 
 ## 详细记录
-
-### 第三十二轮：round 31 续做全包 — UI 白名单可配置化 + 字体自动打包 + v2 多语言 schema（+ Commit 1 prep 字体路径 bug）
-
-HANDOFF.md round 31 把三项"🟢 延续 round 31 小项"挂起；本轮按用户指定
-一次全做。方案阶段 Plan agent 审查过程中意外发现 **CRITICAL** 级遗留
-bug：`translators/direct.py:523` 和 `translators/_tl_patches.py:88` 的
-`resources/fonts/` 路径 `__file__.parent` 少一层 parent（与 round 29
-修的 `tools/patch_font_now.py` 同类型），源码运行时字体解析静默失败，
-只有 PyInstaller 打包后才能工作。用户批准并入本轮作 Commit 1 prep，故
-本轮共 5 commits，每个 bisect-safe（独立测试通过）。
-
-**Commit 1 · Prep (refactor)：字体路径 helper + 2 处遗留 bug 修复**
-
-329. `core/font_patch.py` 新增 `default_resources_fonts_dir() -> Path`：
-canonical 抽取 `__file__.resolve().parent.parent / "resources" / "fonts"`
-（从 `core/` 出发）。统一 4 个调用者：`pipeline/stages.py:517`（此前已
-正确，迁移保一致）、`tools/patch_font_now.py:34`（round 29 修过，迁移）、
-`translators/direct.py:523`（**bug 修复**）、`translators/_tl_patches.py:88`
-（**同类 bug 修复**）。新增 `test_default_resources_fonts_dir_points_to_project_root`
-守护：断言绝对路径 + 根目录结构 + 至少一个 `.ttf`
-
-**Commit 2 · Subtask A：`--ui-button-whitelist` via sidecar JSON**
-
-330. `file_processor/checker.py`：`COMMON_UI_BUTTONS` frozenset 保持不动
-（现有 `isinstance(..., frozenset)` 测试依赖），新增 `_ui_button_extensions:
-frozenset[str] = frozenset()` 模块级状态 + 4 个 public helper：
-`add_ui_button_whitelist` / `load_ui_button_whitelist` /
-`clear_ui_button_whitelist` / `get_ui_button_whitelist_extensions`。extensions
-在每次 load/add/clear 时**重绑为新 frozenset**（不 mutate）→ Python GIL
-下 attribute rebind 原子，worker 线程读取 `is_common_ui_button` 总能看到
-一致 snapshot。契约：所有加载必须在 `engine.run(args)` 前完成
-331. `load_ui_button_whitelist(paths)` 支持 `.txt`（UTF-8-sig、每行一 token、
-`#` 注释 + 空行跳过）+ `.json`（顶层 list of str）。缺文件 / 解析失败 →
-warning + 跳过，不阻断翻译运行
-332. `main.py` 新增 `--ui-button-whitelist nargs="*"`（仿 `--dict` 风格）+
-config fallback（`ui_button_whitelist` 键）；在 `engine.run(args)` 之前
-`load_ui_button_whitelist(args.ui_button_whitelist)`。`core/config.py`
-`_CONFIG_SCHEMA` 加 `"ui_button_whitelist": {"type": list}`
-333. `core/runtime_hook_emitter.py`：`emit_runtime_hook` 新增
-`ui_button_extensions` kwarg + 共享 `_write_json_atomic` helper。非空时
-原子写 `output/game/ui_button_whitelist.json`，shape `{"extensions":
-[sorted tokens]}`。`emit_if_requested` 调 `get_ui_button_whitelist_extensions`
-拿快照透传
-334. `resources/hooks/inject_hook.rpy` 新增 ~30 行 sidecar reader（与
-`translations.json` 读取对齐的 two-level try/except），`_tl_is_ui_button`
-改为检查 `_UI_BUTTONS` OR `_TL_UI_EXT`。缺 sidecar 时 hook 行为逐字节不变
-335. 测试 +7：`test_file_processor.py` +5（txt/json/builtin_untouched/
-clear_restores/rebinds_frozenset，每条开头 `clear_ui_button_whitelist()`
-保 test 隔离）；`test_translation_state.py` +2（sidecar written when
-non-empty / skipped when empty）
-
-**Commit 3 · Subtask B：font auto-bundle in `emit_runtime_hook`**
-
-336. `emit_runtime_hook` 新增 `font_path: Path | None = None` kwarg。非 None
-且文件存在时：`mkdir output/game/fonts/ -p` + `shutil.copy2(src,
-fonts/tl_inject.ttf)`。文件名固定 `tl_inject.ttf` 匹配 `inject_hook.rpy:244`
-的 `_TL_FONT_REL`。**Cross-platform 同文件处理**：比较 `resolve()` 路径在
-copy 前预判（Windows 同文件 copy 抛 `PermissionError [WinError 32]` 而非
-POSIX 的 `SameFileError`），双保险 `SameFileError` 分支保留
-337. `emit_if_requested` 用 Commit 1 的 `default_resources_fonts_dir()` +
-`resolve_font(dir, args.font_file)` 解析字体路径传给 emitter。`resolve_font`
-返回 None（无 flag 无内建字体）→ 静默跳过。返回签名不变（仍
-`(json_path, hook_path, count)`），font 是 side-effect 只通过文件存在
-断言验证
-338. 测试 +4：`copies_font_when_path_given` / `skips_font_when_none`（None +
-不存在的路径）/ `font_same_file_tolerated`（Windows WinError 32 回归守护）/
-`emit_if_requested_resolves_font_from_args_font_file`
-
-**Commit 4 · Subtask C：`translations.json` v2 nested multi-lang schema**
-
-339. `build_translations_map` 新增 `target_lang="zh"` + `schema_version=1`
-kwargs。v1 保持旧 flat shape byte-identical；v2 返回 `{"_schema_version":
-2, "_format": "renpy-translate", "default_lang": target_lang,
-"translations": {en: {target_lang: zh}}}` 信封。`schema_version ∉ {1,2}`
-→ `ValueError`
-340. `emit_runtime_hook` 新增 `schema_version` + `target_lang` 透传。
-`entry_count` v2 case 数 `translations` 子项数（保持返回语义）。`main.py`
-新增 `--runtime-hook-schema {v1,v2}` choices flag（默认 `"v1"`，与 emitter
-默认对齐保 round 31 行为）。`emit_if_requested` 映射 `"v1"→1 / "v2"→2`，
-未知值安全 fallback v1。`_CONFIG_SCHEMA` 加对应 schema 守护
-341. `inject_hook.rpy` schema 检测 + v2 lookup 分支：
-   - 头部注释更新：v1/v2 部署步骤 + 运行时环境变量表
-   - 加载 `translations.json` 后检测 `_schema_version == 2` → `_TL_SCHEMA=2`、
-     `_TL_TRANSLATIONS` 指向内层 `translations`、`_TL_DEFAULT_LANG` 从 JSON
-   - `_tl_resolve_lang()` 优先级：`RENPY_TL_INJECT_LANG` env → `renpy.preferences.language`
-     （`getattr` + try/except 兜底，`init python early:` 时 preferences 可能
-     未构造；Ren'Py "None" 字符串也过滤）→ `_TL_DEFAULT_LANG`
-   - `_tl_resolve_bucket(bucket)` 从 `{lang: str}` v2 bucket 按优先级选 lang，
-     缺失时退 `default_lang` bucket，仍缺则返回 `None`（caller 回退英文原文）
-   - `_tl_lookup` 按 `_TL_SCHEMA` 分支；v1 路径保持原有 API / 行为
-342. 测试 +7：`build_translations_map` 4 条（`v1_unchanged` / `v2_structure` /
-`v2_respects_target_lang` / `v2_empty_entries`）+ `emit_runtime_hook` 2 条
-（`v2_schema_kwarg_produces_nested_json` / `emit_if_requested_respects_
-runtime_hook_schema_flag`）+ 1 条结构 smoke：`inject_hook_contains_v2_
-reader_markers` 正则扫 `_schema_version` / `RENPY_TL_INJECT_LANG` /
-`_TL_TRANSLATIONS` / `_tl_resolve_lang` / `_tl_resolve_bucket` /
-`default_lang` / `_format` + env var 在 preferences 之前的顺序（Ren'Py 语法
-不可 `py_compile`，所以用 regex smoke 守护）
-
-**Commit 5 · Docs 同步**
-
-343. 本文件（CHANGELOG_RECENT.md）：第 29 轮详细压缩一行并入"演进摘要"；
-30/31/32 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
-344. CLAUDE.md 项目身份段追加 round 32 新能力；`.cursorrules` 同步；
-HANDOFF.md 重写为 32 → 33 交接（测试 307→326、3 项"续做 round 31"
-三项全部 ✅）
-
-**结果**：
-- 14 测试套件 + `tl_parser` 75 + `screen` 51 内建自测全绿；测试 **307 → 326**
-  （+1 Commit 1 / +7 Commit 2 / +4 Commit 3 / +7 Commit 4，合计 +19）
-- 所有新功能 default off：`--ui-button-whitelist` 默认空 /
-  `--runtime-hook-schema` 默认 `v1` / 字体自动打包仅当 `--emit-runtime-hook`
-  开启时生效。既有 tl-mode / direct-mode / retranslate / screen 行为
-  byte-identical
-- **2 个遗留字体路径 bug 顺手修复**（Commit 1 prep）—— 源码运行时也能
-  正确解析 `resources/fonts/`，不再依赖 PyInstaller 打包
-- 源文件增量：`core/font_patch.py` 148→163、`file_processor/checker.py` 515→~615、
-  `core/runtime_hook_emitter.py` 196→~330、`main.py` 259→~275、
-  `resources/hooks/inject_hook.rpy` 270→~345。**仍全部 < 800 行**
-- 未引入任何第三方依赖
-
-**本轮未做**（留给第 33+ 轮）：
-- v2 schema 的多次翻译运行合并工具（把多次 `--target-lang` 的 v2 envelope
-  合并成单一多语言文件 — 本轮只支持单 bucket 生成）
-- `TranslationDB.entries` 加 `language` 字段（当前 v2 在 emit 层手工指定，
-  未来扩多语言源）
-- CI Windows runner（仍是外部基础设施项）
-- docs/constants.md / docs/quality_chain.md / docs/roadmap.md 深度复查
-- A-H-3 Medium/Deep / S-H-4 Breaking（需真实 API + 社区反馈）
-- `inject_hook.rpy` 字体替换的 `--font-config` 信号传递（本轮只打包字体文件，
-  未透传 font size 配置）
 
 ### 第三十三轮：round 32 延续三小项 — v2 merge 工具 + `--font-config` 透传 + editor v2 适配（+ 顺手拆分 test_translation_state）
 
@@ -485,6 +355,158 @@ dir, font_config)` 遍历 `_OVERRIDE_CATEGORIES` 累加安全 key/value 到一
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - CI Windows runner + docs/constants/quality_chain/roadmap 复查（连续 5
   轮欠账）
+
+### 第三十五轮：round 34 延续三小项 — 同次多语言输出 + editor side-by-side + 新 override category
+
+HANDOFF round 34 挂起的三项"🟢 自然延续 round 34 方向（小项）"本轮按用户
+指定一次全做。Subtask 1 比估时略深（11 处 `args.target_lang` 读取点 +
+`tl_mode.py::t.get("zh")` 初看像 bug 实则设计是 prompt 中文专用 + ProgressTracker
+无 language 感知）—— 改造面控制在 main.py 外层循环 + ProgressTracker
+language namespace，不侵入各 pipeline 内部。共 5 commits，每个 bisect-safe。
+
+**Commit 1 · Prep（de-risk）：ProgressTracker language namespace**
+
+389. `core/translation_utils.py::ProgressTracker` 构造器新增 `language:
+str | None = None` kwarg；内部 `_key(rel_path)` helper 返回
+`"<lang>:<rel_path>"`（language 非空时）或 bare rel_path。`is_file_done` /
+`is_chunk_done` 读路径先查 namespaced key 再 fallback bare key（保
+round-34 progress.json resume 不失效）；`mark_chunk_done` / `mark_file_done`
+写路径始终用 namespaced key，`mark_file_done` 同时清 bare 和 namespaced
+两个 bucket 防跨语言污染
+390. 所有生产 ProgressTracker 构造点透传 `language=args.target_lang`
+(4 处)：`translators/direct.py:130` / `translators/tl_mode.py:174` /
+`translators/retranslator.py:369` / `pipeline/stages.py:82`。tl-mode +
+retranslate 实际是中文专用（prompt 硬编码 zh），但仍透传 arg 保对称
++ 为未来 per-language prompt 预留
+391. 测试 +3（`tests/test_translation_state.py`，15 → 18）：
+   - `test_progress_tracker_language_namespace_isolation`（同 file 两
+     language 的 chunk 状态互不见）
+   - `test_progress_tracker_legacy_no_language_backward_compat`（无
+     language kwarg 时 byte-identical round-34 on-disk shape）
+   - `test_progress_tracker_legacy_bare_keys_resume_under_language`
+     （pre-r35 bare-key progress 文件 + language-aware tracker 仍能
+     resume，关键 migration scenario）
+392. **关键澄清**：`translators/tl_mode.py:92` 的 `t.get("zh", "")` 和
+`translators/retranslator.py:284` 的同款读取**不是 latent bug**——
+tl-mode 和 retranslate 的 system prompt（`core/prompts.py::TLMODE_SYSTEM_PROMPT`
++ `RETRANSLATE_SYSTEM_PROMPT`）硬编码中文输出 `"zh"` 字段，这是设计
+（两个模式的 prompt 都是中文专用）。Commit 2 的外循环会在
+`--tl-mode` / `--retranslate` + 多语言组合时显式报错
+
+**Commit 2 · Subtask 1：`--target-lang zh,ja,zh-tw` 多语言外循环**
+
+393. 新 `main._parse_target_langs(raw) -> list[str]`：按逗号分隔；
+trim whitespace；空/None/纯逗号 fallback `["zh"]`；duplicates 保留
+（让 CI 脚本 typo 可见）；BCP-47 hyphen（如 `zh-tw`）不受影响因 split
+只分 `,`。`args.target_langs` 派生字段记这个 list；`args.target_lang`
+保第一个（或唯一）元素，所有下游代码读单值不改
+394. `main.py` 加 guard：`len(args.target_langs) > 1 + (tl-mode /
+retranslate)` → exit 1 并打印 actionable 错误消息，防止把重复中文
+翻译写进 ja/ko/zh-tw buckets
+395. 外循环：包 `engine.run(args)` 在 `for lang in args.target_langs`
+里；每次迭代改 `args.target_lang=lang` + 刷新 `args.lang_config`。
+多语言模式下启动前 warning 提示 N 倍 API 成本
+396. `--target-lang` argparse help 更新示例 + tl-mode/retranslate caveat
+397. 新独立文件 `tests/test_multilang_run.py`（95 行，6 tests，不进
+meta-runner）：parse_target_langs 单元测试 —— single lang / BCP-47
+hyphen / comma-separated / whitespace trim / 空 fallback / duplicates 保留
+
+**Commit 3 · Subtask 2：editor side-by-side 多列显示**
+
+398. `tools/_translation_editor_html.py` toolbar 新增
+`<label id="v2-side-by-side-label" style="display:none"><input type=
+"checkbox" id="v2-side-by-side" onchange="toggleSideBySide(this.checked)">`。
+`initV2UI()` 加 `if (langsSeen.length >= 2)` 判断，只有多语言 envelope
+才 reveal label（单语言 v2 / v1 / tl-mode 导出零侧边栏干扰）
+399. 新 CSS 类 `.col-trans-multi`（13% width，contenteditable +
+dirty + empty-trans 变体）
+400. 新 JS 状态 `_sideBySideOn: bool`；`_v2LangsForSideBySide()` helper
+从 `META[0].v2_langs_seen` 读
+401. `toggleSideBySide(on)`：
+   - ON: flush 当前单列 DOM 的 in-flight edit 到 `_edits`（保 pending
+     不丢）；remove 之前的 `.col-trans-multi` cells；hide 单列
+     `.col-trans` th/td；inject 每语言一列 th + 每 row 每语言一 td
+     （contenteditable，binding handler 直接写 `_edits[idx][lang]`，
+     删除无效 edit 保证 exportEdits 不产 no-op record）；dropdown
+     disabled（不 hide，让 operator 看切回单列时的 baseline lang）
+   - OFF: show 回单列 `.col-trans`；remove injected cells；用
+     `_applyRowFromEdits(tr, idx, _currentV2Lang)` 重渲单列
+402. `_bindSideBySideCellEvents(td, tr, idx, lang)` 每 cell 独立 handler
+监听 input/paste/keydown；row-level modified flag = 任何 cell dirty
+403. 测试 +3（`tests/test_translation_editor.py`，19 → 22）：
+   - `test_side_by_side_toggle_and_styles_present_in_html`（checkbox
+     + toggleSideBySide + `_sideBySideOn` + col-trans-multi CSS 齐全）
+   - `test_side_by_side_label_hidden_by_default`（label 初始 display:
+     none + reveal 门槛 ≥2 langs）
+   - `test_side_by_side_preserves_dropdown_coexistence`（dropdown 不被
+     移除，flush-before-toggle 保 pending）
+
+**Commit 4 · Subtask 3：注册 `config_overrides` category**
+
+404. `core/runtime_hook_emitter.py` 新增 `_SAFE_CONFIG_KEY` 正则
+`r"^config\.[A-Za-z_][A-Za-z_0-9]*$"`——比 gui 更严（**不允许 nested
+`config.sub.X`**，因 Ren'Py 的 `config` 是扁平 module-like namespace）
+405. `_OVERRIDE_CATEGORIES` 新增 `"config_overrides": _SAFE_CONFIG_KEY`
+条目，实现 round 34 挂起的"多 category 分派表"第二项落地。docstring
+明确 `style_overrides` 仍刻意排除（遵 `inject_hook.rpy:34-37` 设计选择）
+406. 值类型政策不变——仍只 int/float（拒 bool/str/list/dict/None）。
+`config.autosave = True` 这类 bool use-case 留给未来 round 扩展
+407. 测试 +1 新 / +2 更新（`tests/test_translation_state.py`，15 → 19）：
+   - `test_sanitise_overrides_unknown_category_ignored` UPDATED：现在
+     既有 `gui_overrides` 也有 `config_overrides` 都 land；
+     `nvl_overrides` / `style_overrides` / `foobar_overrides` 仍被丢弃
+   - `test_override_categories_table_is_extensible` UPDATED：断言
+     `{gui_overrides, config_overrides}` 两条 + 独立验证 config regex
+     扁平命名空间规则（拒 `config.sub.nested`）
+   - `test_config_overrides_emits_assignments` NEW：端到端验证混合
+     safe int/float、unsafe bool、unsafe nested key 情况下只有安全对
+     emit；gui + config 在同一 init 999 block 共存
+
+**Commit 5 · Docs 同步**
+
+408. 本文件（CHANGELOG_RECENT.md）：round 32 详细压缩进"演进摘要"一行；
+33/34/35 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
+409. CLAUDE.md 项目身份段追加 round 35 新能力（`ProgressTracker`
+language namespace、`--target-lang` 逗号分隔多语言、editor side-by-side、
+`config_overrides`）+ 测试数 363 → 376；`.cursorrules` 同步
+410. HANDOFF.md 重写为 35 → 36 交接（测试 376、17 测试套件、round 34
+延续三项全部 ✅）
+
+**结果**：
+- 17 测试套件 + `tl_parser` 75 + `screen` 51 全绿；测试 **363 → 376**
+  （+3 C1 / +6 C2 / +3 C3 / +1 C4，合计 +13）
+- 所有新能力向后兼容：
+  - `ProgressTracker(path)` 旧 1-参构造 + 无 language kwarg = round-34
+    byte-identical 输出；pre-r35 progress 文件在 language-aware 模式
+    下仍 resume（fallback 读 bare key）
+  - 单语言 `--target-lang zh` = round-34 路径不变（外循环 1 iteration）
+  - editor single-language v2 / v1 / tl-mode 导出零 side-by-side chrome
+  - `config_overrides` 是新字段，operator 需显式在 font_config.json 里
+    填才生效
+- 新增文件 1 个：`tests/test_multilang_run.py`（95 行独立 suite）
+- 修改文件 7 个：`core/translation_utils.py`（ProgressTracker language
+  namespace）/ `pipeline/stages.py` + 3 translators（ProgressTracker
+  透传）/ `main.py`（+98 行外循环 + `_parse_target_langs`）/
+  `tools/_translation_editor_html.py`（+155 行 side-by-side） /
+  `core/runtime_hook_emitter.py`（+~16 行 config_overrides）
+- 文件大小检查：最大 `tests/test_translation_editor.py` 751 /
+  `main.py` 360 / `runtime_hook_emitter.py` 649 / `translation_utils.py` 507。
+  全部 < 800
+
+**本轮未做**（留给第 36+ 轮）：
+- tl-mode / retranslate 的 per-language prompt（让 `--tl-mode` +
+  `--target-lang ja` 真实工作，不再 guard 拒绝）—— 需重写两个 system
+  prompt 模板
+- config_overrides 值类型扩 bool（覆盖 `config.autosave=True` 等常见
+  use-case）
+- editor side-by-side N>3 时 mobile 自适应（media query 或自动回
+  dropdown 模式）
+- `_OVERRIDE_CATEGORIES` 第三 category（e.g. 专门的 `preferences_overrides`
+  for `preferences.afm_time` 等，需审查 init 时序）
+- A-H-3 Medium/Deep / S-H-4 Breaking（需真实 API + 游戏验证）
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- CI Windows runner + docs/constants/quality_chain/roadmap 复查（连续
+  6 轮欠账）
 
 ## 已回滚
 
