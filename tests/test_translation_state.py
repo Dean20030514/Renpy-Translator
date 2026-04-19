@@ -938,6 +938,237 @@ def test_inject_hook_contains_v2_reader_markers():
     print("[OK] inject_hook_contains_v2_reader_markers")
 
 
+def test_emit_gui_overrides_rpy_when_font_config_has_overrides():
+    """Round 33 Subtask 2: ``emit_runtime_hook(font_config=...)`` with a
+    non-empty ``gui_overrides`` sub-dict produces
+    ``zz_tl_inject_gui.rpy`` containing an ``init 999 python:`` block
+    that assigns each override and is guarded by ``RENPY_TL_INJECT=1``.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+    font_config = {
+        "gui_overrides": {
+            "gui.text_size": 22,
+            "gui.name_text_size": 24,
+            "gui.interface_text_size": 20.5,
+        }
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        emit_runtime_hook(out_game, entries, font_config=font_config)
+
+        gui_rpy = out_game / "zz_tl_inject_gui.rpy"
+        assert gui_rpy.is_file(), "aux gui override .rpy must be emitted"
+        content = gui_rpy.read_text(encoding="utf-8")
+        assert "init 999 python:" in content
+        # Env var guard so deploying the file with the game is safe.
+        assert 'os.environ.get("RENPY_TL_INJECT") == "1"' in content
+        assert "gui.text_size = 22" in content
+        assert "gui.name_text_size = 24" in content
+        assert "gui.interface_text_size = 20.5" in content
+        # Sorted output for stable diffs.
+        idx_interface = content.find("gui.interface_text_size")
+        idx_name = content.find("gui.name_text_size")
+        idx_text = content.find("gui.text_size")
+        assert 0 < idx_interface < idx_name < idx_text
+        # Primary artefacts still present.
+        assert (out_game / "translations.json").is_file()
+        assert (out_game / "zz_tl_inject_hook.rpy").is_file()
+    print("[OK] emit_gui_overrides_rpy_when_font_config_has_overrides")
+
+
+def test_emit_gui_overrides_rpy_skips_when_empty():
+    """Round 33 Subtask 2: empty / None / missing ``gui_overrides`` must
+    NOT create the aux .rpy — default output stays byte-compatible with
+    round 32 when no gui tuning is requested.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+
+    for cfg in (
+        None,
+        {},
+        {"gui_overrides": {}},
+        {"gui_overrides": None},
+        {"no_gui_overrides_key": {"gui.text_size": 22}},
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            out_game = Path(td) / "game"
+            emit_runtime_hook(out_game, entries, font_config=cfg)
+            assert not (out_game / "zz_tl_inject_gui.rpy").exists(), (
+                f"aux gui rpy must not exist for font_config={cfg!r}"
+            )
+            # Primary artefacts still present.
+            assert (out_game / "translations.json").is_file()
+            assert (out_game / "zz_tl_inject_hook.rpy").is_file()
+    print("[OK] emit_gui_overrides_rpy_skips_when_empty")
+
+
+def test_emit_gui_overrides_rpy_rejects_unsafe_keys():
+    """Round 33 Subtask 2: keys that don't match ``^gui\\.[A-Za-z_]`` must
+    be filtered out.  Guards against arbitrary-code injection via a
+    malicious ``font_config.json``.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+    hostile_config = {
+        "gui_overrides": {
+            # Safe: should land in the output.
+            "gui.text_size": 22,
+            # Unsafe: statement injection.
+            "gui.test; import os; os.system(\"echo pwn\")": 1,
+            # Unsafe: not under gui.
+            "import sys": 1,
+            # Unsafe: expression.
+            "gui.text_size + foo": 1,
+            # Unsafe: empty.
+            "": 99,
+            # Unsafe: whitespace.
+            "gui.text size": 1,
+        }
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        emit_runtime_hook(out_game, entries, font_config=hostile_config)
+
+        gui_rpy = out_game / "zz_tl_inject_gui.rpy"
+        assert gui_rpy.is_file()
+        content = gui_rpy.read_text(encoding="utf-8")
+        # Only the safe key should appear.
+        assert "gui.text_size = 22" in content
+        # Attack vectors must NOT have leaked into the generated code.
+        # (``import os`` legitimately appears in the env-guard wrapper,
+        # so assert on the malicious payloads themselves.)
+        assert "os.system" not in content
+        assert "import sys" not in content
+        assert "echo pwn" not in content
+        assert "gui.text_size + foo" not in content
+        assert "gui.test;" not in content  # the ``gui.test;`` injection key
+        assert "gui.text size" not in content  # whitespace variant
+    print("[OK] emit_gui_overrides_rpy_rejects_unsafe_keys")
+
+
+def test_emit_gui_overrides_rpy_rejects_unsafe_values():
+    """Round 33 Subtask 2: non-numeric values (str / list / dict / bool /
+    None) must be filtered; bool is rejected even though Python's type
+    system says ``isinstance(True, int)``.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+    mixed_config = {
+        "gui_overrides": {
+            "gui.text_size": 22,          # ok — int
+            "gui.name_text_size": 24.0,   # ok — float
+            "gui.choice_text_size": "25", # reject — str
+            "gui.icon_size": [22],         # reject — list
+            "gui.nvl_text_size": {"x": 22},  # reject — dict
+            "gui.hide_bold": True,         # reject — bool
+            "gui.hide_italic": False,      # reject — bool
+            "gui.maybe_none": None,        # reject — None
+        }
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        emit_runtime_hook(out_game, entries, font_config=mixed_config)
+
+        content = (out_game / "zz_tl_inject_gui.rpy").read_text(encoding="utf-8")
+        # Numeric values land.
+        assert "gui.text_size = 22" in content
+        assert "gui.name_text_size = 24.0" in content
+        # Everything else is filtered out.
+        assert "gui.choice_text_size" not in content
+        assert "gui.icon_size" not in content
+        assert "gui.nvl_text_size" not in content
+        assert "gui.hide_bold" not in content
+        assert "gui.hide_italic" not in content
+        assert "gui.maybe_none" not in content
+    print("[OK] emit_gui_overrides_rpy_rejects_unsafe_values")
+
+
+def test_emit_if_requested_resolves_font_config():
+    """Round 33 Subtask 2: ``emit_if_requested`` reads ``args.font_config``
+    path, loads it via ``core.font_patch.load_font_config``, and forwards
+    the dict to the emitter so ``zz_tl_inject_gui.rpy`` appears in output.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+    from core.runtime_hook_emitter import emit_if_requested
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        # Write a minimal font_config.json with gui_overrides.
+        cfg_path = td_path / "font_config.json"
+        cfg_path.write_text(
+            _json.dumps({"gui_overrides": {"gui.text_size": 26}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        db = TranslationDB(td_path / "translation_db.json")
+        db.upsert_entry({
+            "file": "a.rpy", "line": 1, "original": "Hello",
+            "translation": "你好", "status": "ok",
+        })
+
+        args = SimpleNamespace(
+            emit_runtime_hook=True,
+            font_config=str(cfg_path),
+            target_lang="zh",
+        )
+        emit_if_requested(args, td_path, db)
+
+        gui_rpy = td_path / "game" / "zz_tl_inject_gui.rpy"
+        assert gui_rpy.is_file()
+        content = gui_rpy.read_text(encoding="utf-8")
+        assert "gui.text_size = 26" in content
+
+        # Absent args.font_config → no gui rpy.
+        with tempfile.TemporaryDirectory() as td2:
+            td2_path = Path(td2)
+            db2 = TranslationDB(td2_path / "translation_db.json")
+            db2.upsert_entry({
+                "file": "a.rpy", "line": 1, "original": "Hi",
+                "translation": "你好", "status": "ok",
+            })
+            args_noconfig = SimpleNamespace(
+                emit_runtime_hook=True,
+                font_config="",
+            )
+            emit_if_requested(args_noconfig, td2_path, db2)
+            assert not (td2_path / "game" / "zz_tl_inject_gui.rpy").exists()
+            assert (td2_path / "game" / "translations.json").is_file()
+    print("[OK] emit_if_requested_resolves_font_config")
+
+
 def test_default_resources_fonts_dir_points_to_project_root():
     """Round 32 Commit 1: ``default_resources_fonts_dir`` resolves to
     ``<project_root>/resources/fonts`` regardless of which caller imports it.
@@ -1005,6 +1236,12 @@ def run_all() -> int:
         test_emit_runtime_hook_v2_schema_kwarg_produces_nested_json,
         test_emit_if_requested_respects_runtime_hook_schema_flag,
         test_inject_hook_contains_v2_reader_markers,
+        # Round 33 Commit 2 (--font-config → zz_tl_inject_gui.rpy)
+        test_emit_gui_overrides_rpy_when_font_config_has_overrides,
+        test_emit_gui_overrides_rpy_skips_when_empty,
+        test_emit_gui_overrides_rpy_rejects_unsafe_keys,
+        test_emit_gui_overrides_rpy_rejects_unsafe_values,
+        test_emit_if_requested_resolves_font_config,
     ]
     for t in tests:
         t()
