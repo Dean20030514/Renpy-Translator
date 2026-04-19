@@ -39,25 +39,40 @@ logger = logging.getLogger("renpy_translator")
 _SAFE_GUI_KEY = re.compile(r"^gui\.[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*$")
 
 
+# Round 35 Commit 4: safety regex for ``config_overrides`` keys.  Ren'Py's
+# ``config`` namespace is a FLAT module-like object (no ``config.sub.X`` —
+# unlike ``gui``'s potentially-nested structure) so the pattern is tighter:
+# only single-dot identifiers allowed.  Values still restricted to int/float
+# today; a future round can extend to bool for e.g. ``config.autosave``.
+_SAFE_CONFIG_KEY = re.compile(r"^config\.[A-Za-z_][A-Za-z_0-9]*$")
+
+
 # Round 34 Commit 4: generalised dispatch table for ``font_config`` override
-# categories.  Each entry maps a top-level ``font_config`` sub-dict name to
-# the regex its keys must match to be emitted into ``zz_tl_inject_gui.rpy``.
+# categories.  Round 35 Commit 4 registers the second category,
+# ``config_overrides``, now that the infrastructure is proven in prod.
 #
-# Only ``gui_overrides`` is registered today — ``style_overrides`` was
-# evaluated in round-34 planning and deliberately excluded because modifying
-# the style registry at ``init 999`` time contradicts the project-wide
-# design choice documented in ``resources/hooks/inject_hook.rpy:34-37``
-# ("Font-replacement uses only ``config.font_replacement_map``, not
-# style-object monkey-patching").  The dispatch table stays in place so a
-# future round can register additional categories with surgical risk —
-# just add a regex entry below and document the Ren'Py-init-timing
-# implications in the CHANGELOG.
+# Each entry maps a top-level ``font_config`` sub-dict name to the regex
+# its keys must match to be emitted into ``zz_tl_inject_gui.rpy``.  All
+# safe categories share a single aux ``.rpy`` file written at ``init 999``
+# under the ``RENPY_TL_INJECT=1`` env-var guard.
+#
+# ``style_overrides`` remains deliberately excluded because modifying the
+# style registry at ``init 999`` time contradicts the project-wide design
+# choice documented in ``resources/hooks/inject_hook.rpy:34-37`` ("Font-
+# replacement uses only ``config.font_replacement_map``, not style-object
+# monkey-patching").  ``config.X`` by contrast is a plain module attribute
+# assignment supported at any init priority, so it's the natural second
+# category to register.
 #
 # Values are restricted to ``int`` / ``float`` at runtime (see
 # ``_sanitise_overrides``); ``bool`` / ``str`` / ``list`` / ``dict`` /
-# ``None`` are rejected with a warning.
+# ``None`` are rejected with a warning.  Future rounds adding categories
+# should (a) add a regex entry below, (b) extend ``test_override_
+# categories_table_is_extensible`` with the new key, (c) document the
+# Ren'Py init-timing impact in the CHANGELOG.
 _OVERRIDE_CATEGORIES: "dict[str, re.Pattern[str]]" = {
     "gui_overrides": _SAFE_GUI_KEY,
+    "config_overrides": _SAFE_CONFIG_KEY,
 }
 
 

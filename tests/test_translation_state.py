@@ -571,11 +571,11 @@ def test_review_generator_html():
 
 
 def test_sanitise_overrides_unknown_category_ignored():
-    """Round 34 C4: font_config sub-dicts whose key isn't registered in
-    ``_OVERRIDE_CATEGORIES`` must be silently ignored by
+    """Round 34 C4 / Round 35 C4: font_config sub-dicts whose key isn't
+    registered in ``_OVERRIDE_CATEGORIES`` must be silently ignored by
     ``_emit_overrides_rpy`` — no aux rpy emitted for that category.
-    Prevents a malicious / typo'd ``nvl_overrides`` entry from leaking
-    into the generated init-999 block.
+    Prevents a typo'd / malicious ``nvl_overrides`` from leaking into
+    the generated init-999 block.
     """
     import tempfile
     from pathlib import Path
@@ -583,55 +583,109 @@ def test_sanitise_overrides_unknown_category_ignored():
 
     entries = [{"file": "a.rpy", "line": 1, "original": "Hello",
                 "translation": "你好", "status": "ok"}]
-    # Mix: registered category ("gui_overrides") + unregistered
-    # ("nvl_overrides", "config_overrides") — only gui should land.
+    # Mix: registered (``gui_overrides`` + ``config_overrides`` as of
+    # round 35) + unregistered (``nvl_overrides``, ``style_overrides``,
+    # ``foobar_overrides``) — only the registered ones should land.
     cfg = {
         "gui_overrides": {"gui.text_size": 22},
+        "config_overrides": {"config.thoughtbubble_width": 400},
         "nvl_overrides": {"nvl.background": 1},
-        "config_overrides": {"config.thoughtbubble_width": 1},
+        "style_overrides": {"style.default.font_size": 20},
+        "foobar_overrides": {"foobar.anything": 1},
     }
     with tempfile.TemporaryDirectory() as td:
         out_game = Path(td) / "game"
         emit_runtime_hook(out_game, entries, font_config=cfg)
         content = (out_game / "zz_tl_inject_gui.rpy").read_text(encoding="utf-8")
-        # Registered gui_overrides lands.
+        # Registered categories land.
         assert "gui.text_size = 22" in content
-        # Unregistered categories are silently dropped — no key from them
-        # appears in the emitted file.
+        assert "config.thoughtbubble_width = 400" in content
+        # Unregistered categories are silently dropped.
         assert "nvl.background" not in content
-        assert "config.thoughtbubble_width" not in content
+        assert "style.default.font_size" not in content
+        assert "foobar.anything" not in content
     print("[OK] sanitise_overrides_unknown_category_ignored")
 
 
 def test_override_categories_table_is_extensible():
-    """Round 34 C4: ``_OVERRIDE_CATEGORIES`` dispatch table exists and
-    currently registers exactly ``gui_overrides`` with a regex byte-
-    identical to round 33's ``_SAFE_GUI_KEY``.  Regression guard so a
-    future commit that (a) renames the table, (b) silently relaxes the
-    gui-key pattern, or (c) auto-registers ``style_overrides`` without
-    the Ren'Py init-timing review won't slip in unnoticed.
+    """Round 34 C4 / Round 35 C4: ``_OVERRIDE_CATEGORIES`` dispatch table
+    registers ``gui_overrides`` + ``config_overrides`` (round 35 added the
+    second category now that the infrastructure proven in prod).  Regression
+    guard so a future commit that (a) renames the table, (b) silently relaxes
+    any regex, or (c) auto-registers ``style_overrides`` without the Ren'Py
+    init-timing review won't slip in unnoticed.
     """
     from core.runtime_hook_emitter import (
-        _OVERRIDE_CATEGORIES, _SAFE_GUI_KEY,
+        _OVERRIDE_CATEGORIES, _SAFE_GUI_KEY, _SAFE_CONFIG_KEY,
     )
 
     assert isinstance(_OVERRIDE_CATEGORIES, dict)
-    # Exactly one category registered today.
-    assert set(_OVERRIDE_CATEGORIES.keys()) == {"gui_overrides"}
-    # gui regex is the exact same compiled pattern we had in round 33 —
-    # no silent relaxation of the attribute-assignment shape.
+    # Exactly two categories registered today (round 35).
+    assert set(_OVERRIDE_CATEGORIES.keys()) == {"gui_overrides", "config_overrides"}
+    # Identity-check each regex so the dispatch table stays pinned to
+    # the same compiled pattern object (no silent behavioural drift).
     assert _OVERRIDE_CATEGORIES["gui_overrides"] is _SAFE_GUI_KEY
-    # Pattern sanity: accepts common ``gui.X`` / ``gui.X.Y`` forms and
-    # rejects the usual attack shapes.
-    regex = _OVERRIDE_CATEGORIES["gui_overrides"]
+    assert _OVERRIDE_CATEGORIES["config_overrides"] is _SAFE_CONFIG_KEY
+
+    # gui regex: accepts nested dot-paths, rejects attack shapes.
+    gui_re = _OVERRIDE_CATEGORIES["gui_overrides"]
     for ok in ("gui.text_size", "gui.name_text_size", "gui.sub.nested"):
-        assert regex.match(ok), f"gui regex unexpectedly rejects {ok!r}"
+        assert gui_re.match(ok), f"gui regex unexpectedly rejects {ok!r}"
     for bad in ("gui.", "gui.test;drop", "style.default", "gui text_size",
                 "import os", "gui.text_size + 1"):
-        assert regex.match(bad) is None, (
+        assert gui_re.match(bad) is None, (
             f"gui regex unexpectedly accepts {bad!r} (attack shape)"
         )
+
+    # config regex: Ren'Py ``config`` is a FLAT namespace (module-like
+    # object), no nested ``config.sub.X`` form — regex rejects those
+    # on purpose so operators don't end up with malformed assignments.
+    cfg_re = _OVERRIDE_CATEGORIES["config_overrides"]
+    for ok in ("config.thoughtbubble_width", "config.autosave", "config.log"):
+        assert cfg_re.match(ok), f"config regex unexpectedly rejects {ok!r}"
+    for bad in ("config.", "config.sub.nested", "config.test;drop",
+                "gui.text_size", "config text_size", "config.x + 1"):
+        assert cfg_re.match(bad) is None, (
+            f"config regex unexpectedly accepts {bad!r} (attack shape)"
+        )
     print("[OK] override_categories_table_is_extensible")
+
+
+def test_config_overrides_emits_assignments():
+    """Round 35 C4: a ``config_overrides`` sub-dict with safe int/float
+    values emits ``config.X = V`` assignments in the aux rpy's init 999
+    block, sharing the file with ``gui_overrides`` (one combined block
+    per run).
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{"file": "a.rpy", "line": 1, "original": "Hello",
+                "translation": "你好", "status": "ok"}]
+    cfg = {
+        "config_overrides": {
+            "config.thoughtbubble_width": 400,
+            "config.thoughtbubble_offset": 12.5,  # float OK
+            "config.autosave": True,  # bool — rejected per int/float-only rule
+            "config.sub.nested": 1,   # rejected by flat-namespace regex
+        },
+        # Gui entry coexists in the same file.
+        "gui_overrides": {"gui.text_size": 22},
+    }
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        emit_runtime_hook(out_game, entries, font_config=cfg)
+        content = (out_game / "zz_tl_inject_gui.rpy").read_text(encoding="utf-8")
+        # Both categories land in the SAME init 999 block.
+        assert "init 999 python:" in content
+        assert "config.thoughtbubble_width = 400" in content
+        assert "config.thoughtbubble_offset = 12.5" in content
+        assert "gui.text_size = 22" in content
+        # Rejected values / keys absent.
+        assert "config.autosave" not in content
+        assert "config.sub.nested" not in content
+    print("[OK] config_overrides_emits_assignments")
 
 
 def run_all() -> int:
@@ -659,9 +713,11 @@ def run_all() -> int:
         test_translation_db_save_atomic,
         test_translation_db_accepts_line_zero,
         test_review_generator_html,
-        # Round 34 Commit 4 (override dispatch table)
+        # Round 34 Commit 4 / Round 35 Commit 4 (override dispatch table)
         test_sanitise_overrides_unknown_category_ignored,
         test_override_categories_table_is_extensible,
+        # Round 35 Commit 4 (config_overrides registration)
+        test_config_overrides_emits_assignments,
     ]
     for t in tests:
         t()
