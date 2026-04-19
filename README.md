@@ -45,7 +45,10 @@
 - **RPA 打包**：纯标准库生成 RPA-3.0 档案，自动收集翻译文件 + 字体 → 玩家拖入 game/ 即可使用（`python -m tools.rpa_packer`）
 - **HTML 交互式校对**：导出翻译为可编辑 HTML（搜索/过滤/修改跟踪），浏览器中编辑后导入回写（`python -m tools.translation_editor`）
 - **自定义翻译引擎**：`--provider custom --custom-module my_engine` 加载 `custom_engines/` 目录下的 Python 模块，支持批量和单句双接口
+- **插件子进程沙箱（opt-in）**：`--sandbox-plugin` 把自定义插件运行在独立 subprocess 中，通过 JSONL 协议通信，插件无法读取宿主环境变量（如 API key）、文件系统、内存。默认关闭保留 legacy importlib 快路径；新写插件同时兼容两种模式
 - **默认语言自动设置**：流水线打包前自动生成 `default_language.rpy`，玩家首次启动即显示中文
+- **统一引擎入口**：所有引擎（含 Ren'Py / RPG Maker / CSV/JSONL）通过 `engines.resolve_engine(...).run(args)` 单一入口分派；Ren'Py 三条管线（direct/tl/retranslate）+ screen 补充由 `RenPyEngine.run()` 内部路由
+- **TranslationDB 并发安全**：`core/translation_db.py` 使用 `threading.RLock` + `os.replace` 原子写入，支持多线程 `upsert_entry` 无数据竞争；generic_pipeline 的 `ThreadPoolExecutor` 并发翻译路径已验证零冲突
 
 ---
 

@@ -74,3 +74,68 @@
 - logging 前缀：`[ENGINE]` / `[DETECT]` / `[RPGM]` / `[CSV]` / `[PIPELINE]`
 - CLI 参数：小写短横线分隔（`--engine`、`--placeholder-regex`）
 - docstring：中文注释 + 英文 docstring 混合，模块头部有职责说明
+
+## 自定义引擎插件（`--provider custom --custom-module NAME`）
+
+自定义引擎插件是独立于 EngineBase 抽象的另一条扩展轴：插件提供
+**API 调用**（如对接本地 LLM / 非标准 API），而引擎抽象处理
+**格式解析**（提取什么文本 / 怎么回写）。两者正交，典型组合是
+"Ren'Py 引擎 + custom provider"。
+
+### 接口契约
+
+放在 `custom_engines/<module>.py`，实现以下之一：
+
+- `translate_batch(system_prompt: str, user_prompt: str) -> str | list[dict]`
+  （推荐：整批调用，user_prompt 是 JSON 数组）
+- `translate(text: str, source_lang: str, target_lang: str) -> str`
+  （fallback：单句调用，宿主自动组装 JSON 数组）
+
+### 两种运行模式（round 28 S-H-4）
+
+| 模式 | CLI | 隔离级别 | 启动 | 适用场景 |
+|------|------|---------|------|---------|
+| **Legacy（默认）** | `--provider custom --custom-module NAME` | `importlib` 加载到宿主进程 | 零开销 | 信任的插件（自己写的 / 来源明确） |
+| **Sandbox（opt-in）** | `--provider custom --custom-module NAME --sandbox-plugin` | 独立 subprocess + JSONL over stdin/stdout | ~100-150ms 启动 + ~5-15ms/call | 不信任的第三方插件，或处理敏感 API key |
+
+### Sandbox 模式插件模板
+
+为支持 sandbox 模式，插件需要加一个 `__main__` 分支实现 JSONL 协议：
+
+```python
+def translate_batch(system_prompt, user_prompt):
+    # ... your translation logic ...
+    return json.dumps(results, ensure_ascii=False)
+
+def _plugin_serve():
+    """Sandbox mode JSONL loop — read stdin line, write stdout line."""
+    import sys, json
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        if req.get("request_id") == -1:
+            break  # shutdown sentinel
+        try:
+            result = translate_batch(req["system_prompt"], req["user_prompt"])
+            resp = {"request_id": req["request_id"], "response": result, "error": None}
+        except Exception as e:
+            resp = {"request_id": req["request_id"], "response": None, "error": str(e)}
+        print(json.dumps(resp, ensure_ascii=False), flush=True)
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--plugin-serve":
+        _plugin_serve()
+```
+
+完整示例参见 `custom_engines/example_echo.py`。
+
+### 协议细节
+
+- **Request**：`{"request_id": <int>, "system_prompt": <str>, "user_prompt": <str>}`
+- **Response**：`{"request_id": <int>, "response": <str|null>, "error": <str|null>}`
+- **Shutdown**：`{"request_id": -1}` + 关闭 stdin
+- **超时**：宿主使用 `APIConfig.timeout`（默认 180s）；超时则 `proc.kill()` + `wait(2)` 清理
+- **stderr 截断**：插件异常退出时宿主读取 stderr tail（< 10KB），错误消息 ≤ 600 字符（round 30 防 OOM 加固）
