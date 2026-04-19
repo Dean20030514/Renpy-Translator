@@ -47,8 +47,25 @@ class RenPyEngine(EngineBase):
         )
 
     def run(self, args) -> None:
-        """路由到 Ren'Py 的三条管线。"""
+        """Route to the Ren'Py-specific pipelines.
+
+        Handles every combination previously branched on in ``main.py``:
+
+        * ``--tl-mode``             → ``translators.tl_mode.run_tl_pipeline``,
+                                        optionally chained with
+                                        ``run_screen_translate`` when
+                                        ``--tl-screen`` is also set.
+        * ``--tl-screen`` (alone)   → ``translators.screen.run_screen_translate``
+                                        after logging a hint that running
+                                        ``--tl-mode`` first is recommended.
+        * ``--retranslate``         → ``translators.retranslator.run_retranslate_pipeline``.
+        * default                   → ``translators.direct.run_pipeline``.
+
+        Round 28 A-H-3 Minimal: this is the single routing entry point for
+        Ren'Py — ``main.py`` no longer duplicates the logic.
+        """
         tl_mode = getattr(args, "tl_mode", False)
+        tl_screen = getattr(args, "tl_screen", False)
         retranslate = getattr(args, "retranslate", False)
 
         if tl_mode:
@@ -58,6 +75,23 @@ class RenPyEngine(EngineBase):
                 logger.error(f"[ENGINE] 无法加载 tl-mode 模块: {e}")
                 raise
             run_tl_pipeline(args)
+            if tl_screen:
+                try:
+                    from translators.screen import run_screen_translate
+                except ImportError as e:
+                    logger.error(f"[ENGINE] 无法加载 screen 翻译模块: {e}")
+                    raise
+                run_screen_translate(args)
+        elif tl_screen:
+            try:
+                from translators.screen import run_screen_translate
+            except ImportError as e:
+                logger.error(f"[ENGINE] 无法加载 screen 翻译模块: {e}")
+                raise
+            logger.info(
+                "[SCREEN] 建议先运行 --tl-mode 完成主体翻译，再用 --tl-screen 补充 screen 文本"
+            )
+            run_screen_translate(args)
         elif retranslate:
             try:
                 from translators.retranslator import run_retranslate_pipeline

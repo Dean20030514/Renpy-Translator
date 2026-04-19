@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -92,6 +93,9 @@ def main():
                         help="API 提供商（custom 需配合 --custom-module 使用）")
     parser.add_argument("--custom-module", default="", metavar="NAME",
                         help="自定义翻译引擎模块名（位于 custom_engines/ 目录，如 my_engine）")
+    parser.add_argument("--sandbox-plugin", action="store_true",
+                        help="将自定义插件运行在独立子进程中（opt-in 沙箱；"
+                             "默认关闭保持历史 importlib 快路径）")
     parser.add_argument("--api-key", default="", help="API 密钥（dry-run 模式可不填）")
     parser.add_argument("--model", default=None, help="模型名称 (留空使用默认)")
     parser.add_argument("--genre", default=None, choices=['adult', 'visual_novel', 'rpg', 'general'],
@@ -231,33 +235,19 @@ def main():
         logger.error("[ERROR] --retranslate 和 --tl-mode 互斥，不能同时使用")
         sys.exit(1)
 
-    engine_arg = getattr(args, "engine", "auto")
-    if engine_arg in ("auto", "renpy"):
-        # Ren'Py 路径
-        if tl_mode:
-            from translators.tl_mode import run_tl_pipeline
-            run_tl_pipeline(args)
-            if getattr(args, "tl_screen", False):
-                from translators.screen import run_screen_translate
-                run_screen_translate(args)
-        elif getattr(args, "tl_screen", False):
-            from translators.screen import run_screen_translate
-            logger.info("[SCREEN] 建议先运行 --tl-mode 完成主体翻译，再用 --tl-screen 补充 screen 文本")
-            run_screen_translate(args)
-        elif args.retranslate:
-            from translators.retranslator import run_retranslate_pipeline
-            run_retranslate_pipeline(args)
-        else:
-            from translators.direct import run_pipeline
-            run_pipeline(args)
-    else:
-        # 非 Ren'Py 引擎路由
-        from engines.engine_detector import resolve_engine as _resolve_engine
-        engine = _resolve_engine(engine_arg, Path(args.game_dir))
-        if engine is None:
-            logger.error(f"[ERROR] 无法创建引擎: {engine_arg}")
-            sys.exit(1)
-        engine.run(args)
+    # Round 28 A-H-3 Minimal: unified engine routing.  Every engine
+    # (Ren'Py + auto + rpgmaker + csv + jsonl) now goes through the same
+    # ``engines.resolve_engine(...).run(args)`` entry.  Ren'Py-specific
+    # branching (tl_mode / tl_screen / retranslate / direct) lives inside
+    # ``engines/renpy_engine.py::RenPyEngine.run`` so this file holds one
+    # source of truth for the dispatch.
+    engine_arg = getattr(args, "engine", "auto") or "auto"
+    from engines.engine_detector import resolve_engine as _resolve_engine
+    engine = _resolve_engine(engine_arg, Path(args.game_dir))
+    if engine is None:
+        logger.error(f"[ERROR] 无法创建引擎: {engine_arg}")
+        sys.exit(1)
+    engine.run(args)
 
 
 if __name__ == "__main__":
