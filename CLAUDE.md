@@ -3,7 +3,7 @@
 
 ## 项目身份
 
-纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，301 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件（`--sandbox-plugin` 可选 subprocess 沙箱）。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。`core/translation_db.py` 线程安全（RLock）+ 原子写入（temp + os.replace）。`main.py` 所有引擎统一走 `engines.resolve_engine(...).run(args)` 单一入口。`tests/test_all.py` 为 meta-runner，实际测试分布在 5 个聚焦文件（api / file_processor / translators / glossary-prompts-config / translation-state），每个均 < 800 行。
+纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，302 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件（`--sandbox-plugin` 可选 subprocess 沙箱，stderr 读取有 10 KB 上限防 OOM）。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。`core/translation_db.py` 线程安全（RLock）+ 原子写入（temp + os.replace）。`main.py` 所有引擎统一走 `engines.resolve_engine(...).run(args)` 单一入口。`tests/test_all.py` 为 meta-runner，实际测试分布在 5 个聚焦文件（api / file_processor / translators / glossary-prompts-config / translation-state），每个均 < 800 行。
 
 ## 开发原则
 
@@ -67,7 +67,7 @@ tools/   — review_generator / rpa_unpacker / rpa_packer / rpyc_decompiler
 custom_engines/ — 用户自定义翻译引擎插件目录（example_echo.py 示例）
 tests/   — test_all(meta) → api_client(19) + file_processor(33) + translators(24) + glossary_prompts_config(24) + translation_state(13) = 113
            + test_engines(62) + smoke(13) + rpa(16) + rpyc(18) + lint(15) + dedup(10) + batch1(18)
-           + editor(13) + custom(19) + direct_pipeline(2) + tl_pipeline(2) = 301
+           + editor(13) + custom(20) + direct_pipeline(2) + tl_pipeline(2) = 302
 ```
 
 **调用关系图中未标注职责的关键文件**：
