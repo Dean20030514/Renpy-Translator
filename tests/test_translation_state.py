@@ -90,34 +90,46 @@ def test_deduplicate_translations():
 
 
 def test_match_string_entry_fallback():
-    """T49: _match_string_entry_fallback 四层 fallback"""
+    """T49: _match_string_entry_fallback 五层 fallback (round 31 Tier A-3 adds L5)"""
     from core.translation_utils import _match_string_entry_fallback, _build_fallback_dicts
     ft = {
         "Save Game": "保存游戏",
         "  Load Game  ": "读取存档",
         '__RENPY_PH_0__ Settings': "设置",
         'He said \\"hello\\"': "他说了你好",
+        # Round 31 Tier A-3: tag-wrapped variant for the L5 fallback test
+        "{b}Bold Warning{/b}": "加粗警告",
     }
-    ft_stripped, ft_clean, ft_norm = _build_fallback_dicts(ft)
+    ft_stripped, ft_clean, ft_norm, ft_tagstripped = _build_fallback_dicts(ft)
 
     # L1: 精确匹配
-    zh, level = _match_string_entry_fallback("Save Game", ft, ft_stripped, ft_clean, ft_norm)
+    zh, level = _match_string_entry_fallback("Save Game", ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped)
     assert zh == "保存游戏" and level == 0
 
     # L2: strip 匹配
-    zh, level = _match_string_entry_fallback("Load Game", ft, ft_stripped, ft_clean, ft_norm)
+    zh, level = _match_string_entry_fallback("Load Game", ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped)
     assert zh == "读取存档" and level == 2
 
     # L3: 去占位符匹配
-    zh, level = _match_string_entry_fallback("Settings", ft, ft_stripped, ft_clean, ft_norm)
+    zh, level = _match_string_entry_fallback("Settings", ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped)
     assert zh == "设置" and level == 3
 
     # L4: 转义规范化匹配
-    zh, level = _match_string_entry_fallback('He said "hello"', ft, ft_stripped, ft_clean, ft_norm)
+    zh, level = _match_string_entry_fallback('He said "hello"', ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped)
     assert zh == "他说了你好" and level == 4
 
+    # L5 (round 31 Tier A-3): tag-stripped匹配 — lookup key lost the {b}/{/b} wrappers.
+    zh, level = _match_string_entry_fallback(
+        "Bold Warning", ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped,
+    )
+    assert zh == "加粗警告" and level == 5, f"L5 tag-strip failed: zh={zh!r}, level={level}"
+
+    # Backward compat: calling without the 4th dict (pre-round-31 shape) must still work.
+    zh, level = _match_string_entry_fallback("Save Game", ft, ft_stripped, ft_clean, ft_norm)
+    assert zh == "保存游戏" and level == 0, "pre-round-31 call shape broke"
+
     # 无匹配
-    zh, level = _match_string_entry_fallback("Unknown", ft, ft_stripped, ft_clean, ft_norm)
+    zh, level = _match_string_entry_fallback("Unknown", ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped)
     assert zh is None and level == 0
     print("[OK] match_string_entry_fallback")
 
@@ -451,6 +463,81 @@ def test_review_generator_html():
         os.rmdir(tmpdir)
 
 
+def test_runtime_hook_emit_builds_map_and_copies_template():
+    """Round 31 Tier C: ``emit_runtime_hook`` writes a sorted JSON map and
+    copies the hook .rpy; only ``status == 'ok'`` entries contribute.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        entries = [
+            {"file": "a.rpy", "line": 1, "original": "Hello", "translation": "你好", "status": "ok"},
+            {"file": "a.rpy", "line": 2, "original": "World", "translation": "世界", "status": "ok"},
+            # status != "ok" must be filtered out
+            {"file": "a.rpy", "line": 3, "original": "Fail",  "translation": "",    "status": "dropped"},
+            # missing translation must be filtered
+            {"file": "a.rpy", "line": 4, "original": "Empty", "translation": "",    "status": "ok"},
+            # duplicate original keeps first
+            {"file": "b.rpy", "line": 1, "original": "Hello", "translation": "别的", "status": "ok"},
+        ]
+
+        json_path, hook_path, count = emit_runtime_hook(out_game, entries)
+
+        assert count == 2, f"expected 2 unique ok entries, got {count}"
+        assert json_path.exists() and hook_path.exists()
+
+        # JSON content: sorted keys, Unicode preserved, dedup kept first.
+        loaded = _json.loads(json_path.read_text(encoding="utf-8"))
+        assert loaded == {"Hello": "你好", "World": "世界"}, f"unexpected map: {loaded!r}"
+
+        # Hook file is a verbatim copy of the template — check a sentinel
+        # comment from the template header.
+        hook_content = hook_path.read_text(encoding="utf-8")
+        assert "Inject Hook" in hook_content
+        assert "RENPY_TL_INJECT" in hook_content
+        assert "_tl_lookup" in hook_content
+    print("[OK] runtime_hook_emit_builds_map_and_copies_template")
+
+
+def test_runtime_hook_emit_if_requested_respects_flag():
+    """Round 31 Tier C: ``emit_if_requested`` is a no-op unless the
+    argparse namespace has ``emit_runtime_hook=True``.
+    """
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+    from core.runtime_hook_emitter import emit_if_requested
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        out_dir = Path(td)
+        db = TranslationDB(out_dir / "translation_db.json")
+        db.upsert_entry({
+            "file": "a.rpy", "line": 1, "original": "Hello",
+            "translation": "你好", "status": "ok",
+        })
+
+        # Flag off → no files emitted.
+        args_off = SimpleNamespace(emit_runtime_hook=False)
+        emit_if_requested(args_off, out_dir, db)
+        assert not (out_dir / "game" / "translations.json").exists()
+        assert not (out_dir / "game" / "zz_tl_inject_hook.rpy").exists()
+
+        # Flag missing entirely → still no-op.
+        args_none = SimpleNamespace()
+        emit_if_requested(args_none, out_dir, db)
+        assert not (out_dir / "game" / "translations.json").exists()
+
+        # Flag on → emit.
+        args_on = SimpleNamespace(emit_runtime_hook=True)
+        emit_if_requested(args_on, out_dir, db)
+        assert (out_dir / "game" / "translations.json").exists()
+        assert (out_dir / "game" / "zz_tl_inject_hook.rpy").exists()
+    print("[OK] runtime_hook_emit_if_requested_respects_flag")
 
 
 def run_all() -> int:
@@ -469,6 +556,9 @@ def run_all() -> int:
         test_translation_db_save_atomic,
         test_translation_db_accepts_line_zero,
         test_review_generator_html,
+        # Round 31 Tier C (runtime-hook emitter)
+        test_runtime_hook_emit_builds_map_and_copies_template,
+        test_runtime_hook_emit_if_requested_respects_flag,
     ]
     for t in tests:
         t()

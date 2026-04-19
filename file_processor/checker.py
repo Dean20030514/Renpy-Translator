@@ -333,6 +333,12 @@ def _filter_checked_translations(
     """Run ``check_response_item`` on each translation dict and split the
     input into kept / dropped / warnings.
 
+    Round 31 Tier A-2: before invoking the checker, apply
+    ``fix_chinese_placeholder_drift`` in-place across every entry so a
+    translation that would otherwise be dropped solely due to an AI-
+    introduced ``[姓名]`` → ``[name]`` drift can be salvaged.  The fix
+    is idempotent and side-effect-free when no drift exists.
+
     Returns ``(kept, dropped_count, dropped_items, warnings)``.  Empty
     results are returned when ``translations`` is empty — callers never
     need to guard against ``None``.
@@ -342,6 +348,15 @@ def _filter_checked_translations(
     dropped_count = 0
     warnings: list[str] = []
     for t in translations:
+        # Normalise Chinese placeholder drift BEFORE the placeholder-set
+        # comparison inside ``check_response_item`` runs, so fixable
+        # drift doesn't cost us an otherwise-valid translation.
+        for key in ("original", "zh"):
+            val = t.get(key)
+            if val:
+                fixed = fix_chinese_placeholder_drift(val)
+                if fixed != val:
+                    t[key] = fixed
         item_warnings = check_response_item(t, line_offset=line_offset)
         if item_warnings:
             dropped_count += 1
@@ -388,3 +403,113 @@ def _restore_locked_terms_in_translations(
             val = t.get(key)
             if val:
                 t[key] = restore_locked_terms(val, lt_mapping)
+
+
+# ============================================================
+# Round 31 Tier A-1: Common UI button whitelist
+# Ported from `renpy_hook_template_py3.rpy::_youling_is_sensitive_ui_text`.
+# When a translation looks like a standard UI button (OK / Cancel / Save / etc.),
+# translators often force Chinese ("保存") where the game's screen layout was
+# designed around the English string; this warning gives the user a chance to
+# notice.  Strict-Stdlib: just a frozenset + one normalisation function.
+# ============================================================
+
+COMMON_UI_BUTTONS: frozenset[str] = frozenset({
+    "yes", "no", "ok", "cancel", "quit", "return", "exit",
+    "back", "next", "skip", "continue", "retry",
+    "start", "load", "save", "delete", "new game",
+    "main menu", "menu", "preferences", "prefs", "options",
+    "settings", "about", "help", "credits",
+    "auto", "history", "rollback",
+    "confirm", "close", "done", "apply", "reset",
+    "on", "off", "enable", "disable",
+})
+
+
+def is_common_ui_button(text: str) -> bool:
+    """Return True if ``text`` looks like a standard Ren'Py UI button whose
+    English string is often wired to screen layout / hotkeys.
+
+    Normalises case + whitespace before the lookup.  Not intended to be an
+    exhaustive classifier — just a fast "smells like a button" hint.  Extend
+    ``COMMON_UI_BUTTONS`` when real games hit false negatives.
+    """
+    if not isinstance(text, str):
+        return False
+    normalised = " ".join(text.strip().lower().split())
+    return bool(normalised) and normalised in COMMON_UI_BUTTONS
+
+
+# ============================================================
+# Round 31 Tier A-2: Chinese placeholder drift auto-fix
+# Ported from `renpy_hook_template_py3.rpy::_fix_renpy_placeholders`.
+# AI models frequently "helpfully translate" the variable NAME inside Ren'Py
+# placeholders (``[name]`` → ``[名字]``) even though the user_prompt tells
+# them to leave those alone.  When the token isn't protected (e.g. screen-
+# translator short fragments), the output ships with broken Ren'Py syntax.
+# This auto-fix catches the most common drift variants as a belt-and-braces
+# layer on top of ``protect_placeholders`` / ``restore_placeholders``.
+# ============================================================
+
+_CHINESE_PLACEHOLDER_DRIFT_MAP: tuple[tuple[str, str], ...] = (
+    # Square brackets — the canonical Ren'Py variable form.
+    ("[姓名]", "[name]"),
+    ("[名字]", "[name]"),
+    ("[名称]", "[name]"),
+    # Chinese full-width parens the AI likes to produce.
+    ("（姓名）", "[name]"),
+    ("（名字）", "[name]"),
+    ("(姓名)", "[name]"),
+    ("(名字)", "[name]"),
+    # Double curly braces (Ren'Py 8 screen-text variable form).
+    ("{{姓名}}", "{{name}}"),
+    ("{{名字}}", "{{name}}"),
+    ("{{名称}}", "{{name}}"),
+)
+
+
+def fix_chinese_placeholder_drift(text: str) -> str:
+    """Normalise AI-introduced Chinese placeholder variants back to Ren'Py.
+
+    Handles the three forms the upstream competitor hook observed in the wild:
+    ``[姓名]`` / ``[名字]`` / ``[名称]`` → ``[name]``, plus the full-width
+    paren variants ``（姓名）`` and the ``{{姓名}}`` double-curly form.  Each
+    replacement is independent — if ``text`` doesn't contain a drift variant
+    it is returned unchanged.
+
+    Safe to call on strings that don't contain Chinese — pure string replace,
+    no regex, no Unicode normalisation surprises.
+    """
+    if not text:
+        return text
+    for bad, good in _CHINESE_PLACEHOLDER_DRIFT_MAP:
+        if bad in text:
+            text = text.replace(bad, good)
+    return text
+
+
+def _fix_chinese_placeholder_drift_in_translations(
+    translations: list[dict],
+    extra_keys: tuple[str, ...] = (),
+) -> int:
+    """In-place normalise ``fix_chinese_placeholder_drift`` across a list of
+    translation dicts.  Returns the number of entries that were modified
+    (useful for logging / tests).
+
+    Default keys processed are ``original`` and ``zh``; callers that also
+    need ``id`` (tl-mode) can pass it via ``extra_keys``.
+    """
+    keys = ("original", "zh") + extra_keys
+    modified = 0
+    for t in translations:
+        changed = False
+        for key in keys:
+            val = t.get(key)
+            if val:
+                fixed = fix_chinese_placeholder_drift(val)
+                if fixed != val:
+                    t[key] = fixed
+                    changed = True
+        if changed:
+            modified += 1
+    return modified

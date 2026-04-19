@@ -96,6 +96,10 @@ def main():
     parser.add_argument("--sandbox-plugin", action="store_true",
                         help="将自定义插件运行在独立子进程中（opt-in 沙箱；"
                              "默认关闭保持历史 importlib 快路径）")
+    parser.add_argument("--emit-runtime-hook", action="store_true",
+                        help="在输出目录额外生成 translations.json + "
+                             "zz_tl_inject_hook.rpy，供运行时注入模式使用（opt-in）。"
+                             "默认关闭，静态 .rpy 改写流程不受影响")
     parser.add_argument("--api-key", default="", help="API 密钥（dry-run 模式可不填）")
     parser.add_argument("--model", default=None, help="模型名称 (留空使用默认)")
     parser.add_argument("--genre", default=None, choices=['adult', 'visual_novel', 'rpg', 'general'],

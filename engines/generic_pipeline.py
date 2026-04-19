@@ -394,6 +394,13 @@ def run_generic_pipeline(engine, args) -> None:
     except OSError as e:
         logger.warning(f"[PIPELINE] 保存 translation_db 失败: {e}")
 
+    # Round 31 Tier C: opt-in runtime-hook emit (skipped unless --emit-runtime-hook)
+    try:
+        from core.runtime_hook_emitter import emit_if_requested
+        emit_if_requested(args, output_dir, translation_db)
+    except ImportError:
+        pass
+
     translated_count = sum(1 for u in units if u.status == "translated")
     pending_count = sum(1 for u in units if u.status == "pending")
     report = {

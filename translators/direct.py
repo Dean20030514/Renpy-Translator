@@ -496,6 +496,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
     except OSError as e:
         logger.warning(f"[WARN] 保存 translation_db.json 失败: {e}")
 
+    # Round 31 Tier C: opt-in runtime-hook emit (skipped unless --emit-runtime-hook)
+    try:
+        from core.runtime_hook_emitter import emit_if_requested
+        emit_if_requested(args, output_dir, translation_db)
+    except ImportError:
+        pass
+
     # 复制非 .rpy 文件（可选）
     if args.copy_assets:
         logger.info("\n[复制] 复制非 .rpy 文件...")

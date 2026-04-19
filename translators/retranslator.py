@@ -456,6 +456,13 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     except OSError as e:
         logger.warning(f"[WARN] 保存 translation_db 失败: {e}")
 
+    # Round 31 Tier C: opt-in runtime-hook emit (skipped unless --emit-runtime-hook)
+    try:
+        from core.runtime_hook_emitter import emit_if_requested
+        emit_if_requested(args, output_dir, translation_db)
+    except ImportError:
+        pass
+
     elapsed = time.time() - start_time
     logger.info("\n" + "=" * 60)
     logger.info("补翻完成")

@@ -448,6 +448,94 @@ def test_validator_lang_config():
     print("[OK] validator_lang_config")
 
 
+def test_is_common_ui_button():
+    """Round 31 Tier A-1: common UI button detector normalises case + whitespace."""
+    from file_processor import is_common_ui_button, COMMON_UI_BUTTONS
+
+    # Curated buttons from the imported competitor hook list must match.
+    for word in ("OK", "Cancel", "Save", "Quit", "Main Menu", "Preferences"):
+        assert is_common_ui_button(word), f"{word!r} should be detected"
+
+    # Case-insensitive.
+    assert is_common_ui_button("ok")
+    assert is_common_ui_button("OK")
+    assert is_common_ui_button("Ok")
+
+    # Whitespace normalisation.
+    assert is_common_ui_button("  Save  ")
+    assert is_common_ui_button("main   menu")  # collapsed to "main menu"
+
+    # Genuine dialogue must NOT match.
+    assert not is_common_ui_button("Hello world")
+    assert not is_common_ui_button("Save the cat")  # "save" alone matches, multi-word shouldn't
+
+    # Empty / non-string handled gracefully.
+    assert not is_common_ui_button("")
+    assert not is_common_ui_button("   ")
+    assert not is_common_ui_button(None)  # type: ignore[arg-type]
+    assert not is_common_ui_button(42)    # type: ignore[arg-type]
+
+    # Whitelist export has the expected shape.
+    assert isinstance(COMMON_UI_BUTTONS, frozenset)
+    assert "cancel" in COMMON_UI_BUTTONS  # all entries lowercased
+    print("[OK] is_common_ui_button")
+
+
+def test_fix_chinese_placeholder_drift():
+    """Round 31 Tier A-2: AI-introduced Chinese placeholder variants are
+    normalised back to canonical Ren'Py ``[name]`` syntax.
+    """
+    from file_processor import fix_chinese_placeholder_drift
+
+    # Square-bracket drift (most common AI mistake).
+    assert fix_chinese_placeholder_drift("你好，[姓名]！") == "你好，[name]！"
+    assert fix_chinese_placeholder_drift("[名字] 来了") == "[name] 来了"
+    assert fix_chinese_placeholder_drift("再见，[名称]") == "再见，[name]"
+
+    # Full-width parens the AI likes to produce.
+    assert fix_chinese_placeholder_drift("嗨（姓名）") == "嗨[name]"
+    assert fix_chinese_placeholder_drift("嗨(名字)再见") == "嗨[name]再见"
+
+    # Double-curly (Ren'Py 8 screen variable form).
+    assert fix_chinese_placeholder_drift("Hello {{姓名}}") == "Hello {{name}}"
+
+    # Multiple drifts in one string.
+    assert fix_chinese_placeholder_drift(
+        "[姓名]说：我是[名字]"
+    ) == "[name]说：我是[name]"
+
+    # Idempotent — already-correct strings pass through.
+    assert fix_chinese_placeholder_drift("Hello [name]") == "Hello [name]"
+    assert fix_chinese_placeholder_drift("Nothing to fix") == "Nothing to fix"
+    assert fix_chinese_placeholder_drift("") == ""
+    assert fix_chinese_placeholder_drift(None) is None  # type: ignore[arg-type]
+    print("[OK] fix_chinese_placeholder_drift")
+
+
+def test_filter_checked_translations_fixes_placeholder_drift():
+    """Round 31 Tier A-2 integration: ``_filter_checked_translations`` must
+    auto-fix Chinese placeholder drift so otherwise-valid entries aren't
+    dropped by the placeholder-set check.
+    """
+    from file_processor import _filter_checked_translations
+
+    # Before the fix, this entry would fail check_response_item because
+    # ``[name]`` appears in original but ``[姓名]`` appears in zh — they
+    # don't match as placeholders.  After Tier A-2 the filter normalises
+    # zh first so the entry is kept and the zh is canonical.
+    translations = [
+        {"line": 1, "original": "Hello [name]!", "zh": "你好 [姓名]！"},
+        {"line": 2, "original": "Bye [friend]",  "zh": "再见 [friend]"},  # already correct
+    ]
+
+    kept, dropped_count, dropped_items, warnings = _filter_checked_translations(translations)
+
+    assert dropped_count == 0, f"placeholder-drift entry was wrongly dropped: {warnings}"
+    assert len(kept) == 2
+    # Verify the drift was normalised in-place.
+    assert kept[0]["zh"] == "你好 [name]！", f"drift not normalised: {kept[0]['zh']!r}"
+    assert kept[1]["zh"] == "再见 [friend]"
+    print("[OK] filter_checked_translations_fixes_placeholder_drift")
 
 
 def run_all() -> int:
@@ -486,6 +574,10 @@ def run_all() -> int:
         test_replace_string_prefix_strip,
         test_replace_string_escaped_quotes,
         test_validator_lang_config,
+        # Round 31 Tier A (A-1 UI whitelist, A-2 placeholder drift fix)
+        test_is_common_ui_button,
+        test_fix_chinese_placeholder_drift,
+        test_filter_checked_translations_fixes_placeholder_drift,
     ]
     for t in tests:
         t()

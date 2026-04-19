@@ -280,14 +280,41 @@ def _strip_char_prefix(translations: list[dict]) -> None:
 
 _PH_TOKEN_RE = re.compile(r"__RENPY_PH_\d+__")
 
+# Round 31 Tier A-3: Ren'Py inline-tag stripper for fallback key matching.
+# Matches ``{color=#f00}...{/color}``, ``{b}``, ``{size=-10}``, ``{#id}`` etc.
+# Ported in spirit from ``renpy_hook_template_py3.rpy::_strip_tags`` (lines
+# 279-294) — the competitor's bracket-state-machine version is simpler but
+# this regex-driven variant reuses Python's compiled-pattern cache and
+# handles nested cases cleanly.
+_RENPY_TAG_RE = re.compile(r"\{/?[a-zA-Z#!][^}]*\}")
+
+
+def _strip_renpy_tags(text: str) -> str:
+    """Strip Ren'Py inline control tags (``{color}...{/color}``, ``{b}`` …)
+    leaving only the human-readable text.  Used as a 5th-level fallback
+    key when a String entry's tags differ slightly from the translation
+    file (e.g. the AI added a ``{b}`` emphasis wrapper or closed with the
+    short form ``{/}``).  Idempotent and safe on strings with no tags.
+    """
+    if not text:
+        return text
+    return _RENPY_TAG_RE.sub("", text)
+
 
 def _build_fallback_dicts(
     ft: dict[str, str],
-) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-    """为 StringEntry 四层 fallback 匹配预建 3 个查找 dict（O(1) 查找代替 O(n) 遍历）。"""
-    ft_stripped = {}
-    ft_clean = {}
-    ft_norm = {}
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    """为 StringEntry 五层 fallback 匹配预建 4 个查找 dict（O(1) 查找代替 O(n) 遍历）。
+
+    Round 31 Tier A-3: the 4th dict (``ft_tagstripped``) keys every entry
+    by its tag-stripped + whitespace-collapsed form, enabling an extra
+    fallback layer for AI outputs that add / remove / reshape ``{color}`` /
+    ``{b}`` / ``{size}`` wrappers relative to the translation file.
+    """
+    ft_stripped: dict[str, str] = {}
+    ft_clean: dict[str, str] = {}
+    ft_norm: dict[str, str] = {}
+    ft_tagstripped: dict[str, str] = {}
     for k, v in ft.items():
         s = k.strip()
         if s and s not in ft_stripped:
@@ -298,7 +325,13 @@ def _build_fallback_dicts(
         n = k.replace('\\"', '"').replace("\\n", "\n").strip()
         if n and n not in ft_norm:
             ft_norm[n] = v
-    return ft_stripped, ft_clean, ft_norm
+        t = _strip_renpy_tags(k).strip()
+        # Normalise whitespace so "Hello world" matches "Hello  world"
+        # after tag-stripping collapses spacing.
+        t = " ".join(t.split()) if t else t
+        if t and t not in ft_tagstripped:
+            ft_tagstripped[t] = v
+    return ft_stripped, ft_clean, ft_norm, ft_tagstripped
 
 
 def _match_string_entry_fallback(
@@ -307,8 +340,14 @@ def _match_string_entry_fallback(
     ft_stripped: dict[str, str],
     ft_clean: dict[str, str],
     ft_norm: dict[str, str],
+    ft_tagstripped: dict[str, str] | None = None,
 ) -> tuple[str | None, int]:
-    """StringEntry 四层 fallback 匹配。返回 (zh, fallback_level)。"""
+    """StringEntry 五层 fallback 匹配。返回 (zh, fallback_level)。
+
+    ``ft_tagstripped`` defaults to ``None`` for backward compatibility with
+    pre-round-31 callers that only passed 4 dicts; when provided, enables
+    the level-5 tag-stripped match.
+    """
     # L1: 精确匹配
     zh = ft.get(entry_old)
     if zh:
@@ -329,6 +368,14 @@ def _match_string_entry_fallback(
         zh = ft_norm.get(norm)
         if zh:
             return zh, 4
+    # L5 (round 31 Tier A-3): strip Ren'Py tags + whitespace-normalise.
+    if ft_tagstripped:
+        tag_stripped = _strip_renpy_tags(entry_old).strip()
+        tag_stripped = " ".join(tag_stripped.split()) if tag_stripped else tag_stripped
+        if tag_stripped:
+            zh = ft_tagstripped.get(tag_stripped)
+            if zh:
+                return zh, 5
     return None, 0
 
 

@@ -378,7 +378,8 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
             continue
 
         # 预建 fallback 查找表（O(1) 替代 O(n) 遍历）
-        ft_stripped, ft_clean, ft_norm = _build_fallback_dicts(ft)
+        # Round 31 Tier A-3: build 4 dicts (adds ft_tagstripped for the L5 fallback)
+        ft_stripped, ft_clean, ft_norm, ft_tagstripped = _build_fallback_dicts(ft)
 
         matched_entries: list = []
         db_entries: list[dict] = []
@@ -402,9 +403,9 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                         "provider": config.provider,
                         "model": config.model,
                     })
-            else:  # StringEntry — 四层 fallback 匹配（精确 → strip → 去占位符令牌 → 转义规范化）
+            else:  # StringEntry — 五层 fallback（精确 → strip → 去令牌 → 转义 → 去标签，round 31 Tier A-3）
                 zh, fb_level = _match_string_entry_fallback(
-                    entry.old, ft, ft_stripped, ft_clean, ft_norm,
+                    entry.old, ft, ft_stripped, ft_clean, ft_norm, ft_tagstripped,
                 )
                 if zh:
                     if fb_level:
@@ -474,7 +475,8 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                     if not iw and t.get("id") and t.get("zh"):
                         r_kept[t["id"]] = t["zh"]
 
-            r_stripped, r_clean, r_norm = _build_fallback_dicts(r_kept)
+            # Round 31 Tier A-3: 4-dict build + L5 tag-stripped fallback
+            r_stripped, r_clean, r_norm, r_tagstripped = _build_fallback_dicts(r_kept)
             r_matched: list = []
             for entry in r_entries:
                 if isinstance(entry, DialogueEntry):
@@ -485,7 +487,7 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
                         total_translated += 1
                 else:
                     zh, _ = _match_string_entry_fallback(
-                        entry.old, r_kept, r_stripped, r_clean, r_norm,
+                        entry.old, r_kept, r_stripped, r_clean, r_norm, r_tagstripped,
                     )
                     if zh:
                         entry.new = zh
@@ -518,6 +520,13 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
         translation_db.save()
     except OSError as e:
         logger.warning(f"[WARN] 保存 translation_db 失败: {e}")
+
+    # Round 31 Tier C: opt-in runtime-hook emit (skipped unless --emit-runtime-hook)
+    try:
+        from core.runtime_hook_emitter import emit_if_requested
+        emit_if_requested(args, output_dir, translation_db)
+    except ImportError:
+        pass
 
     elapsed = time.time() - start_time
     logger.info("\n" + "=" * 60)
