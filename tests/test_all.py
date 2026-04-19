@@ -2254,6 +2254,155 @@ def test_glossary_scan_renpy_directory():
     print("[OK] test_glossary_scan_renpy_directory")
 
 
+def test_translation_db_concurrent_upsert():
+    """``TranslationDB.upsert_entry`` must be safe under concurrent access.
+
+    Round 26 C-1: with ``threading.RLock`` added, 32 worker threads each
+    inserting 100 unique entries must converge to 3200 distinct entries
+    with the index intact (no lost updates, no index corruption).
+    """
+    import tempfile
+    import threading
+    from pathlib import Path
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        db = TranslationDB(Path(td) / "db.json")
+
+        n_threads = 32
+        per_thread = 100
+        barrier = threading.Barrier(n_threads)
+
+        def worker(tid: int) -> None:
+            barrier.wait()
+            for i in range(per_thread):
+                db.upsert_entry({
+                    "file": f"file_{tid}.rpy",
+                    "line": i + 1,
+                    "original": f"text_{tid}_{i}",
+                    "translation": f"trans_{tid}_{i}",
+                    "status": "ok",
+                })
+
+        threads = [threading.Thread(target=worker, args=(tid,)) for tid in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        expected = n_threads * per_thread
+        assert len(db.entries) == expected, (
+            f"expected {expected} entries, got {len(db.entries)} (race condition?)"
+        )
+        # Every (file, line, original) must be looked up via has_entry.
+        for tid in range(n_threads):
+            for i in range(per_thread):
+                assert db.has_entry(f"file_{tid}.rpy", i + 1, f"text_{tid}_{i}"), (
+                    f"missing entry ({tid}, {i})"
+                )
+        # Index and entries must be consistent.
+        assert len(db._index) == expected, (
+            f"index size {len(db._index)} != entries size {expected}"
+        )
+    print("[OK] test_translation_db_concurrent_upsert")
+
+
+def test_translation_db_save_atomic():
+    """``TranslationDB.save`` must not corrupt an existing on-disk DB when the
+    atomic replace step fails mid-way (round 26 C-2).
+    """
+    import json as _json
+    import os as _os
+    import tempfile
+    from pathlib import Path
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "db.json"
+        db = TranslationDB(db_path)
+        db.upsert_entry({
+            "file": "a.rpy", "line": 1, "original": "hello",
+            "translation": "你好", "status": "ok",
+        })
+        db.save()  # writes a valid DB
+
+        # Snapshot original bytes for later compare.
+        original_bytes = db_path.read_bytes()
+
+        # Add a second entry and force save to fail at os.replace.
+        db.upsert_entry({
+            "file": "b.rpy", "line": 2, "original": "world",
+            "translation": "世界", "status": "ok",
+        })
+
+        real_replace = _os.replace
+        calls = {"n": 0}
+
+        def broken_replace(src, dst):  # noqa: ANN001
+            calls["n"] += 1
+            raise OSError("simulated replace failure")
+
+        _os.replace = broken_replace
+        try:
+            raised = False
+            try:
+                db.save()
+            except OSError:
+                raised = True
+            assert raised, "save() should propagate OSError when os.replace fails"
+        finally:
+            _os.replace = real_replace
+
+        # Original DB file content must be unchanged.
+        assert db_path.read_bytes() == original_bytes, (
+            "db.json content changed after failed atomic save"
+        )
+        # The temp file should have been cleaned up.
+        tmp_path = db_path.with_suffix(db_path.suffix + ".tmp")
+        assert not tmp_path.exists(), f"stale temp file remains: {tmp_path}"
+
+        # The on-disk JSON must still be valid with a single entry.
+        persisted = _json.loads(db_path.read_text(encoding="utf-8"))
+        assert len(persisted["entries"]) == 1, (
+            f"expected 1 persisted entry, got {len(persisted['entries'])}"
+        )
+    print("[OK] test_translation_db_save_atomic")
+
+
+def test_translation_db_accepts_line_zero():
+    """``line=0`` is a legitimate placeholder (generic engines use it for
+    formats without meaningful line numbers); it must no longer be silently
+    dropped (round 26 C-3).
+    """
+    import tempfile
+    from pathlib import Path
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        db = TranslationDB(Path(td) / "db.json")
+        db.upsert_entry({
+            "file": "generic.csv", "line": 0,
+            "original": "Hello, world!",
+            "translation": "你好，世界！",
+            "status": "ok",
+        })
+        assert db.has_entry("generic.csv", 0, "Hello, world!"), (
+            "entry with line=0 must be stored and retrievable"
+        )
+        results = db.filter_by_status(statuses=["ok"])
+        assert any(e["file"] == "generic.csv" and e["line"] == 0 for e in results), (
+            "filter_by_status should include line=0 entries"
+        )
+        # Round-trip through save/load.
+        db.save()
+        db2 = TranslationDB(Path(td) / "db.json")
+        db2.load()
+        assert db2.has_entry("generic.csv", 0, "Hello, world!"), (
+            "line=0 entry must survive save/load round-trip"
+        )
+    print("[OK] test_translation_db_accepts_line_zero")
+
+
 if __name__ == '__main__':
     test_api_config()
     test_usage_stats()
@@ -2381,7 +2530,11 @@ if __name__ == '__main__':
     test_api_client_urllib_rejects_oversized_response()
     # Q: glossary Ren'Py scan (round 25 — T-H-1)
     test_glossary_scan_renpy_directory()
+    # R: translation_db integrity (round 26 — C-1/C-2/C-3)
+    test_translation_db_concurrent_upsert()
+    test_translation_db_save_atomic()
+    test_translation_db_accepts_line_zero()
     print()
     print("=" * 40)
-    print(f"ALL 110 TESTS PASSED")
+    print(f"ALL 113 TESTS PASSED")
     print("=" * 40)
