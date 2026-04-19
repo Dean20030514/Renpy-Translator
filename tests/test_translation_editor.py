@@ -575,6 +575,84 @@ def test_export_edits_multi_language_produces_per_lang_records():
     print("[OK] test_export_edits_multi_language_produces_per_lang_records")
 
 
+def test_side_by_side_toggle_and_styles_present_in_html():
+    """Round 35 C3: exported HTML includes the side-by-side checkbox
+    element, ``toggleSideBySide`` JS function, ``col-trans-multi`` CSS
+    class, and the per-cell event-binding helper.  Regression guard so
+    a future edit silently removing any of these pieces gets caught.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "multi.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは"},
+        }, default_lang="zh")
+        entries = _extract_from_db(v2_path)
+        out = td_path / "review.html"
+        export_html(entries, out)
+        html = out.read_text(encoding="utf-8")
+        # Checkbox + toggle JS + side-by-side helper exist.
+        assert 'id="v2-side-by-side"' in html
+        assert 'onchange="toggleSideBySide(this.checked)"' in html
+        assert "toggleSideBySide" in html
+        assert "_bindSideBySideCellEvents" in html
+        assert "_sideBySideOn" in html
+        # Dedicated CSS class for multi-column translation cells.
+        assert ".col-trans-multi" in html
+    print("[OK] test_side_by_side_toggle_and_styles_present_in_html")
+
+
+def test_side_by_side_label_hidden_by_default():
+    """Round 35 C3: the side-by-side toggle label is rendered with
+    ``style="display:none;"`` in the base HTML; JS reveals it only
+    when the envelope has 2+ languages (so single-bucket v2 files /
+    v1 / tl-mode exports see zero multi-language chrome).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        # Single-language v2 — dropdown visible but side-by-side stays hidden.
+        v2_path = td_path / "one.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好"},
+        }, default_lang="zh")
+        entries = _extract_from_db(v2_path)
+        out = td_path / "single.html"
+        export_html(entries, out)
+        html = out.read_text(encoding="utf-8")
+        # Label wrapper starts display:none in the static HTML.
+        assert 'id="v2-side-by-side-label" style="display:none;"' in html
+        # The JS reveal-predicate references the 2+ threshold.
+        assert "langsSeen.length >= 2" in html
+    print("[OK] test_side_by_side_label_hidden_by_default")
+
+
+def test_side_by_side_preserves_dropdown_coexistence():
+    """Round 35 C3: side-by-side checkbox does NOT replace the round-34
+    dropdown — both live in the toolbar so operators can still use the
+    single-language focus mode after toggling off.  Regression guard so
+    nobody optimises the dropdown out by mistake.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "multi.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは"},
+        }, default_lang="zh")
+        entries = _extract_from_db(v2_path)
+        out = td_path / "review.html"
+        export_html(entries, out)
+        html = out.read_text(encoding="utf-8")
+        # Both UI elements present in the toolbar.
+        assert 'id="v2-lang-switch"' in html
+        assert 'id="v2-side-by-side"' in html
+        # Dropdown's switchV2Language still wired up.
+        assert "switchV2Language" in html
+        # Flush-before-toggle logic (dropdown edits go into _edits before
+        # side-by-side rebuilds the DOM) prevents work loss.
+        assert "flush any in-flight DOM edit" in html
+    print("[OK] test_side_by_side_preserves_dropdown_coexistence")
+
+
 def test_v2_envelope_preserves_non_edited_languages():
     """Round 33 Subtask 3: editing one language bucket must not disturb
     any other language bucket in the same original's dict, nor any
@@ -645,6 +723,10 @@ ALL_TESTS = [
     test_extract_from_v2_exposes_full_languages_dict,
     test_v2_html_includes_language_switch_dropdown,
     test_export_edits_multi_language_produces_per_lang_records,
+    # Round 35 Commit 3 — side-by-side multi-column display
+    test_side_by_side_toggle_and_styles_present_in_html,
+    test_side_by_side_label_hidden_by_default,
+    test_side_by_side_preserves_dropdown_coexistence,
 ]
 
 

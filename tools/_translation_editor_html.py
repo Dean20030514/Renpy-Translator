@@ -45,6 +45,17 @@ tr.hidden { display: none; }
 .col-trans[contenteditable] { outline: none; border: 1px solid transparent; border-radius: 3px; min-height: 1.4em; }
 .col-trans[contenteditable]:focus { border-color: #1976d2; background: #e3f2fd; }
 .col-trans[contenteditable].dirty { background: #fff8e1; }
+/* Round 35 C3: side-by-side multi-language columns (injected dynamically
+ * when the operator ticks the checkbox).  Width divides the 38% footprint
+ * evenly across N languages; narrow viewports collapse gracefully via
+ * word-break but operators should prefer dropdown mode on mobile.
+ */
+.col-trans-multi { width: 13%; white-space: pre-wrap; word-break: break-word; }
+.col-trans-multi[contenteditable] { outline: none; border: 1px solid transparent; border-radius: 3px; min-height: 1.4em; }
+.col-trans-multi[contenteditable]:focus { border-color: #1976d2; background: #e3f2fd; }
+.col-trans-multi[contenteditable].dirty { background: #fff8e1; }
+.col-trans-multi.empty-trans { color: #e53935; font-style: italic; }
+th.col-trans-multi, td.col-trans-multi { font-size: 13px; }
 .empty-trans { color: #e53935; font-style: italic; }
 .file-header { background: #eceff1; padding: 6px 10px; font-weight: bold; font-size: 13px; border-top: 2px solid #b0bec5; }
 .file-header td { padding: 6px 10px; }
@@ -62,6 +73,7 @@ tr.hidden { display: none; }
   <label><input type="checkbox" id="only-empty" onchange="doSearch()"> Untranslated only</label>
   <label><input type="checkbox" id="only-modified" onchange="doSearch()"> Modified only</label>
   <label id="v2-lang-switch-label" style="display:none;">Language:&nbsp;<select id="v2-lang-switch"></select></label>
+  <label id="v2-side-by-side-label" style="display:none;"><input type="checkbox" id="v2-side-by-side" onchange="toggleSideBySide(this.checked)"> Side-by-side</label>
   <button class="btn-warn" onclick="exportEdits()">Export Edits</button>
   <span class="stats" id="stats"></span>
 </div>
@@ -125,7 +137,150 @@ function initV2UI() {
     });
     sel.addEventListener("change", function() { switchV2Language(this.value); });
     document.getElementById("v2-lang-switch-label").style.display = "inline-flex";
+    // Round 35 C3: expose side-by-side toggle only when 2+ languages
+    // exist (single-bucket envelopes don't benefit from multi-column view).
+    if (langsSeen.length >= 2) {
+      document.getElementById("v2-side-by-side-label").style.display = "inline-flex";
+    }
   }
+}
+
+// Round 35 C3: side-by-side mode state.  When ON, extra per-language
+// ``<th>`` / ``<td>`` cells are injected alongside (actually replacing)
+// the single ``.col-trans`` column; when OFF, the original round-34
+// dropdown mode is restored.
+let _sideBySideOn = false;
+
+function _v2LangsForSideBySide() {
+  // Returns the language list (from the first v2 entry's v2_langs_seen).
+  // All v2 entries share the same envelope so it's safe to read from [0].
+  const e = META.find(function(x) { return x.source === "v2"; });
+  return (e && e.v2_langs_seen) ? e.v2_langs_seen : [];
+}
+
+function toggleSideBySide(on) {
+  _sideBySideOn = !!on;
+  const langs = _v2LangsForSideBySide();
+  if (langs.length === 0) return;
+
+  // First: flush any in-flight DOM edit in the currently-visible lang
+  // into _edits so the rebuild below preserves pending work.
+  if (_currentV2Lang) {
+    rows.forEach(function(tr) {
+      const idx = parseInt(tr.dataset.idx);
+      const m = META[idx];
+      if (!m || m.source !== "v2") return;
+      // In dropdown mode, the single .col-trans cell holds the current
+      // value.  In side-by-side mode, each .col-trans-multi holds its
+      // own lang's value — no flush needed (handlers write directly).
+      if (!_sideBySideOn) {
+        const tdT = tr.querySelector(".col-trans");
+        if (!tdT) return;
+        const cur = tdT.textContent.trim();
+        const baseline = _getRowBaseline(idx, _currentV2Lang);
+        if (cur !== baseline) {
+          if (!_edits[idx]) _edits[idx] = {};
+          _edits[idx][_currentV2Lang] = cur;
+        }
+      }
+    });
+  }
+
+  // Rebuild the header row based on the mode.
+  const theadTr = document.querySelector("thead tr");
+  // Remove any previously-injected per-lang th cells.
+  Array.prototype.slice.call(theadTr.querySelectorAll(".col-trans-multi")).forEach(function(n) {
+    n.remove();
+  });
+  const origHeaderTh = theadTr.querySelector("th.col-trans");
+  if (_sideBySideOn) {
+    // Hide the single Translation header; inject one th per language.
+    origHeaderTh.style.display = "none";
+    langs.forEach(function(lang) {
+      const th = document.createElement("th");
+      th.className = "col-trans-multi";
+      th.textContent = lang;
+      theadTr.appendChild(th);
+    });
+  } else {
+    origHeaderTh.style.display = "";
+  }
+
+  // Rebuild body cells for every v2 row.
+  rows.forEach(function(tr) {
+    const idx = parseInt(tr.dataset.idx);
+    const m = META[idx];
+    if (!m || m.source !== "v2") return;
+    // Clear any previously-injected per-lang td cells.
+    Array.prototype.slice.call(tr.querySelectorAll(".col-trans-multi")).forEach(function(n) {
+      n.remove();
+    });
+    const singleTd = tr.querySelector(".col-trans");
+    if (_sideBySideOn) {
+      singleTd.style.display = "none";
+      langs.forEach(function(lang) {
+        const td = document.createElement("td");
+        td.className = "col-trans-multi";
+        td.setAttribute("contenteditable", "true");
+        td.dataset.lang = lang;
+        const baseline = _getRowBaseline(idx, lang);
+        const pending = (_edits[idx] || {})[lang];
+        const value = (pending !== undefined) ? pending : baseline;
+        td.textContent = value || "(empty)";
+        td.classList.toggle("empty-trans", !value);
+        const dirty = (pending !== undefined) && (pending !== baseline);
+        td.classList.toggle("dirty", dirty);
+        _bindSideBySideCellEvents(td, tr, idx, lang);
+        tr.appendChild(td);
+      });
+    } else {
+      singleTd.style.display = "";
+      // Restore dropdown-mode rendering using _currentV2Lang as baseline.
+      _applyRowFromEdits(tr, idx, _currentV2Lang);
+    }
+  });
+
+  // Dropdown switch is meaningless when all langs are visible at once;
+  // disable (but don't hide — it still shows which lang feeds the
+  // single-col view).
+  const sel = document.getElementById("v2-lang-switch");
+  if (sel) sel.disabled = _sideBySideOn;
+
+  updateStats();
+}
+
+function _bindSideBySideCellEvents(td, tr, idx, lang) {
+  // Round 35 C3: per-cell input handler writes to _edits[idx][lang]
+  // directly — no shared ``_currentV2Lang`` to race against because
+  // each cell owns its lang via ``td.dataset.lang``.
+  td.addEventListener("input", function() {
+    const cur = this.textContent.trim();
+    const baseline = _getRowBaseline(idx, lang);
+    const changed = cur !== baseline;
+    this.classList.toggle("dirty", changed);
+    this.classList.toggle("empty-trans", !cur);
+    if (!_edits[idx]) _edits[idx] = {};
+    if (changed) {
+      _edits[idx][lang] = cur;
+    } else {
+      delete _edits[idx][lang];
+    }
+    // Row-level modified flag = ANY of its cells is dirty.
+    const anyDirty = Array.prototype.slice.call(
+      tr.querySelectorAll(".col-trans-multi.dirty")
+    ).length > 0;
+    tr.classList.toggle("modified", anyDirty);
+    tr.dataset.modified = anyDirty ? "1" : "0";
+    updateStats();
+  });
+  td.addEventListener("paste", function(ev) {
+    ev.preventDefault();
+    const text = (ev.clipboardData || window.clipboardData).getData("text/plain");
+    document.execCommand("insertText", false, text);
+  });
+  td.addEventListener("keydown", function(ev) {
+    if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); }
+  });
 }
 
 function _getRowBaseline(idx, lang) {
