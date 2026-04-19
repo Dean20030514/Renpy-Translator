@@ -66,6 +66,8 @@ _CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "use_connection_pool": {"type": bool},
     # Round 32 Commit 2: UI-button whitelist extension files
     "ui_button_whitelist": {"type": list},
+    # Round 32 Commit 4: translations.json schema version selector
+    "runtime_hook_schema": {"type": str, "choices": ["v1", "v2"]},
 }
 
 

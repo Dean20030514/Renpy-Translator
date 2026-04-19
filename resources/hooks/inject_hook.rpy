@@ -7,14 +7,28 @@
 #     translations.json + inject_hook.rpy          →  translated game
 #
 # Deployment (manual):
-#   1. Produce ``translations.json`` (flat ``{ "English": "中文" }`` map).
-#      ``--emit-runtime-hook`` (round 31 Tier C) can generate it from the
-#      tool's ``translation_db.json`` output.
-#   2. Copy BOTH this file and ``translations.json`` into the game's
-#      ``game/`` directory.
-#   3. Launch the game with the env var ``RENPY_TL_INJECT=1`` set.
+#   1. Produce ``translations.json`` using ``--emit-runtime-hook``
+#      (round 31 Tier C, round 32 Subtask C):
+#        v1 schema (default): flat ``{ "English": "中文" }`` map
+#        v2 schema (``--runtime-hook-schema v2``): nested multi-language
+#          envelope ``{"_schema_version": 2, "_format": "renpy-translate",
+#          "default_lang": "zh", "translations": {"English": {"zh": "中文"}}}``
+#   2. (optional, v2) Run additional translation passes with different
+#      ``--target-lang`` values and merge their ``translations`` dicts to
+#      get a single file with ``{zh, zh-tw, ja}`` buckets per string.
+#   3. Copy this file, ``translations.json``, and (optionally)
+#      ``ui_button_whitelist.json`` + ``fonts/tl_inject.ttf`` into the
+#      game's ``game/`` directory.
+#   4. Launch the game with the env var ``RENPY_TL_INJECT=1`` set.
 #      Without the env var, the hook is a no-op — the game runs unmodified,
 #      so shipping this file is safe by default.
+#
+# Runtime environment variables:
+#   RENPY_TL_INJECT       Required; set to "1" to activate the hook.
+#   RENPY_TL_INJECT_LANG  v2 schema only; optional language override
+#                         ("zh" / "zh-tw" / "ja" / ...).  Falls back to
+#                         ``renpy.preferences.language`` then to the JSON's
+#                         ``default_lang``.
 #
 # Differences from the competitor's 737-line YOULING hook:
 #   - Pure stdlib, no YOULING-brand dependency.
@@ -70,9 +84,32 @@ if _TL_INJECT_ACTIVE:
                 sys.stderr.write("[TL-INJECT] failed to load translations.json: %s\n" % _e)
                 _TL_MAP = {}
 
+        # ------------------------------------------------------------------
+        # Round 32 Subtask C: schema detection.  v1 (legacy) is a flat
+        # ``{english: chinese}`` map; v2 wraps the translations in an
+        # envelope with a ``_schema_version`` key so future multi-language
+        # payloads can coexist with the hook.  For v2, ``_TL_TRANSLATIONS``
+        # maps ``english -> {lang: translation}`` instead of directly to the
+        # translation string — all downstream lookups route through
+        # ``_tl_resolve_bucket`` so the language-pick policy lives in one
+        # place.  Behaviour when no envelope is present is byte-identical
+        # to round 31.
+        # ------------------------------------------------------------------
+        _TL_SCHEMA = 1
+        _TL_TRANSLATIONS = _TL_MAP
+        _TL_DEFAULT_LANG = None
+        if isinstance(_TL_MAP, dict) and _TL_MAP.get("_schema_version") == 2:
+            _TL_SCHEMA = 2
+            _nested = _TL_MAP.get("translations")
+            _TL_TRANSLATIONS = _nested if isinstance(_nested, dict) else {}
+            _dl = _TL_MAP.get("default_lang")
+            if isinstance(_dl, str) and _dl:
+                _TL_DEFAULT_LANG = _dl
+
         # Precompute a whitespace-collapsed lookup for robustness.
+        # Value type matches ``_TL_TRANSLATIONS`` — str for v1, dict for v2.
         _TL_MAP_NORM = {}
-        for _k, _v in _TL_MAP.items():
+        for _k, _v in _TL_TRANSLATIONS.items():
             try:
                 _n = " ".join(_k.split())
                 if _n and _n not in _TL_MAP_NORM:
@@ -165,22 +202,76 @@ if _TL_INJECT_ACTIVE:
             return s
 
         # ------------------------------------------------------------------
+        # Round 32 Subtask C: runtime language resolver for v2 schema.
+        # Priority: RENPY_TL_INJECT_LANG env var > renpy.preferences.language
+        # (if set and not the string "None") > default_lang from JSON > None.
+        # Defensive around preferences: at init python early: time on some
+        # Ren'Py builds renpy.preferences may not yet be constructed.
+        # ------------------------------------------------------------------
+        def _tl_resolve_lang():
+            try:
+                _env = os.environ.get("RENPY_TL_INJECT_LANG")
+                if _env:
+                    return _env
+            except Exception:
+                pass
+            try:
+                _prefs = getattr(renpy, "preferences", None)
+                _lang = getattr(_prefs, "language", None) if _prefs is not None else None
+                if _lang and _lang != "None":
+                    return _lang
+            except Exception:
+                pass
+            return _TL_DEFAULT_LANG
+
+        def _tl_resolve_bucket(bucket):
+            """Pick a translation string from a v2 ``{lang: text}`` dict.
+
+            Falls back to ``_TL_DEFAULT_LANG`` if the resolved runtime lang
+            has no entry; returns None if nothing matches (so the caller can
+            degrade to returning the original English).
+            """
+            if not isinstance(bucket, dict):
+                return None
+            try:
+                _lang = _tl_resolve_lang()
+                if _lang and isinstance(bucket.get(_lang), str):
+                    return bucket[_lang]
+                if _TL_DEFAULT_LANG and isinstance(bucket.get(_TL_DEFAULT_LANG), str):
+                    return bucket[_TL_DEFAULT_LANG]
+            except Exception:
+                pass
+            return None
+
+        # ------------------------------------------------------------------
         # Central lookup: exact → whitespace-collapsed fallback → None.
+        # For v1 the map values are strings; for v2 they are ``{lang: text}``
+        # dicts that route through ``_tl_resolve_bucket``.
         # ------------------------------------------------------------------
         def _tl_lookup(s):
             if not isinstance(s, str) or not s:
                 return None
             try:
                 # L1: exact.
-                v = _TL_MAP.get(s)
-                if v:
-                    return _tl_fix_drift(v)
+                v = _TL_TRANSLATIONS.get(s)
+                if v is not None:
+                    if _TL_SCHEMA == 2:
+                        _r = _tl_resolve_bucket(v)
+                        if _r:
+                            return _tl_fix_drift(_r)
+                    elif isinstance(v, str) and v:
+                        return _tl_fix_drift(v)
                 # L2: whitespace-collapsed fallback.
                 n = " ".join(s.split())
                 if n and n != s:
                     v = _TL_MAP_NORM.get(n)
-                    if v:
-                        return _tl_fix_drift(v)
+                    if v is not None:
+                        if _TL_SCHEMA == 2:
+                            _r = _tl_resolve_bucket(v)
+                            if _r:
+                                return _tl_fix_drift(_r)
+                        elif isinstance(v, str) and v:
+                            return _tl_fix_drift(v)
             except Exception:
                 pass
             return None

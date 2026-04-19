@@ -55,16 +55,39 @@ def _iter_translation_pairs(
 
 def build_translations_map(
     entries: Iterable[Mapping[str, object]],
-) -> dict[str, str]:
-    """Collapse a ``TranslationDB.entries`` iterable into a flat
-    ``{original: translation}`` dict.
+    *,
+    target_lang: str = "zh",
+    schema_version: int = 1,
+) -> dict:
+    """Collapse a ``TranslationDB.entries`` iterable into the runtime hook
+    translations JSON payload.
 
-    Deduplication rule: the first successful translation wins (stable
-    across re-runs because ``translation_db.json`` preserves insertion
-    order).  Identical translations across duplicate originals are
+    Deduplication rule (both schemas): the first successful translation wins
+    (stable across re-runs because ``translation_db.json`` preserves
+    insertion order).  Identical translations across duplicate originals are
     harmless; conflicting translations keep the first one and log a
     debug-level notice so a human can investigate if needed.
+
+    Args:
+        entries: ``TranslationDB.entries``-shaped iterable.
+        target_lang: Language code used to key the v2 nested dict.  Ignored
+            for v1.  Defaults to ``"zh"`` to match ``core.config`` defaults.
+        schema_version: 1 → legacy flat ``{original: translation}`` (round
+            31 format); 2 → nested ``{original: {lang: translation}}`` with
+            an ``_schema_version`` / ``_format`` / ``default_lang`` envelope
+            so ``inject_hook.rpy`` can distinguish the two at load time.
+            Default stays v1 so existing runs produce byte-identical output.
+
+    Returns:
+        dict — either the flat v1 map or the v2 envelope, per
+        ``schema_version``.  Callers that serialise the return value
+        downstream (``emit_runtime_hook``) do not need to branch.
     """
+    if schema_version not in (1, 2):
+        raise ValueError(
+            "schema_version must be 1 (flat) or 2 (nested); got %r" % (schema_version,)
+        )
+
     mapping: dict[str, str] = {}
     conflicts = 0
     for original, translation in _iter_translation_pairs(entries):
@@ -82,7 +105,24 @@ def build_translations_map(
             "[TL-INJECT] %d original(s) had conflicting translations; kept first occurrence each",
             conflicts,
         )
-    return mapping
+
+    if schema_version == 1:
+        # v1 flat format — byte-identical to round 31's output.
+        return mapping
+
+    # v2 nested envelope.  Each original is keyed under its language bucket
+    # so future runs for zh-tw / ja can merge their outputs into the same
+    # JSON.  This round only populates one bucket (the caller's target_lang).
+    nested: dict[str, dict[str, str]] = {
+        original: {target_lang: translation}
+        for original, translation in mapping.items()
+    }
+    return {
+        "_schema_version": 2,
+        "_format": "renpy-translate",
+        "default_lang": target_lang,
+        "translations": nested,
+    }
 
 
 def _write_json_atomic(path: Path, data: object) -> None:
@@ -111,6 +151,8 @@ def emit_runtime_hook(
     hook_filename: str = "zz_tl_inject_hook.rpy",
     ui_button_extensions: Iterable[str] | None = None,
     font_path: Path | None = None,
+    schema_version: int = 1,
+    target_lang: str = "zh",
 ) -> tuple[Path, Path, int]:
     """Write ``translations.json`` + copy the inject hook into
     ``output_game_dir``.
@@ -140,6 +182,12 @@ def emit_runtime_hook(
             automatically.  None / missing file → fonts directory NOT
             created.  ``shutil.SameFileError`` (caller passes an already-
             correct destination) is tolerated and silently skipped.
+        schema_version: 1 (default) → flat ``translations.json`` matching
+            round 31 format; 2 → nested multi-language envelope (round 32
+            Subtask C).  Hook reader distinguishes the two via the
+            ``_schema_version`` key.
+        target_lang: Language code used to key v2 buckets.  Ignored for v1.
+            Default ``"zh"`` matches ``core.config.DEFAULTS["target_lang"]``.
 
     Returns:
         (translations_json_path, hook_rpy_path, entry_count)
@@ -163,10 +211,22 @@ def emit_runtime_hook(
         )
 
     # Build map + write translations.json atomically (temp + os.replace)
-    # so an interrupted run never leaves a half-written JSON.
-    mapping = build_translations_map(translation_db_entries)
+    # so an interrupted run never leaves a half-written JSON.  v1 returns a
+    # flat dict; v2 returns an envelope with an ``_schema_version`` key so
+    # the hook can route correctly at load time.
+    payload = build_translations_map(
+        translation_db_entries,
+        target_lang=target_lang,
+        schema_version=schema_version,
+    )
     json_path = output_game_dir / "translations.json"
-    _write_json_atomic(json_path, mapping)
+    _write_json_atomic(json_path, payload)
+    # ``len(mapping)`` in the legacy return shape reflected translation
+    # count; preserve that for v2 by counting ``translations`` entries.
+    if schema_version == 2 and isinstance(payload, dict):
+        entry_count = len(payload.get("translations", {}) or {})
+    else:
+        entry_count = len(payload) if isinstance(payload, dict) else 0
 
     # Round 32 Subtask A: optional UI-button whitelist sidecar.  Written
     # only when the caller supplied non-empty extensions — default output
@@ -223,10 +283,10 @@ def emit_runtime_hook(
     shutil.copy2(str(hook_template_path), str(hook_out))
 
     logger.info(
-        "[TL-INJECT] emitted runtime hook: %d translations → %s (+ %s)",
-        len(mapping), json_path.name, hook_out.name,
+        "[TL-INJECT] emitted runtime hook (schema v%d): %d translations → %s (+ %s)",
+        schema_version, entry_count, json_path.name, hook_out.name,
     )
-    return json_path, hook_out, len(mapping)
+    return json_path, hook_out, entry_count
 
 
 def emit_if_requested(
@@ -286,10 +346,20 @@ def emit_if_requested(
             font_source = resolve_font(default_resources_fonts_dir(), explicit)
         except (ImportError, OSError):
             font_source = None
+        # Round 32 Subtask C: v1 (flat) vs v2 (nested multi-lang) schema.
+        # CLI --runtime-hook-schema is restricted to ["v1", "v2"] via
+        # argparse choices; this mapping must stay aligned with the
+        # argparse default ("v1") so the emitter kwarg default and CLI
+        # default agree — default output stays byte-compatible with r31.
+        schema_raw = str(getattr(args, "runtime_hook_schema", "v1") or "v1").lower()
+        schema_version = 2 if schema_raw == "v2" else 1
+        target_lang = str(getattr(args, "target_lang", "") or "zh") or "zh"
         emit_runtime_hook(
             output_game_dir, entries,
             ui_button_extensions=ui_ext,
             font_path=font_source,
+            schema_version=schema_version,
+            target_lang=target_lang,
         )
     except (OSError, ValueError, FileNotFoundError) as e:
         logger.warning("[TL-INJECT] emit failed, continuing: %s", e)

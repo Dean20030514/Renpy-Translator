@@ -100,6 +100,11 @@ def main():
                         help="在输出目录额外生成 translations.json + "
                              "zz_tl_inject_hook.rpy，供运行时注入模式使用（opt-in）。"
                              "默认关闭，静态 .rpy 改写流程不受影响")
+    parser.add_argument("--runtime-hook-schema", choices=["v1", "v2"], default="v1",
+                        help="translations.json schema 版本（仅在 --emit-runtime-hook 开启时生效）："
+                             "v1=flat {en: zh}（默认，向后兼容）；"
+                             "v2=nested {en: {zh, zh-tw, ja}} 多语言信封，支持 "
+                             "RENPY_TL_INJECT_LANG 运行时切换语言")
     parser.add_argument("--api-key", default="", help="API 密钥（dry-run 模式可不填）")
     parser.add_argument("--model", default=None, help="模型名称 (留空使用默认)")
     parser.add_argument("--genre", default=None, choices=['adult', 'visual_novel', 'rpg', 'general'],
