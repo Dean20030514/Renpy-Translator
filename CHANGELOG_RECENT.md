@@ -29,42 +29,9 @@
 - 第二十一轮：Top 5 HIGH 收敛 — HTTP 连接池（核心 ~90s/600 次握手）+ ProgressTracker 两锁（解除 worker 串行化）+ API Key 走 subprocess env（关闭进程列表泄露）+ 6 条 HTTP 重试 mock 测试 + P1 快照单调性回刷
 - 第二十二轮：测试基础 + 响应体上限 — `MAX_API_RESPONSE_BYTES = 32MB` 硬上限 + `read_bounded` 通用工具（pool + urllib 双路径）+ T-C-3（`test_direct_pipeline`）+ T-H-2（`test_tl_pipeline`）集成测试为 A-H-4 重构铺路；测试 280→286
 - 第二十三轮：A-H-4 Part 1 — `translators/direct.py` 1301 → 584 + 新建 `_direct_chunk` / `_direct_file` / `_direct_cli` 三个子模块；re-export 保持公共 API，T-C-3 集成测试护航零回归
+- 第二十四轮：A-H-4 Part 2 — `translators/tl_mode.py` 928 → 558（+ `_tl_patches` / `_tl_dedup`），`translators/tl_parser.py` 1106 → 532（+ `_tl_postprocess` / `_tl_nvl_fix` / `_tl_parser_selftest`）；286 测试零回归
 
 ## 详细记录
-
-### 第二十四轮：A-H-4 Part 2 — tl_mode.py + tl_parser.py 拆分
-
-**tl_mode.py 拆分**（928 行 → 3 个模块，均 < 800 行）：
-
-252. 新建 `translators/_tl_patches.py`（232 行）：搬迁 `_LANG_BUTTON_SNIPPET` + `_clean_rpyc` + `_apply_tl_game_patches` + `_inject_language_buttons`。四项共同特征：都对 `game_dir` 做预翻译期的副作用修改（拷贝字体 / 写 none_overlay.rpy / 改 gui.rpy / 注入 Language 按钮 / 清 rpyc 缓存），作为一组 game-dir 补丁操作聚合
-253. 新建 `translators/_tl_dedup.py`（200 行）：搬迁 `DEDUP_MIN_LENGTH` + `DedupResult` + `dedup_tl_entries` + `apply_dedup_translations` + `build_tl_chunks`。形成完整的"去重 → chunk 装配 → AI 翻译后复用"三步管线
-254. 重写 `translators/tl_mode.py`（928 → 558 行）：保留 `_translate_one_tl_chunk`（tl-mode 专用 chunk 级函数）+ `run_tl_pipeline` 编排 + re-export。所有 `_apply_tl_game_patches` / `dedup_tl_entries` / `build_tl_chunks` 等现有外部引用通过 re-export 透明工作
-
-**tl_parser.py 拆分**（1106 行 → 4 个模块，均 < 800 行）：
-
-255. 新建 `translators/_tl_postprocess.py`（106 行）：搬迁 `postprocess_tl_file` + `postprocess_tl_directory`。独立一套 `_RE_TRANSLATE_BLOCK` 正则（避免循环依赖），负责翻译后 ``nvl clear`` 清理和空 translate 块补 ``pass``
-256. 新建 `translators/_tl_nvl_fix.py`（152 行）：搬迁 `_compute_say_only_hash` + `_compute_nvl_say_hash` + `fix_nvl_translation_ids` + `fix_nvl_ids_directory`。Ren'Py 8.6+ → 7.x 翻译块 ID 兼容层，独立的自足模块
-257. 新建 `translators/_tl_parser_selftest.py`（426 行）：搬迁原 `_run_self_tests`（含 12 组、75 条断言）。改造为可被外部调用的 `run_self_tests()` 函数 + `__main__` block。搬出原因：若与 tl_parser.py 合在一起将使后者仍超 800 行
-258. 重写 `translators/tl_parser.py`（1106 → 532 行）：保留数据类（`DialogueEntry` / `StringEntry` / `TlParseResult`）+ 常量/正则 + `_sanitize_translation` / `extract_quoted_text` / `parse_tl_file` / `scan_tl_directory` / `get_untranslated_entries` / `fill_translation` / `print_tl_stats` + re-export + 瘦身的 `__main__` block
-
-**兼容性**：
-- 支持 `python translators/tl_parser.py --test` 直接运行：`__main__` 前用 `__package__ in (None, '')` 检测脚本模式并临时把项目根加到 `sys.path`，让 re-export 的包导入正常工作
-- `translators.tl_mode` 继续暴露 `run_tl_pipeline` / `_translate_one_tl_chunk` / `dedup_tl_entries` / `apply_dedup_translations` / `build_tl_chunks` / `DedupResult` / `DEDUP_MIN_LENGTH` / `_apply_tl_game_patches` / `_inject_language_buttons` / `_clean_rpyc` / `_LANG_BUTTON_SNIPPET`
-- `translators.tl_parser` 继续暴露 `postprocess_tl_file` / `postprocess_tl_directory` / `_compute_say_only_hash` / `_compute_nvl_say_hash` / `fix_nvl_translation_ids` / `fix_nvl_ids_directory`
-- 下游 `main.py` / `engines/renpy_engine.py` / `tools/translation_editor.py` / `tests/test_all.py` / `tests/test_tl_dedup.py` / `tests/test_tl_pipeline.py` / `tests/test_translation_editor.py` 零修改
-
-**结果**：
-- 7 个 `translators/` 目标文件的总行数由 `direct.py + tl_mode.py + tl_parser.py = 3335` 行 → 4 个原文件 + 7 个新子模块 = 约 2800 行有效代码（import/docstring 增量 ~550 行，换来每文件 < 800 行）
-- 全套 12 测试套件 286/286 全绿，`python -m translators.tl_parser --test` 75/75 绿，零回归
-
-**本轮不新增测试**：第 22 轮预埋的 T-C-3（`test_direct_pipeline`）+ T-H-2（`test_tl_pipeline`）+ `test_tl_dedup` 三组集成测试在拆分前后持续绿色，满足"A-H-4 回归保护"目标
-
-**A-H-4 目标达成**：
-- direct.py 1301 → 584（第 23 轮）+ _direct_chunk/file/cli
-- tl_mode.py 928 → 558（第 24 轮）+ _tl_patches/_tl_dedup
-- tl_parser.py 1106 → 532（第 24 轮）+ _tl_postprocess/_tl_nvl_fix/_tl_parser_selftest
-- **A-H-4 计划覆盖的三大目标文件**（direct / tl_mode / tl_parser）均 < 800 行
-- 遗留项：`translators/screen.py`（877 行）不在本轮 A-H-4 计划内，留给第 26+ 轮处理
 
 ### 第二十五轮：HIGH/MEDIUM 剩余项批量收敛
 
@@ -137,6 +104,34 @@
 - A-H-3：`translators/` 与 `engines/` 两套概念统一（大重构）
 - S-H-4：插件 subprocess 沙箱真正隔离
 - A-H-5：`tools/font_patch` 迁移到 `core/`（与 A-H-2 耦合，建议联合处理）
+
+### 第二十七轮：分层收尾 — A-H-2（反向依赖消除）+ A-H-5（font_patch 迁移）
+
+第 26 轮遗留的两项分层违规一次性收敛，纯 import 调整，零行为变化、零测试新增需求。
+
+**A · A-H-2 消除 `core/translation_utils.py` 对 `file_processor/` 的反向依赖**：
+
+280. 把三个 wrapper 函数下沉到 `file_processor/checker.py`（紧邻其委托的纯函数）：`_filter_checked_translations`（调用 `check_response_item`）、`_restore_placeholders_in_translations`（调用 `restore_placeholders`）、`_restore_locked_terms_in_translations`（调用 `restore_locked_terms`）。下沉后 file_processor 更自足，core 不再需要反向 import
+281. 从 `core/translation_utils.py` 移除顶部 `from file_processor import (check_response_item, restore_placeholders)` 和函数内局部 `from file_processor.checker import restore_locked_terms`，并删除 3 个被搬走的 wrapper。`core/` 现在只剩 ProgressTracker / TranslationContext / ChunkResult / TranslationCache / dedup / strip 等进度-上下文-缓存层抽象
+282. `file_processor/__init__.py` 加入三个新符号到 re-export 列表 + `__all__`
+283. 更新 5 处调用方：`translators/_direct_chunk.py` / `translators/_direct_file.py` / `translators/tl_mode.py` / `translators/retranslator.py` / `tests/test_all.py`（两处 local import） — 全部从 `core.translation_utils` 改为 `file_processor` 导入
+
+**B · A-H-5 `tools/font_patch.py` → `core/font_patch.py`**：
+
+284. `git mv tools/font_patch.py core/font_patch.py`（147 行，3 个公共函数，纯 stdlib 依赖；层级上本就属于 core 基础设施，错位于 tools/ 导致 `translators/direct.py` 和 `translators/_tl_patches.py` 发生 `translators → tools` 的反向依赖）
+285. 更新 5 处 import：`pipeline/stages.py:16`、`translators/direct.py:36`、`translators/_tl_patches.py:26 + 86`、`tools/patch_font_now.py:13`（后者是 CLI 单次运行脚本，消费者侧更新即可；无需保留 shim）
+286. `build.py` PyInstaller hidden-imports 清单：`tools.font_patch` → `core.font_patch`
+
+**结果**：
+- 12 测试套件 + tl_parser 75 自测全绿，总数保持 293（纯重构、无新增测试）
+- `core/` ↔ `file_processor/` 之间仅剩单向依赖（file_processor → nothing，core/translation_utils → nothing in file_processor）
+- `translators/` 对 `tools/` 的唯一反向依赖（font_patch）消除；`translators/` 现在只依赖 `core/` 和 `file_processor/`，符合分层契约
+- 新增 `core/font_patch.py` 占 147 行，`core/` 仍维持"基础设施"定位
+
+**本轮未做**（留给第 28+ 轮）：
+- A-H-3：`translators/` 与 `engines/` 两套平行概念合并（大重构，4+h，改变默认 engine 路由）
+- S-H-4：插件 subprocess 沙箱真正隔离（需完整 IPC / Capabilities 设计）
+- 如未来 `file_processor/checker.py` 超过 500 行，可考虑把下沉的 3 个 wrapper 再提到独立的 `file_processor/translations.py` 文件
 
 ## 已回滚
 

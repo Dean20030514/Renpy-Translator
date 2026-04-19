@@ -54,12 +54,12 @@ main.py (CLI 入口 + --engine 路由)
   └── core/ 共享基础设施
        ├── core/api_client.py（含自定义引擎加载）/ core/prompts.py / core/glossary.py
        ├── core/translation_db.py / core/translation_utils.py
-       ├── core/config.py / core/lang_config.py
+       ├── core/config.py / core/lang_config.py / core/font_patch.py
        ├── core/http_pool.py（HTTPS 线程本地连接池） / core/pickle_safe.py（白名单反序列化）
        ├── file_processor/ (splitter/patcher/checker/validator)
        └── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线 + lint 修复 + 默认语言)
 
-tools/   — font_patch / review_generator / rpa_unpacker / rpa_packer / rpyc_decompiler
+tools/   — review_generator / rpa_unpacker / rpa_packer / rpyc_decompiler
            renpy_lint_fixer / renpy_upgrade_tool / translation_editor
            verify_alignment / revalidate / patch_font_now / analyze_writeback
 custom_engines/ — 用户自定义翻译引擎插件目录（example_echo.py 示例）
