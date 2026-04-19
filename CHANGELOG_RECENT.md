@@ -30,34 +30,9 @@
 - 第二十二轮：测试基础 + 响应体上限 — `MAX_API_RESPONSE_BYTES = 32MB` 硬上限 + `read_bounded` 通用工具（pool + urllib 双路径）+ T-C-3（`test_direct_pipeline`）+ T-H-2（`test_tl_pipeline`）集成测试为 A-H-4 重构铺路；测试 280→286
 - 第二十三轮：A-H-4 Part 1 — `translators/direct.py` 1301 → 584 + 新建 `_direct_chunk` / `_direct_file` / `_direct_cli` 三个子模块；re-export 保持公共 API，T-C-3 集成测试护航零回归
 - 第二十四轮：A-H-4 Part 2 — `translators/tl_mode.py` 928 → 558（+ `_tl_patches` / `_tl_dedup`），`translators/tl_parser.py` 1106 → 532（+ `_tl_postprocess` / `_tl_nvl_fix` / `_tl_parser_selftest`）；286 测试零回归
+- 第二十五轮：七项 HIGH/MEDIUM 收敛 — A-H-1 尾巴（pipeline StageError 反向 import）+ A-H-6（UsageStats.to_dict）+ S-H-3（api_key_file 路径校验）+ PF-H-2（direct.py log 句柄复用）+ PF-C-2（validator 正则预编译）+ T-H-1 / T-H-3 新测试；测试 286→288
 
 ## 详细记录
-
-### 第二十五轮：HIGH/MEDIUM 剩余项批量收敛
-
-**架构收尾**：
-
-259. [A-H-1 尾巴] `pipeline/stages.py:235, 332` 两处 `from one_click_pipeline import StageError` 改为 `from pipeline.helpers import StageError`。彻底消除 `pipeline/` 子包对顶层 `one_click_pipeline.py` 的反向依赖——此前 StageError 虽然能通过 `one_click_pipeline` 的 re-export 工作，但违反分层模型
-260. [A-H-6] `core/api_client.UsageStats` 新增 `to_dict()` 方法返回结构化快照；`engines/generic_pipeline.py:402` 从 `summary()`（人读字符串，含价格免责声明）改用 `to_dict()`。`pipeline_report.json` 的 `api_usage` 字段从**字符串**变成**结构化对象**（含 provider / model / requests / tokens / cost_usd / pricing_exact），下游 CI/HTML 报告可直接消费
-
-**安全**：
-
-261. [S-H-3] `core/config.py::Config.resolve_api_key` 抽出 `_read_api_key_file(key_file)` 辅助方法，增加三层防护：(1) `Path(...).expanduser().resolve(strict=False)` 规范化；(2) 拒绝指向 `C:/Windows` / `/etc` / `/proc` / `/sys` / `/root` 的路径并 warning；(3) 8 KB 大小上限（合理 Key < 200 字节，留 40× 余量）。防"恶意配置文件诱导任意文件读取"，所有失败路径都记 logger.warning 并返回空串
-
-**性能**：
-
-262. [PF-H-2] `translators/direct.py::run_pipeline` 的 `log()` 函数改为开一次句柄复用：`open(_log_path, 'a')` 存为 `log_fp`，`log(msg)` 直接 write+flush，函数末尾 close。消除 Windows 上 NTFS 元数据更新 + Defender 扫描带来的每条日志 ~1ms 开销（典型 200 文件翻译节省 ~200ms）。sys.exit 分支依赖 OS 自动回收
-263. [PF-C-2] `file_processor/validator.py` 提取 7 个模块级预编译正则（`_RE_SINGLE_QUOTED_STR` / `_RE_CODE_KEYWORD_LINE` / `_RE_DOUBLE_QUOTED_STR` / `_RE_BRACKET_VAR` / `_RE_TAG_BRACE` / `_RE_COMMENT_TAG` / `_RE_PRINTF_NAMED` / `_RE_DOUBLE_PUNCT`）。`_check_structural_integrity` / `_check_placeholders_and_tags` / `_check_control_tags_and_keywords` 三个热路径函数改用这些常量替代字面量 `re.search/match/findall/sub`。每翻译文件节省 500-700ms 正则编译开销；100 文件游戏节省 50-70 秒
-
-**测试增量**（test_all 109 → 110，test_rpa_unpacker 14 → 15，总数 286 → 288）：
-
-264. [T-H-3] `tests/test_rpa_unpacker.py::test_rpa3_refuses_zip_slip`：构造含 `../../evil.py` 恶意条目的 RPA-3.0 归档，验证合法条目解出、恶意条目被拒绝写入；同时检查 `extracted` 返回列表中所有路径都在 outdir 内。锁定第 20 轮修复的 S-C-1 ZIP Slip 防护
-265. [T-H-1] `tests/test_all.py::test_glossary_scan_renpy_directory`：构造 `define mc = Character("Main Hero")` / `DynamicCharacter` / `config.name` / `config.version` 等 Ren'Py 定义 + `renpy/` 子目录（应被跳过），验证 `Glossary.scan_game_directory` 的 Ren'Py 解析正则和引擎目录过滤。此前仅 RPG Maker 分支有专项测试（`test_glossary_scan_rpgmaker`），Ren'Py 正则路径零覆盖
-
-**本轮未做**（留给第 26+ 轮）：
-- A-H-2：`core/translation_utils.py` 反向依赖 `file_processor/`（需要函数下沉/提升重构）
-- A-H-3：`translators/` 与 `engines/` 两套平行概念合并（大重构，需要把 direct/tl/retranslate 也迁到 TranslatableUnit 模型）
-- S-H-4：插件 subprocess 沙箱真正隔离（需要整套 IPC / Capabilities 设计）
 
 ### 第二十六轮：综合收敛包（A+B+C） — 数据完整性 / 安全加固 / screen 拆分 / 微优化
 
@@ -132,6 +107,40 @@
 - A-H-3：`translators/` 与 `engines/` 两套平行概念合并（大重构，4+h，改变默认 engine 路由）
 - S-H-4：插件 subprocess 沙箱真正隔离（需完整 IPC / Capabilities 设计）
 - 如未来 `file_processor/checker.py` 超过 500 行，可考虑把下沉的 3 个 wrapper 再提到独立的 `file_processor/translations.py` 文件
+
+### 第二十八轮：A-H-3 Minimal 路由统一 + S-H-4 Dual-mode 插件沙箱
+
+第 27 轮遗留的两项 Priority A 大重构以"保守组合"方式一次收敛：A-H-3 只做 Minimal（零行为变化的 entry-point 统一），S-H-4 以 opt-in dual-mode 发布（默认关闭，新增 `--sandbox-plugin` 开关），避免任何现有插件 / 翻译流程被破坏。
+
+**A · A-H-3 Minimal — 统一引擎路由入口**：
+
+287. `engines/renpy_engine.py::RenPyEngine.run()` 扩展覆盖 `tl_screen` 分支：`--tl-mode --tl-screen` 连贯执行（先 tl，后 screen）+ `--tl-screen` 单独使用时补日志提示"建议先 --tl-mode"。行为与 main.py 原版 if/elif 链一致
+288. `main.py:234-261` 的 28 行 if/elif 路由（按 tl_mode / tl_screen / retranslate / direct 分派 translators/*）简化为 5 行 `engine = resolve_engine(engine_arg or "auto", ...); engine.run(args)`。所有引擎（Ren'Py + RPGMaker + CSV/JSONL + auto）共用同一入口，Ren'Py 的子分支逻辑内敛到 `RenPyEngine.run` 一处
+289. `main.py:23-26` 顶部 import 列表补 `import os` — 修复 Explore 代理发现的潜伏 bug：`main.py:220` 使用 `os.environ.pop(...)` 但 `os` 模块在顶部未 import。先前靠 `core/config.py` 等下游模块间接污染 `globals()` 让它"碰巧"工作，但任何直接调用 main.py:main() 的路径会 NameError
+290. **风险控制**：本轮不动 Ren'Py 内部的 direct/tl/retranslate 三条管线，也不做 DialogueEntry → TranslatableUnit 的数据模型迁移。direct-mode 4.01% 漏翻率 / tl-mode 99.97% 成功率由逐字节保留翻译链路保证
+
+**B · S-H-4 Dual-mode — 插件 subprocess 沙箱 (opt-in)**：
+
+291. `core/api_client.py` 新增 `_SubprocessPluginClient` 类：包装 `subprocess.Popen([python, -u, plugin_path, '--plugin-serve'])`，长连接 JSONL 协议 — Request `{request_id, system_prompt, user_prompt}` / Response `{request_id, response, error}` / Shutdown sentinel `request_id == -1`。`threading.Lock` 保护 stdin 写入；`threading.Thread` + join-timeout 实现无阻塞 stdout 读取；超时则 `proc.kill() + wait(2)` 清理。`close()` 幂等，`atexit` 自动兜底，`__del__` 再兜底。类方法 `translate_batch(system_prompt, user_prompt)` 与传统插件模块 duck-type 兼容 — 故 `APIClient._call_custom` 一行不改即可用
+292. `APIConfig` 新增 `sandbox_plugin: bool = False` 字段（默认 False 保留历史 importlib 快路径）；`APIClient.__init__` 根据 `config.provider == "custom"` + `config.sandbox_plugin` 分流：启用则 `_SubprocessPluginClient(...)`，否则 `_load_custom_engine(...)`
+293. `main.py` 新增 `--sandbox-plugin` CLI flag（`action="store_true"`）；`translators/direct.py` / `translators/tl_mode.py` / `translators/retranslator.py` / `translators/screen.py` / `engines/generic_pipeline.py` / `pipeline/stages.py` 共 6 处 APIConfig 构造点补 `sandbox_plugin=getattr(args, "sandbox_plugin", False)` 透传。`generic_pipeline.py:212` 的 APIConfig 构造此前缺失 `custom_module` 透传（非 custom provider 时无影响），本轮顺手补上
+294. `custom_engines/example_echo.py` 追加 `_plugin_serve()` 函数 + `if __name__ == "__main__"` 分支：读 stdin JSONL，dispatch 到 `translate_batch`，异常结构化写回 `{error: ...}`；legacy mode 直接执行脚本时打印 usage 并 exit(1)。既有 `translate_batch` / `translate` API 保持不变 — 同一文件在 legacy / sandbox 两种模式下均可用
+295. **安全收益**：sandbox 模式下插件无法通过 `os.environ` 读取 `XAI_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 等环境变量；无法直接访问宿主进程的 translation_db 等内存；OS 层面 subprocess 提供天然隔离。性能代价：首次启动 ~100-150ms Python 解释器开销，后续 per-call ~5-15ms JSON 序列化 + pipe round-trip。对 100 chunk 游戏 < 2s 额外总开销
+
+**测试增量**（`tests/test_custom_engine.py` 11 → 19，总数 293→301）：
+
+296. [新] `test_config_sandbox_plugin_default`：断言 `sandbox_plugin` 默认 False，保证 opt-in 行为
+297. [新] `test_sandbox_roundtrip_batch`：端到端 — 启动 example_echo subprocess，发送批量请求，验证 `[ECHO] Hello` 响应透传
+298. [新] `test_sandbox_request_id_tracking`：3 次连续调用，断言 `_request_id` 从 0 递增到 3，保证 stdin/stdout 不乱序
+299. [新] `test_sandbox_plugin_exception_wrapped`：构造抛 `ValueError` 的插件，断言宿主收到 `RuntimeError("plugin crashed on purpose")` 而非进程崩溃
+300. [新] `test_sandbox_rejects_path_traversal` / `test_sandbox_rejects_missing_module`：路径安全校验复用 legacy 模式的相同规则
+301. [新] `test_sandbox_timeout_kills_hung_plugin`：构造永远不响应的插件 + `timeout=1.0`，断言超时后 `proc.poll() is not None`（进程已清理）
+302. [新] `test_sandbox_close_idempotent`：`close()` 两次不抛异常；关闭后继续调用 `translate_batch` 明确 raise RuntimeError
+
+**本轮未做**（留给第 29+ 轮）：
+- A-H-3 Medium / Deep：Ren'Py 通过 adapter 层走 generic_pipeline 6 阶段，或完全退役 DialogueEntry → TranslatableUnit 统一。需真实 API key + 真实游戏做漏翻率 / 成功率回归验证
+- S-H-4 Breaking：强制所有插件走 subprocess，retire importlib 路径。当前 dual-mode 已足够，等社区反馈再决定是否切换
+- `tools/patch_font_now.py:27` 疑似路径错位（`Path(__file__).parent / "resources" / "fonts"` 解析为 `tools/resources/fonts/`，但实际资源在项目根 `resources/fonts/`）— 独立小项
 
 ## 已回滚
 

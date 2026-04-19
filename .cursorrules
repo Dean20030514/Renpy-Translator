@@ -3,7 +3,7 @@
 
 ## 项目身份
 
-纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，293 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。`core/translation_db.py` 线程安全（RLock）+ 原子写入（temp + os.replace）。
+纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，301 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件（`--sandbox-plugin` 可选 subprocess 沙箱）。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。`core/translation_db.py` 线程安全（RLock）+ 原子写入（temp + os.replace）。`main.py` 所有引擎统一走 `engines.resolve_engine(...).run(args)` 单一入口。
 
 ## 开发原则
 
@@ -25,8 +25,17 @@ gui.py (图形界面) ─── start_launcher.py (CLI 菜单) ─── tools/r
        └──────────────────────┘
                 │ subprocess 调用
                 ▼
-main.py (CLI 入口 + --engine 路由)
-  ├── [engine=auto/renpy] → translators/ Ren'Py 三条管线
+main.py (CLI 入口) → engines.resolve_engine(args.engine or "auto").run(args)
+  │
+  ├── engines/ 多引擎抽象层（所有引擎统一入口，round 28 A-H-3 Minimal）
+  │    ├── engines/engine_detector.py  (检测+路由)
+  │    ├── engines/engine_base.py      (EngineProfile/TranslatableUnit/EngineBase)
+  │    ├── engines/generic_pipeline.py (6 阶段通用流水线)
+  │    ├── engines/renpy_engine.py     (Ren'Py 薄包装，内部路由 tl_mode/tl_screen/retranslate/direct)
+  │    ├── engines/rpgmaker_engine.py  (RPG Maker MV/MZ)
+  │    └── engines/csv_engine.py       (CSV/JSONL)
+  │
+  ├── translators/ Ren'Py 三条管线（由 RenPyEngine.run 内部调度）
   │    ├── translators/direct.py         (direct-mode 入口 + run_pipeline)
   │    │   ├── _direct_chunk.py        (chunk 级翻译/重试/拆分)
   │    │   ├── _direct_file.py         (file 级翻译 + targeted 低密度路径)
@@ -44,13 +53,6 @@ main.py (CLI 入口 + --engine 路由)
   │    │   └── _tl_parser_selftest.py  (内置 75 条自测套件)
   │    └── translators/renpy_text_utils.py (文本分析)
   │
-  ├── [engine=rpgmaker/csv/jsonl] → engines/ 多引擎架构
-  │    ├── engines/engine_detector.py  (检测+路由)
-  │    ├── engines/engine_base.py      (EngineProfile/TranslatableUnit/EngineBase)
-  │    ├── engines/generic_pipeline.py (6 阶段通用流水线)
-  │    ├── engines/rpgmaker_engine.py  (RPG Maker MV/MZ)
-  │    └── engines/csv_engine.py       (CSV/JSONL)
-  │
   └── core/ 共享基础设施
        ├── core/api_client.py（含自定义引擎加载）/ core/prompts.py / core/glossary.py
        ├── core/translation_db.py / core/translation_utils.py
@@ -63,7 +65,7 @@ tools/   — review_generator / rpa_unpacker / rpa_packer / rpyc_decompiler
            renpy_lint_fixer / renpy_upgrade_tool / translation_editor
            verify_alignment / revalidate / patch_font_now / analyze_writeback
 custom_engines/ — 用户自定义翻译引擎插件目录（example_echo.py 示例）
-tests/   — test_all(113) + test_engines(62) + smoke(13) + rpa(16) + rpyc(18) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(11) + direct_pipeline(2) + tl_pipeline(2) = 293
+tests/   — test_all(113) + test_engines(62) + smoke(13) + rpa(16) + rpyc(18) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(19) + direct_pipeline(2) + tl_pipeline(2) = 301
 ```
 
 **调用关系图中未标注职责的关键文件**：
