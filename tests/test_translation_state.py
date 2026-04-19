@@ -469,6 +469,70 @@ def test_review_generator_html():
         os.rmdir(tmpdir)
 
 
+def test_sanitise_overrides_unknown_category_ignored():
+    """Round 34 C4: font_config sub-dicts whose key isn't registered in
+    ``_OVERRIDE_CATEGORIES`` must be silently ignored by
+    ``_emit_overrides_rpy`` — no aux rpy emitted for that category.
+    Prevents a malicious / typo'd ``nvl_overrides`` entry from leaking
+    into the generated init-999 block.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{"file": "a.rpy", "line": 1, "original": "Hello",
+                "translation": "你好", "status": "ok"}]
+    # Mix: registered category ("gui_overrides") + unregistered
+    # ("nvl_overrides", "config_overrides") — only gui should land.
+    cfg = {
+        "gui_overrides": {"gui.text_size": 22},
+        "nvl_overrides": {"nvl.background": 1},
+        "config_overrides": {"config.thoughtbubble_width": 1},
+    }
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        emit_runtime_hook(out_game, entries, font_config=cfg)
+        content = (out_game / "zz_tl_inject_gui.rpy").read_text(encoding="utf-8")
+        # Registered gui_overrides lands.
+        assert "gui.text_size = 22" in content
+        # Unregistered categories are silently dropped — no key from them
+        # appears in the emitted file.
+        assert "nvl.background" not in content
+        assert "config.thoughtbubble_width" not in content
+    print("[OK] sanitise_overrides_unknown_category_ignored")
+
+
+def test_override_categories_table_is_extensible():
+    """Round 34 C4: ``_OVERRIDE_CATEGORIES`` dispatch table exists and
+    currently registers exactly ``gui_overrides`` with a regex byte-
+    identical to round 33's ``_SAFE_GUI_KEY``.  Regression guard so a
+    future commit that (a) renames the table, (b) silently relaxes the
+    gui-key pattern, or (c) auto-registers ``style_overrides`` without
+    the Ren'Py init-timing review won't slip in unnoticed.
+    """
+    from core.runtime_hook_emitter import (
+        _OVERRIDE_CATEGORIES, _SAFE_GUI_KEY,
+    )
+
+    assert isinstance(_OVERRIDE_CATEGORIES, dict)
+    # Exactly one category registered today.
+    assert set(_OVERRIDE_CATEGORIES.keys()) == {"gui_overrides"}
+    # gui regex is the exact same compiled pattern we had in round 33 —
+    # no silent relaxation of the attribute-assignment shape.
+    assert _OVERRIDE_CATEGORIES["gui_overrides"] is _SAFE_GUI_KEY
+    # Pattern sanity: accepts common ``gui.X`` / ``gui.X.Y`` forms and
+    # rejects the usual attack shapes.
+    regex = _OVERRIDE_CATEGORIES["gui_overrides"]
+    for ok in ("gui.text_size", "gui.name_text_size", "gui.sub.nested"):
+        assert regex.match(ok), f"gui regex unexpectedly rejects {ok!r}"
+    for bad in ("gui.", "gui.test;drop", "style.default", "gui text_size",
+                "import os", "gui.text_size + 1"):
+        assert regex.match(bad) is None, (
+            f"gui regex unexpectedly accepts {bad!r} (attack shape)"
+        )
+    print("[OK] override_categories_table_is_extensible")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count.
 
@@ -490,6 +554,9 @@ def run_all() -> int:
         test_translation_db_save_atomic,
         test_translation_db_accepts_line_zero,
         test_review_generator_html,
+        # Round 34 Commit 4 (override dispatch table)
+        test_sanitise_overrides_unknown_category_ignored,
+        test_override_categories_table_is_extensible,
     ]
     for t in tests:
         t()

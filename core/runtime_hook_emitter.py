@@ -39,6 +39,28 @@ logger = logging.getLogger("renpy_translator")
 _SAFE_GUI_KEY = re.compile(r"^gui\.[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*$")
 
 
+# Round 34 Commit 4: generalised dispatch table for ``font_config`` override
+# categories.  Each entry maps a top-level ``font_config`` sub-dict name to
+# the regex its keys must match to be emitted into ``zz_tl_inject_gui.rpy``.
+#
+# Only ``gui_overrides`` is registered today — ``style_overrides`` was
+# evaluated in round-34 planning and deliberately excluded because modifying
+# the style registry at ``init 999`` time contradicts the project-wide
+# design choice documented in ``resources/hooks/inject_hook.rpy:34-37``
+# ("Font-replacement uses only ``config.font_replacement_map``, not
+# style-object monkey-patching").  The dispatch table stays in place so a
+# future round can register additional categories with surgical risk —
+# just add a regex entry below and document the Ren'Py-init-timing
+# implications in the CHANGELOG.
+#
+# Values are restricted to ``int`` / ``float`` at runtime (see
+# ``_sanitise_overrides``); ``bool`` / ``str`` / ``list`` / ``dict`` /
+# ``None`` are rejected with a warning.
+_OVERRIDE_CATEGORIES: "dict[str, re.Pattern[str]]" = {
+    "gui_overrides": _SAFE_GUI_KEY,
+}
+
+
 def _iter_translation_pairs(
     entries: Iterable[Mapping[str, object]],
     *,
@@ -184,49 +206,74 @@ def _write_json_atomic(path: Path, data: object) -> None:
     _os.replace(str(tmp_path), str(path))
 
 
-def _sanitise_gui_overrides(
+def _sanitise_overrides(
     overrides: Mapping[str, object],
+    key_regex: "re.Pattern[str]",
+    category_name: str = "gui",
 ) -> dict[str, object]:
-    """Filter ``overrides`` to safe ``gui.xxx = int|float`` pairs only.
+    """Filter ``overrides`` to safe ``<ns>.xxx = int|float`` pairs only.
 
-    Round 33 Subtask 2: the generated ``zz_tl_inject_gui.rpy`` embeds each
-    key/value as raw Python source, so we must reject anything that could
-    escape the attribute-assignment shape — including keys with suffixes,
-    operators, or whitespace, and any value that isn't a plain numeric type.
-    Booleans are rejected even though ``isinstance(True, int)`` is True,
-    because no Ren'Py ``gui.*`` attribute expects a boolean here and
+    Round 33 Subtask 2 + Round 34 Commit 4 (generalised): the generated
+    ``zz_tl_inject_gui.rpy`` embeds each key/value as raw Python source,
+    so we must reject anything that could escape the attribute-assignment
+    shape — including keys with suffixes, operators, or whitespace, and
+    any value that isn't a plain numeric type.  Booleans are rejected
+    even though ``isinstance(True, int)`` is True, because no Ren'Py
+    attribute accepted by this emitter expects a boolean here and
     accepting them could mask a config typo.
 
-    Each drop is logged at ``warning`` level so the operator can see what
-    was skipped without having to inspect the generated .rpy file.
+    ``category_name`` is just the warning-message label ("gui", "style",
+    etc.) so the emitted log tells the operator which sub-dict got
+    rejected without leaking the full regex.  Each drop logs at
+    ``warning`` level.
     """
     clean: dict[str, object] = {}
     for raw_key, raw_val in overrides.items():
-        if not isinstance(raw_key, str) or not _SAFE_GUI_KEY.match(raw_key):
+        if not isinstance(raw_key, str) or not key_regex.match(raw_key):
             logger.warning(
-                "[TL-INJECT] skipping unsafe gui key in font_config: %r",
-                raw_key,
+                "[TL-INJECT] skipping unsafe %s key in font_config: %r",
+                category_name, raw_key,
             )
             continue
         if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
             logger.warning(
-                "[TL-INJECT] skipping non-numeric gui value for %s: %r",
-                raw_key, raw_val,
+                "[TL-INJECT] skipping non-numeric %s value for %s: %r",
+                category_name, raw_key, raw_val,
             )
             continue
         clean[raw_key] = raw_val
     return clean
 
 
-def _emit_gui_overrides_rpy(
+def _sanitise_gui_overrides(
+    overrides: Mapping[str, object],
+) -> dict[str, object]:
+    """Round 33 back-compat thin wrapper — delegates to the generalised
+    :func:`_sanitise_overrides` with the ``gui_overrides`` category's
+    regex.  Kept as a public-ish symbol because round-33 callers and
+    tests import this name directly; round-34 code should prefer the
+    generic form.
+    """
+    return _sanitise_overrides(
+        overrides, _OVERRIDE_CATEGORIES["gui_overrides"], category_name="gui",
+    )
+
+
+def _emit_overrides_rpy(
     output_game_dir: Path,
-    overrides: Mapping[str, object] | None,
+    font_config: Mapping[str, object] | None,
     *,
     filename: str = "zz_tl_inject_gui.rpy",
 ) -> Path | None:
-    """Emit a small Ren'Py script that applies GUI overrides at ``init 999``.
+    """Emit a Ren'Py script that applies overrides at ``init 999``.
 
-    Generated file shape::
+    Round 34 Commit 4 generalised version: loops over every registered
+    category in :data:`_OVERRIDE_CATEGORIES` and accumulates the safe
+    key/value pairs into one combined file.  Today only ``gui_overrides``
+    is registered (see the dispatch table's docstring for why
+    ``style_overrides`` is deliberately excluded).
+
+    Generated file shape (example with gui category only)::
 
         init 999 python:
             import os
@@ -234,39 +281,53 @@ def _emit_gui_overrides_rpy(
                 gui.text_size = 22
                 gui.name_text_size = 24
 
-    ``init 999`` runs *after* the game's own ``gui.rpy`` ``define`` statements
-    (which sit at implicit priority 0), so the override takes effect even
-    when the game ships default values.  The env-var guard mirrors the main
-    hook so shipping this file alongside an untouched game is safe — removing
-    ``RENPY_TL_INJECT=1`` fully disables the override.
+    ``init 999`` runs *after* the game's own ``define`` statements (which
+    sit at implicit priority 0), so the override takes effect even when
+    the game ships default values.  The env-var guard mirrors the main
+    hook so shipping this file alongside an untouched game is safe —
+    removing ``RENPY_TL_INJECT=1`` fully disables the override.
 
-    Returns the emitted path when a file was written, or ``None`` when the
-    sanitised overrides map was empty (default-off behaviour preserved).
+    Returns the emitted path when a file was written, or ``None`` when
+    every registered category produced an empty sanitised map (default
+    round-32 no-output behaviour preserved).
     """
-    if not overrides:
+    if not font_config:
         return None
-    clean = _sanitise_gui_overrides(overrides)
-    if not clean:
+
+    combined: dict[str, object] = {}
+    for cat_name, key_regex in _OVERRIDE_CATEGORIES.items():
+        bucket = font_config.get(cat_name) if isinstance(font_config, Mapping) else None
+        if not isinstance(bucket, Mapping):
+            continue
+        # Strip the "_overrides" suffix for a cleaner warning namespace
+        # label, e.g. "gui_overrides" → "gui".
+        label = cat_name[:-len("_overrides")] if cat_name.endswith("_overrides") else cat_name
+        cleaned = _sanitise_overrides(bucket, key_regex, category_name=label)
+        combined.update(cleaned)
+
+    if not combined:
         return None
 
     output_game_dir = Path(output_game_dir)
     output_game_dir.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = [
-        "# Auto-generated by core/runtime_hook_emitter.py (round 33 Subtask 2).",
-        "# GUI size/layout overrides from --font-config; applied at init 999",
-        "# so they override gui.rpy's `define gui.xxx = N` defaults.",
-        "# Guarded by RENPY_TL_INJECT=1 env var so shipping this file alongside",
-        "# an unmodified game is safe — without the env var it is a no-op.",
+        "# Auto-generated by core/runtime_hook_emitter.py (round 33 Subtask 2;",
+        "# round 34 Commit 4 generalised the dispatch over multiple override",
+        "# categories, only gui_overrides registered today).",
+        "# Applied at init 999 so it runs AFTER gui.rpy's `define gui.xxx = N`",
+        "# defaults, and guarded by RENPY_TL_INJECT=1 env var so shipping this",
+        "# file alongside an unmodified game stays safe — without the env var",
+        "# it is a no-op.",
         "",
         "init 999 python:",
         "    import os",
         "    if os.environ.get(\"RENPY_TL_INJECT\") == \"1\":",
     ]
-    for k in sorted(clean):
+    for k in sorted(combined):
         # ``repr`` on an int / float yields a Python-safe literal so the
         # emitted line is always a valid Ren'Py Python expression.
-        lines.append(f"        {k} = {clean[k]!r}")
+        lines.append(f"        {k} = {combined[k]!r}")
     lines.append("")
 
     rpy_path = output_game_dir / filename
@@ -278,10 +339,28 @@ def _emit_gui_overrides_rpy(
     _os.replace(str(tmp_path), str(rpy_path))
 
     logger.info(
-        "[TL-INJECT] emitted gui overrides: %d key(s) → %s",
-        len(clean), rpy_path.name,
+        "[TL-INJECT] emitted overrides: %d key(s) → %s",
+        len(combined), rpy_path.name,
     )
     return rpy_path
+
+
+def _emit_gui_overrides_rpy(
+    output_game_dir: Path,
+    overrides: Mapping[str, object] | None,
+    *,
+    filename: str = "zz_tl_inject_gui.rpy",
+) -> Path | None:
+    """Round 33 back-compat thin wrapper — wraps ``overrides`` into a
+    ``{"gui_overrides": ...}`` font_config shape and delegates to the
+    generalised :func:`_emit_overrides_rpy`.  Kept so existing callers
+    that passed the raw gui-overrides map directly keep working.
+    """
+    if overrides is None:
+        return None
+    return _emit_overrides_rpy(
+        output_game_dir, {"gui_overrides": overrides}, filename=filename,
+    )
 
 
 def emit_runtime_hook(
@@ -435,13 +514,14 @@ def emit_runtime_hook(
                     # POSIX SameFileError path still degrades gracefully.
                     pass
 
-    # Round 33 Subtask 2: optional gui_overrides auxiliary script.  Only
-    # written when font_config supplies a non-empty, safe overrides dict.
-    # Default output stays byte-compatible with round 32 when omitted.
+    # Round 33 Subtask 2 + Round 34 Commit 4: optional overrides auxiliary
+    # script.  Generalised dispatch — iterates every registered category
+    # in ``_OVERRIDE_CATEGORIES`` and accumulates safe key/value pairs
+    # into one combined ``zz_tl_inject_gui.rpy``.  Default output stays
+    # byte-compatible with round 32 when font_config is omitted or every
+    # registered category comes up empty / unsafe.
     if font_config is not None:
-        overrides = font_config.get("gui_overrides") if isinstance(font_config, Mapping) else None
-        if isinstance(overrides, Mapping):
-            _emit_gui_overrides_rpy(output_game_dir, overrides)
+        _emit_overrides_rpy(output_game_dir, font_config)
 
     # Copy the hook .rpy — shutil.copy2 preserves mtime/permissions so
     # Ren'Py's .rpyc cache invalidation still works when the template
