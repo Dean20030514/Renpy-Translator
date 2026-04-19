@@ -524,16 +524,16 @@ if __name__ == '__main__':
         from translators._tl_parser_selftest import run_self_tests
         run_self_tests()
     elif len(sys.argv) > 1:
-        target = sys.argv[1]
-        if os.path.isfile(target):
-            r = parse_tl_file(target)
+        target_path = Path(sys.argv[1])
+        if target_path.is_file():
+            r = parse_tl_file(str(target_path))
             print_tl_stats([r])
-        elif os.path.isdir(target):
+        elif target_path.is_dir():
             lang = sys.argv[2] if len(sys.argv) > 2 else 'chinese'
-            results = scan_tl_directory(target, lang)
+            results = scan_tl_directory(str(target_path), lang)
             print_tl_stats(results)
         else:
-            print(f"路径不存在: {target}")
+            print(f"路径不存在: {target_path}")
     else:
         print("用法:")
         print("  python tl_parser.py --test              运行自测")

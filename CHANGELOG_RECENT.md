@@ -28,23 +28,9 @@
 - 第二十轮：CRITICAL 修复 — pipeline 悬空 import 三处（stages/gate/generic_pipeline）+ pickle RCE 三处（core/pickle_safe + rpyc Tier 1/2 + rpa_unpacker）+ ZIP Slip 防护 + CONTRIBUTING/SECURITY 治理文档
 - 第二十一轮：Top 5 HIGH 收敛 — HTTP 连接池（核心 ~90s/600 次握手）+ ProgressTracker 两锁（解除 worker 串行化）+ API Key 走 subprocess env（关闭进程列表泄露）+ 6 条 HTTP 重试 mock 测试 + P1 快照单调性回刷
 - 第二十二轮：测试基础 + 响应体上限 — `MAX_API_RESPONSE_BYTES = 32MB` 硬上限 + `read_bounded` 通用工具（pool + urllib 双路径）+ T-C-3（`test_direct_pipeline`）+ T-H-2（`test_tl_pipeline`）集成测试为 A-H-4 重构铺路；测试 280→286
+- 第二十三轮：A-H-4 Part 1 — `translators/direct.py` 1301 → 584 + 新建 `_direct_chunk` / `_direct_file` / `_direct_cli` 三个子模块；re-export 保持公共 API，T-C-3 集成测试护航零回归
 
 ## 详细记录
-
-### 第二十三轮：A-H-4 Part 1 — direct.py 拆分
-
-**文件拆分**（1301 行 → 4 个模块，每个均在 800 行以下）：
-
-248. 新建 `translators/_direct_chunk.py`（209 行）：搬迁 `_translate_chunk` / `_should_retry` / `_split_chunk` / `_translate_chunk_with_retry` 四个紧耦合的 chunk 级函数。这四个函数形成"发送单 chunk → 分类是否重试 → 截断时拆分"的状态机，放在一起维护
-249. 新建 `translators/_direct_file.py`（548 行）：搬迁 `translate_file` (297 行) + `_translate_file_targeted` (188 行) 两个文件级函数。`translate_file` 做密度检测后分派给 `_translate_file_targeted`（低密度）或自身的 chunk 并发路径（高密度）
-250. 新建 `translators/_direct_cli.py`（70 行）：搬迁 `_compute_file_dialogue_stats` / `_print_density_histogram` / `_print_term_scan_preview` 三个 dry-run 辅助函数
-251. 重写 `translators/direct.py`（1301 → 584 行）：只保留 `run_pipeline` 编排函数 + 必要 imports + re-export 声明。下划线前缀子模块保持私有，外部只看 `translators.direct`
-
-**向后兼容（re-export）**：`translators.direct` 继续导出 `run_pipeline` / `translate_file` / `_translate_file_targeted` / `_translate_chunk` / `_should_retry` / `_split_chunk` / `_translate_chunk_with_retry`，`main.py` / `engines/renpy_engine.py` / `tests/test_all.py` / `tests/test_batch1.py` / `tests/test_direct_pipeline.py` 的现有 import 零修改即可工作
-
-**测试保护**：T-C-3（第 22 轮新建的 `tests/test_direct_pipeline.py`）的 2 条集成测试覆盖了 `translate_file` happy path 和 resume skip，保证拆分后行为不变。全套 286 测试零回归
-
-**下一步**：第 24 轮处理 `translators/tl_mode.py`（928 行）和 `translators/tl_parser.py`（1106 行）的类似拆分，依赖 T-H-2 测试基础保护
 
 ### 第二十四轮：A-H-4 Part 2 — tl_mode.py + tl_parser.py 拆分
 
@@ -105,6 +91,52 @@
 - A-H-2：`core/translation_utils.py` 反向依赖 `file_processor/`（需要函数下沉/提升重构）
 - A-H-3：`translators/` 与 `engines/` 两套平行概念合并（大重构，需要把 direct/tl/retranslate 也迁到 TranslatableUnit 模型）
 - S-H-4：插件 subprocess 沙箱真正隔离（需要整套 IPC / Capabilities 设计）
+
+### 第二十六轮：综合收敛包（A+B+C） — 数据完整性 / 安全加固 / screen 拆分 / 微优化
+
+本轮按新一次深度审查结果，把 HANDOFF.md 未覆盖的 3 项 CRITICAL + 4 项 HIGH 与 HANDOFF 优先级 A + C 的 6 项微优化一起收敛，遵守"隔离变量、小步提交"原则，每阶段独立验证。
+
+**A · TranslationDB 数据完整性**（CRITICAL，`core/translation_db.py`）：
+
+266. [C-1] 加 `threading.RLock`，把 `load / save / upsert_entry / add_entries / has_entry / filter_by_status / _rebuild_index` 全部包在锁内。`engines/generic_pipeline.py::_translate_one_chunk` 的 `ThreadPoolExecutor` 并发调用从此无数据竞争
+267. [C-2] `save()` 改为"temp 文件 + `os.replace`"原子替换，失败路径清理 tmp 并 re-raise（与 `generic_progress.json` 的原子写法对齐）。崩溃/并发下不再留下半写的 JSON
+268. [C-3] `upsert_entry` 的 `if not line` 判断改为 `line is None`，并同步 `_rebuild_index` 的 key 过滤。`engines/generic_pipeline.py:330` 写 `"line": 0` 的兜底条目从此不再被静默丢弃
+269. [PF-M-2] 加 `_dirty` flag：`upsert/add` 成功后置 True，`save()` 开头 False 即返回，`load()` 末尾置 False。未变更时 `save()` 直接 no-op，100 文件翻译约省 30-50ms × N 次
+
+**A 测试**（`tests/test_all.py` 110 → 113）：
+- `test_translation_db_concurrent_upsert`：32 线程 × 100 条 upsert → 断言 entries 数正确 + index 完整 + 全部 has_entry 命中
+- `test_translation_db_save_atomic`：save 中途 mock `os.replace` 抛 OSError → 断言原文件不变 + tmp 被清理 + JSON 仍可解
+- `test_translation_db_accepts_line_zero`：upsert `line=0` → has_entry/filter_by_status 均命中 + save/load round-trip 保留
+
+**B · 安全加固 + 静默失败可见化**（HIGH）：
+
+270. [B.1 · H-1] `tools/rpa_unpacker.py` 加常量 `_RPA_MAX_ENTRY_BYTES = 512 MiB`，`unpack_rpa` 在 `f.read(length)` 前预检查 `length` 范围。被篡改的恶意索引不再能触发 OOM。新增 `test_rpa_refuses_oversized_entry` 回归
+271. [B.2 · H-2] `tools/rpyc_decompiler.py` 抽出模块级共享常量 `_SHARED_WHITELIST` + `_WHITELIST_TIER1_PY2_EXTRAS`。Tier 1 helper 从模板 `_DECOMPILE_HELPER_TEMPLATE` 渲染（`_render_decompile_helper`）时 `json.dumps` 注入，Tier 2 `_RestrictedUnpickler` 直接引用。新增 `test_whitelist_tier1_tier2_consistent` 锁定两侧同步（含 Py2 long/unicode 兼容校验）
+272. [B.3 · H-3] `pipeline/stages.py` 唯一"静默降级"分支（第 361-370 行 `full report.json` 解析失败 silent zero）改为显式 `[WARN ]` 输出 + `report_error` 字段存进 report 供下游消费
+273. [B.4 · H-4] `pipeline/gate.py` `glossary.json` 加载失败从 `logger.debug` 升级为 `logger.warning`，明确提示"锁定术语/禁翻检查已跳过"
+274. [B.5 · M-1] `pipeline/gate.py` 缺失原文件场景从 `warnings += 1` 额外打印 `logger.warning("[GATE] 缺失原文件, 跳过校验: ...")`
+
+**C · HANDOFF 优先级 A + C 微优化**：
+
+275. [C.1 · A-H-4 补] `translators/screen.py` 877 → 478 行，拆出两个子模块：
+   - `translators/_screen_extract.py`（172 行）：`ScreenTextEntry` + 4 条正则 + `_should_skip` + `_line_has_underscore_wrap` + `scan_screen_files` + `extract_screen_strings`
+   - `translators/_screen_patch.py`（346 行）：`SCREEN_TRANSLATE_SYSTEM_PROMPT` + chunk 装配 + `_translate_screen_chunk` + `_deduplicate_entries` + `_escape_for_screen` + `_replace_screen_strings_in_file` + 进度 + backup
+   - 保留 `run_screen_translate` + 9 条自测 + re-export 清单在 `screen.py`。下游 `main.py` / `pipeline/stages.py` / `tests/test_all.py` 的 `from translators.screen import ...` 零改动
+276. [C.2 · PF-H-1] `translators/_direct_file.py` 加模块级 `_quality_report_lock = threading.Lock()`，包裹两处 `quality_report[rel_path] = issues` 写入。文件级并行下 dict 结构更新不再依赖 GIL 隐式保护
+277. [C.3 · PF-H-3] `file_processor/patcher.py::_diagnose_writeback_failure` 加可选 `norm_lines` 参数 + 新建 `_build_writeback_diag_index()` 辅助。`apply_translations` 的 fourth-pass 失败循环里只在首次触发时构建 NFKC 缓存，后续复用。大文件多失败场景省 n² 次 Unicode 规范化
+278. [C.4 · PF-H-4] `core/api_client.py::RateLimiter` 加 `_CLEANUP_INTERVAL = 64` + `_cleanup_counter`。过期桶清理从"每次 acquire 扫描"改为"每 64 次 acquire 批量清理"，持锁时间显著下降
+279. [C.5 · P-H-3/4] `os.path` 遗留用法改 `pathlib`：`translators/tl_parser.py:528/531` 改 `Path.is_file()/is_dir()`；`tools/rpa_unpacker.py:319` 改 `Path(name).suffix`；`tools/renpy_upgrade_tool.py:618-619` 改 `Path.resolve()/is_dir()`
+
+**结果**：
+- 12 测试套件 286 → 293（+5 新测试）+ tl_parser 内建 75 自测全绿，零回归
+- `translators/` 所有 .py 继续 < 800 行（screen.py 478 / direct.py 601 / tl_mode.py 558 / tl_parser.py 541，其余均 < 500）
+- A-H-4 所有目标（direct / tl_mode / tl_parser / screen）全部达成
+
+**本轮未做**（留给第 27+ 轮）：
+- A-H-2：`core/translation_utils.py` ↔ `file_processor/` 反向依赖
+- A-H-3：`translators/` 与 `engines/` 两套概念统一（大重构）
+- S-H-4：插件 subprocess 沙箱真正隔离
+- A-H-5：`tools/font_patch` 迁移到 `core/`（与 A-H-2 耦合，建议联合处理）
 
 ## 已回滚
 

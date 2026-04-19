@@ -3,7 +3,7 @@
 
 ## 项目身份
 
-纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，288 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。
+纯 Python（零第三方依赖，≥3.9）多引擎游戏汉化工具。~15,000 行核心代码，293 个自动化测试。支持 Ren'Py / RPG Maker MV/MZ / CSV/JSONL，五大 LLM（xAI/OpenAI/DeepSeek/Claude/Gemini）+ 自定义引擎插件。Direct-mode 漏翻率 4.01%，tl-mode 翻译成功率 99.97%。HTTPS 调用默认启用持久连接池（节省 ~90s 握手/600 次调用）+ 响应体 32 MB 硬上限。`core/translation_db.py` 线程安全（RLock）+ 原子写入（temp + os.replace）。
 
 ## 开发原则
 
@@ -35,7 +35,9 @@ main.py (CLI 入口 + --engine 路由)
   │    ├── translators/tl_mode.py        (tl-mode 入口 + run_tl_pipeline)
   │    │   ├── _tl_patches.py          (font / rpyc / language switch patches)
   │    │   └── _tl_dedup.py            (跨文件去重 + chunk 装配)
-  │    ├── translators/screen.py         (screen 裸英文翻译)
+  │    ├── translators/screen.py         (screen 裸英文翻译入口 + re-export)
+  │    │   ├── _screen_extract.py      (扫描 / 识别 / 跳过判断)
+  │    │   └── _screen_patch.py        (翻译 / 替换 / 进度 / 备份)
   │    ├── translators/tl_parser.py      (tl 解析核心 + re-export)
   │    │   ├── _tl_postprocess.py      (nvl clear / 空块后处理)
   │    │   ├── _tl_nvl_fix.py          (Ren'Py 8.6 → 7.x 翻译 ID 修复)
@@ -61,7 +63,7 @@ tools/   — font_patch / review_generator / rpa_unpacker / rpa_packer / rpyc_de
            renpy_lint_fixer / renpy_upgrade_tool / translation_editor
            verify_alignment / revalidate / patch_font_now / analyze_writeback
 custom_engines/ — 用户自定义翻译引擎插件目录（example_echo.py 示例）
-tests/   — test_all(110) + test_engines(62) + smoke(13) + rpa(15) + rpyc(17) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(11) + direct_pipeline(2) + tl_pipeline(2) = 288
+tests/   — test_all(113) + test_engines(62) + smoke(13) + rpa(16) + rpyc(18) + lint(15) + dedup(10) + batch1(18) + editor(13) + custom(11) + direct_pipeline(2) + tl_pipeline(2) = 293
 ```
 
 **调用关系图中未标注职责的关键文件**：

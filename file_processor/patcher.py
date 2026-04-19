@@ -140,8 +140,22 @@ def _apply_strings_translations(
     return applied, warnings
 
 
+def _build_writeback_diag_index(lines: list[str]) -> list[str]:
+    """Pre-compute NFKC-normalised lines for ``_diagnose_writeback_failure``.
+
+    Round 26 PF-H-3: the per-item diagnosis loop used to re-normalise every
+    file line for every failed entry (``O(lines × failures)`` NFKC calls).
+    Callers with many failures should build this index once via
+    ``apply_translations`` and pass it as ``norm_lines`` to each
+    ``_diagnose_writeback_failure`` call.
+    """
+    import unicodedata
+    return [unicodedata.normalize("NFKC", line) for line in lines]
+
+
 def _diagnose_writeback_failure(
     lines: list[str], item: dict, modified_lines: set[int],
+    *, norm_lines: list[str] | None = None,
 ) -> dict:
     """分析单条回写失败的根因，返回诊断信息。
 
@@ -153,6 +167,10 @@ def _diagnose_writeback_failure(
       WF-05: 跨行文本（原文含换行符）
       WF-06: 重复原文冲突（同一原文已被其他匹配消费）
       WF-07: 编码不一致（Unicode 规范化差异）
+
+    ``norm_lines`` is an optional pre-computed list of NFKC-normalised
+    ``lines``; pass it when calling this in a loop over many items to
+    avoid re-normalising the whole file for every failure.
     """
     import unicodedata
 
@@ -186,13 +204,15 @@ def _diagnose_writeback_failure(
         diag["detail"] = "原文含转义引号"
         # 不 return，可能还有更具体的原因，继续检查
 
-    # 在全文中搜索原文
+    # 在全文中搜索原文（若未传入 norm_lines 则惰性计算一次）
     norm_original = unicodedata.normalize("NFKC", original)
+    if norm_lines is None:
+        norm_lines = [unicodedata.normalize("NFKC", line) for line in lines]
     found_at: list[int] = []
     for i, line in enumerate(lines):
         if original in line:
             found_at.append(i)
-        elif norm_original in unicodedata.normalize("NFKC", line):
+        elif norm_original in norm_lines[i]:
             found_at.append(i)
 
     if not found_at:
@@ -404,6 +424,9 @@ def apply_translations(
 
     # 第四遍：全文扫描（针对仍未匹配的项）
     # full_scan=True：跳过已被前面 pass 修改过的行，防止同一原文多次出现时误替换到错误位置
+    # Round 26 PF-H-3: pre-compute NFKC-normalised lines once for all
+    # failure diagnoses in this file instead of re-normalising per item.
+    norm_lines_for_diag: list[str] | None = None
     for item in far_remaining:
         line_num = item.get('line', 0)
         original = item.get('original', '')
@@ -420,7 +443,11 @@ def apply_translations(
             warnings.append(f"行 {line_num}: 未找到原文 \"{original[:50]}\"")
             skipped += 1
             # 诊断：分析失败原因
-            diag = _diagnose_writeback_failure(lines, item, modified_lines)
+            if norm_lines_for_diag is None:
+                norm_lines_for_diag = _build_writeback_diag_index(lines)
+            diag = _diagnose_writeback_failure(
+                lines, item, modified_lines, norm_lines=norm_lines_for_diag,
+            )
             writeback_failures.append(diag)
 
     parts = [f"应用 {applied}"]

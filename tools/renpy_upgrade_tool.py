@@ -615,10 +615,11 @@ def main():
     )
     args = parser.parse_args()
 
-    game_dir = os.path.abspath(args.game_dir)
-    if not os.path.isdir(game_dir):
-        print(f"Error: Directory not found: {game_dir}")
+    game_dir_path = Path(args.game_dir).resolve()
+    if not game_dir_path.is_dir():
+        print(f"Error: Directory not found: {game_dir_path}")
         sys.exit(1)
+    game_dir = str(game_dir_path)
 
     print(f"\nScanning: {game_dir}\n")
 

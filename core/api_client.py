@@ -284,25 +284,27 @@ class UsageStats:
 class RateLimiter:
     """线程安全速率限制器（不在锁内 sleep）"""
 
+    # Round 26 PF-H-4: cleanup of stale per-second / per-minute buckets
+    # runs every N acquisitions instead of every call.  At 5 rps × 64 that
+    # caps stale-bucket accumulation at ~13 seconds of history — well under
+    # the 5-second and 1-minute relevance windows — while eliminating the
+    # per-call ``[k for k in dict]`` scan under the lock.
+    _CLEANUP_INTERVAL = 64
+
     def __init__(self, rpm: int = 0, rps: int = 0):
         self._rpm = rpm
         self._rps = rps
         self._lock = threading.Lock()
         self._minute_counts: dict[str, int] = defaultdict(int)
         self._second_counts: dict[int, int] = defaultdict(int)
+        self._cleanup_counter: int = 0
 
     def acquire(self) -> None:
         while True:
             wait_time = 0.0
             with self._lock:
-                if self._rps > 0:
-                    sec = int(time.time())
-                    # 清理旧秒
-                    stale = [k for k in self._second_counts if k < sec - 5]
-                    for k in stale:
-                        del self._second_counts[k]
-                    if self._second_counts.get(sec, 0) >= self._rps:
-                        wait_time = 1.05
+                if self._rps > 0 and self._second_counts.get(int(time.time()), 0) >= self._rps:
+                    wait_time = 1.05
                 if wait_time == 0 and self._rpm > 0:
                     minute = time.strftime("%H:%M")
                     if self._minute_counts.get(minute, 0) >= self._rpm:
@@ -313,10 +315,19 @@ class RateLimiter:
                     self._second_counts[sec] = self._second_counts.get(sec, 0) + 1
                     minute = time.strftime("%H:%M")
                     self._minute_counts[minute] = self._minute_counts.get(minute, 0) + 1
-                    # 清理旧分钟
-                    old = [k for k in self._minute_counts if k != minute]
-                    for k in old:
-                        del self._minute_counts[k]
+
+                    # Batch cleanup: drop stale buckets every _CLEANUP_INTERVAL
+                    # acquisitions.  Staleness thresholds: 5 s for second
+                    # counters, current-minute-only for minute counters.
+                    self._cleanup_counter += 1
+                    if self._cleanup_counter >= self._CLEANUP_INTERVAL:
+                        self._cleanup_counter = 0
+                        stale_sec = [k for k in self._second_counts if k < sec - 5]
+                        for k in stale_sec:
+                            del self._second_counts[k]
+                        old_min = [k for k in self._minute_counts if k != minute]
+                        for k in old_min:
+                            del self._minute_counts[k]
                     return  # 获取成功
             # 在锁外等待
             time.sleep(wait_time)

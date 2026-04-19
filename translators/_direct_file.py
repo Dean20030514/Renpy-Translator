@@ -51,6 +51,15 @@ from file_processor import (
     validate_translation,
 )
 from translators._direct_chunk import _translate_chunk_with_retry
+
+# Round 26 PF-H-1: file-level parallel runs mutate ``quality_report`` from
+# multiple threads. CPython dict ``__setitem__`` is GIL-atomic for stable
+# hashes, but concurrent resizes can still expose torn state to any thread
+# that iterates.  Serialise every write through this module-local lock so
+# the invariant "after ``translate_file`` returns, ``quality_report``
+# reflects that file's issues" holds even under parallelism.
+_quality_report_lock = threading.Lock()
+
 from translators.retranslator import (
     build_retranslate_chunks,
     calculate_dialogue_density,
@@ -224,7 +233,8 @@ def translate_file(
         glossary_no_translate=glossary.no_translate,
     )
     if quality_report is not None and issues:
-        quality_report[rel_path] = issues
+        with _quality_report_lock:
+            quality_report[rel_path] = issues
     for issue in issues:
         if issue['level'] == 'error':
             all_warnings.append(f"行 {issue['line']}: {issue['message']}")
@@ -482,7 +492,8 @@ def _translate_file_targeted(
         glossary_no_translate=glossary.no_translate,
     )
     if quality_report is not None and issues:
-        quality_report[rel_path] = issues
+        with _quality_report_lock:
+            quality_report[rel_path] = issues
     for issue in issues:
         if issue["level"] == "error":
             all_warnings.append(f"行 {issue['line']}: {issue['message']}")
