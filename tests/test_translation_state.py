@@ -353,6 +353,71 @@ def test_progress_tracker_legacy_bare_keys_resume_under_language():
     print("[OK] test_progress_tracker_legacy_bare_keys_resume_under_language")
 
 
+def test_progress_tracker_language_switch_does_not_leak_across_langs():
+    """Round 36 H1: opening a pre-r35 bare-key progress.json under a
+    non-zh language MUST NOT inherit the bare keys (which implicitly
+    belonged to zh, the only pre-r35 target language).  Without the
+    fix, ja's ``is_chunk_done`` would fall through to zh's bare bucket
+    and return True, silently skipping translation and leaving ja's
+    DB bucket empty.  Mirror guard: ``mark_file_done`` under a non-zh
+    tracker MUST NOT clean the bare bucket either — a hypothetical zh
+    resume on the same file needs the bare data intact.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+    from core.translation_utils import ProgressTracker
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "progress.json"
+        # Pre-r35 bare-key state (historical zh run).
+        p.write_text(json.dumps({
+            "completed_files": ["a.rpy"],
+            "completed_chunks": {"b.rpy": [1, 2, 3]},
+            "results": {"b.rpy": [{"line": 1, "zh": "你好"}]},
+            "stats": {},
+        }, ensure_ascii=False), encoding="utf-8")
+
+        # ja (non-zh) MUST NOT inherit zh's bare keys.
+        pt_ja = ProgressTracker(p, language="ja")
+        assert not pt_ja.is_file_done("a.rpy"), (
+            "H1: ja tracker must not see zh's bare completed_files"
+        )
+        for part in (1, 2, 3):
+            assert not pt_ja.is_chunk_done("b.rpy", part), (
+                f"H1: ja tracker must not see zh's bare chunk {part}"
+            )
+        assert pt_ja.get_file_translations("b.rpy") == [], (
+            "H1: ja tracker must not inherit zh's bare results"
+        )
+
+        # Mirror guard: ja's mark_file_done must NOT touch zh's bare bucket.
+        pt_ja.mark_chunk_done("b.rpy", 1, [{"line": 1, "zh": "こんにちは"}])
+        pt_ja.mark_file_done("b.rpy")
+        assert pt_ja.data["completed_chunks"].get("b.rpy") == [1, 2, 3], (
+            "H1 mirror: ja's mark_file_done must not clean zh's bare chunks"
+        )
+        bare_results = pt_ja.data["results"].get("b.rpy", [])
+        assert len(bare_results) == 1 and bare_results[0].get("zh") == "你好", (
+            "H1 mirror: ja's mark_file_done must not clean zh's bare results"
+        )
+
+        # zh control on a fresh pre-r35 file must still resume (legacy
+        # semantics preserved — ``_LEGACY_BARE_LANG`` is "zh").
+        p2 = Path(td) / "progress_zh.json"
+        p2.write_text(json.dumps({
+            "completed_files": ["a.rpy"],
+            "completed_chunks": {"b.rpy": [1, 2, 3]},
+            "results": {"b.rpy": [{"line": 1, "zh": "你好"}]},
+            "stats": {},
+        }, ensure_ascii=False), encoding="utf-8")
+        pt_zh = ProgressTracker(p2, language="zh")
+        assert pt_zh.is_file_done("a.rpy")
+        assert pt_zh.is_chunk_done("b.rpy", 1)
+        assert len(pt_zh.get_file_translations("b.rpy")) == 1
+    print("[OK] test_progress_tracker_language_switch_does_not_leak_across_langs")
+
+
 # ============================================================
 # HTTP connection pool tests (round 21 — PF-C-1)
 # ============================================================
@@ -708,6 +773,8 @@ def run_all() -> int:
         test_progress_tracker_language_namespace_isolation,
         test_progress_tracker_legacy_no_language_backward_compat,
         test_progress_tracker_legacy_bare_keys_resume_under_language,
+        # Round 36 H1: non-zh language must not inherit bare-key state
+        test_progress_tracker_language_switch_does_not_leak_across_langs,
         test_translation_db_roundtrip,
         test_translation_db_concurrent_upsert,
         test_translation_db_save_atomic,
