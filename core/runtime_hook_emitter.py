@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import shutil
 from pathlib import Path
@@ -253,6 +254,17 @@ def _sanitise_overrides(
         if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
             logger.warning(
                 "[TL-INJECT] skipping non-numeric %s value for %s: %r",
+                category_name, raw_key, raw_val,
+            )
+            continue
+        # Round 36 H2: reject inf / -inf / nan.  Python's ``json.loads``
+        # accepts JSON ``Infinity`` / ``NaN`` as ``float('inf')`` /
+        # ``float('nan')`` which pass the ``isinstance`` check above but
+        # ``repr(inf) == 'inf'`` is not a valid identifier in Ren'Py's
+        # ``init python:`` block — game startup crashes with NameError.
+        if isinstance(raw_val, float) and not math.isfinite(raw_val):
+            logger.warning(
+                "[TL-INJECT] skipping non-finite %s value for %s: %r",
                 category_name, raw_key, raw_val,
             )
             continue
