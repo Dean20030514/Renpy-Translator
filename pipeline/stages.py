@@ -13,7 +13,7 @@ from pathlib import Path
 from file_processor import read_file
 from core.translation_db import TranslationDB
 from core.lang_config import get_language_config
-from tools.font_patch import resolve_font, apply_font_patch
+from core.font_patch import resolve_font, apply_font_patch
 
 from pipeline.helpers import (
     _print,

@@ -33,7 +33,7 @@ from core.glossary import Glossary
 from core.translation_db import TranslationDB
 from core.translation_utils import ProgressTracker, ProgressBar
 from file_processor import estimate_tokens, read_file
-from tools.font_patch import apply_font_patch, resolve_font
+from core.font_patch import apply_font_patch, resolve_font
 
 # Re-export 兼容层：下游调用方 (main.py / engines/renpy_engine.py /
 # tests/test_all.py / tests/test_batch1.py / tests/test_direct_pipeline.py)

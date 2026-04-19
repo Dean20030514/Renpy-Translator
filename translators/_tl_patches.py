@@ -23,7 +23,7 @@ import re
 import shutil
 from pathlib import Path
 
-from tools.font_patch import resolve_font
+from core.font_patch import resolve_font
 
 logger = logging.getLogger("renpy_translator")
 
@@ -83,7 +83,7 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str,
     使用 translate None python: 覆盖模板，避免直接修改 gui.rpy。
     游戏更新 gui.rpy 不会丢失字体补丁。
     """
-    from tools.font_patch import load_font_config
+    from core.font_patch import load_font_config
 
     resources_fonts = Path(__file__).parent / "resources" / "fonts"
     font_path = resolve_font(resources_fonts)

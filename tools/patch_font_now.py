@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tools.font_patch import resolve_font, apply_font_patch
+from core.font_patch import resolve_font, apply_font_patch
 
 # Already-translated output (stage2_translated/game)
 OUTPUT_GAME = Path(os.environ.get(

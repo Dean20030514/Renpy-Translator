@@ -38,8 +38,10 @@ def main() -> int:
         "file_processor",
         "file_processor.splitter", "file_processor.patcher",
         "file_processor.checker", "file_processor.validator",
+        # core (round 27 A-H-5: font_patch moved from tools/ to core/)
+        "core.font_patch",
         # tools
-        "tools", "tools.font_patch", "tools.renpy_upgrade_tool",
+        "tools", "tools.renpy_upgrade_tool",
         "tools.review_generator", "tools.rpa_packer", "tools.translation_editor",
         # pipeline
         "pipeline", "pipeline.helpers", "pipeline.gate", "pipeline.stages",
