@@ -135,8 +135,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
         progress.save()
 
     # 初始化 translation DB（用于增量与重翻统计）
+    # Round 34: thread target_lang so v1-era DB migration + per-entry
+    # language stamping stay consistent with the current run's output.
     db_path = output_dir / "translation_db.json"
-    translation_db = TranslationDB(db_path)
+    _db_lang = getattr(args, "target_lang", "zh") or "zh"
+    translation_db = TranslationDB(db_path, default_language=_db_lang)
     translation_db.load()
     # 以时间戳标记本次运行；足够区分不同批次
     run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())

@@ -372,7 +372,9 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
         progress.save()
 
     db_path = output_dir / "translation_db.json"
-    translation_db = TranslationDB(db_path)
+    # Round 34: thread target_lang (v1→v2 backfill + new-entry stamp).
+    _db_lang = getattr(args, "target_lang", "zh") or "zh"
+    translation_db = TranslationDB(db_path, default_language=_db_lang)
     translation_db.load()
     run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 

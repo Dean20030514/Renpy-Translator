@@ -236,7 +236,12 @@ def run_generic_pipeline(engine, args) -> None:
         except Exception as e:
             logger.debug(f"[PIPELINE] RPG Maker 术语扫描失败（不影响翻译）: {e}")
 
-    translation_db = TranslationDB(output_dir / "translation_db.json")
+    # Round 34: thread target_lang so a pre-r34 DB gets v1→v2 backfill
+    # on load and new entries (Stage 4 writeback) are stamped consistently.
+    translation_db = TranslationDB(
+        output_dir / "translation_db.json",
+        default_language=target_lang,
+    )
     translation_db.load()
 
     # 构建 system prompt（带引擎 addon）
@@ -258,14 +263,26 @@ def run_generic_pipeline(engine, args) -> None:
     completed_chunks = _load_progress(progress_path)
 
     if translation_db.entries:
-        db_index = {}
+        # Round 34: resume index now keyed by (file, original, language) so
+        # a multi-language DB (r34+) doesn't cross-resume — e.g. a zh run
+        # must not pick up a ja translation for the same (file, original)
+        # pair.  Lookup tries current target_lang first, then falls back
+        # to the None bucket for legacy v1-era entries without a language
+        # field (preserves round-33 resume behaviour on pre-r34 DBs).
+        db_index: dict[tuple[str, str, object], str] = {}
         for entry in translation_db.entries:
-            key = (entry.get("file", ""), entry.get("original", ""))
+            lang = entry.get("language")
+            if not isinstance(lang, str) or not lang:
+                lang = None
+            key = (entry.get("file", ""), entry.get("original", ""), lang)
             if entry.get("translation") and entry.get("status") == "ok":
                 db_index[key] = entry["translation"]
         restored = 0
         for u in units:
-            trans = db_index.get((u.file_path, u.original))
+            trans = db_index.get((u.file_path, u.original, target_lang))
+            if trans is None:
+                # Fall back to legacy None-bucket entries (pre-r34 DBs).
+                trans = db_index.get((u.file_path, u.original, None))
             if trans:
                 u.translation = trans
                 u.status = "translated"

@@ -83,7 +83,11 @@ def _run_retranslate_phase(
     rt_progress.data = {"completed_files": [], "completed_chunks": {}, "stats": {}}
     rt_progress.save()
 
-    rt_db = TranslationDB(pipeline_root / "retranslate_db.json")
+    # Round 34: thread the caller's target_lang through so v1-era DB files
+    # get migrated to v2 shape on load (forced backfill) and subsequent
+    # upserts populate the ``language`` field consistently.
+    _target_lang = getattr(args, "target_lang", "zh") or "zh"
+    rt_db = TranslationDB(pipeline_root / "retranslate_db.json", default_language=_target_lang)
     rt_run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
     # 用 find_untranslated_lines 精确扫描漏翻行
@@ -297,7 +301,11 @@ def _run_pilot_phase(
 
         pilot_db_path = pilot_output / "translation_db.json"
         if pilot_db_path.exists():
-            pilot_db = TranslationDB(pilot_db_path)
+            # Round 34: pass default_language so a pre-r34 pilot DB gets v1→v2
+            # backfill on load (prevents later upserts creating duplicate
+            # (file,line,orig,None) + (file,line,orig,<lang>) entries).
+            _pilot_lang = getattr(args, "target_lang", "zh") or "zh"
+            pilot_db = TranslationDB(pilot_db_path, default_language=_pilot_lang)
             pilot_db.load()
             new_terms = pilot_glossary.extract_terms_from_translations(pilot_db.entries)
             if new_terms:
@@ -550,7 +558,11 @@ def _run_final_report(
     # 合并各阶段 translation_db.json
     project_db = None
     try:
-        project_db = TranslationDB(project_out_root / "translation_db.json")
+        # Round 34: project-level merge target gets default_language so
+        # its own v1→v2 backfill runs; sub_dbs below also pass it so any
+        # still-v1 per-stage DB adopts the run's target language on load.
+        _merge_lang = getattr(args, "target_lang", "zh") or "zh"
+        project_db = TranslationDB(project_out_root / "translation_db.json", default_language=_merge_lang)
         project_db.load()
         db_paths_to_merge = [
             pilot_output / "translation_db.json",
@@ -560,7 +572,7 @@ def _run_final_report(
         for db_path in db_paths_to_merge:
             if not db_path.exists():
                 continue
-            sub_db = TranslationDB(db_path)
+            sub_db = TranslationDB(db_path, default_language=_merge_lang)
             sub_db.load()
             project_db.add_entries(sub_db.entries)
         project_db.save()
