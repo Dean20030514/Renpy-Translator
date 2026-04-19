@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.font_patch import resolve_font, apply_font_patch
+from core.font_patch import resolve_font, apply_font_patch, default_resources_fonts_dir
 
 # Already-translated output (stage2_translated/game)
 OUTPUT_GAME = Path(os.environ.get(
@@ -24,14 +24,10 @@ SOURCE_GAME = Path(os.environ.get(
 ))
 
 if __name__ == "__main__":
-    # Round 29 fix: the fonts live under the project root, not under
-    # ``tools/``.  ``Path(__file__).parent`` is ``tools/`` so we need
-    # one more ``.parent`` to reach the project root (which is where
-    # the other entry points — ``main.py`` / ``gui.py`` — compute their
-    # resource paths from).  Prior versions silently fell through to the
-    # "fonts dir not found" branch of ``resolve_font``.
-    project_root = Path(__file__).resolve().parent.parent
-    resources_fonts = project_root / "resources" / "fonts"
+    # Round 29 fixed a ``Path(__file__).parent`` bug here; round 32 extracts
+    # the canonical ``default_resources_fonts_dir()`` helper in
+    # ``core/font_patch.py`` so all four callers share one resolution path.
+    resources_fonts = default_resources_fonts_dir()
     font = resolve_font(resources_fonts, None)
     if font:
         apply_font_patch(OUTPUT_GAME, SOURCE_GAME, font)

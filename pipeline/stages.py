@@ -13,7 +13,7 @@ from pathlib import Path
 from file_processor import read_file
 from core.translation_db import TranslationDB
 from core.lang_config import get_language_config
-from core.font_patch import resolve_font, apply_font_patch
+from core.font_patch import resolve_font, apply_font_patch, default_resources_fonts_dir
 
 from pipeline.helpers import (
     _print,
@@ -514,7 +514,7 @@ def _run_final_report(
 
     # 打包前自动字体补丁（可选）
     if getattr(args, "patch_font", False):
-        resources_fonts = Path(__file__).resolve().parent.parent / "resources" / "fonts"
+        resources_fonts = default_resources_fonts_dir()
         font_path = resolve_font(resources_fonts, args.font_file or None)
         if font_path:
             output_game = resolve_scan_root(stage2_translated)

@@ -17,6 +17,19 @@ logger = logging.getLogger(__name__)
 FONT_EXTENSIONS = (".ttf", ".otf")
 
 
+def default_resources_fonts_dir() -> Path:
+    """Return canonical absolute path to ``resources/fonts/`` at project root.
+
+    ``core/font_patch.py`` lives one level below the project root, so
+    ``__file__.resolve().parent.parent`` climbs out of ``core/`` and into the
+    project root, where ``resources/fonts/`` is checked in.  Round 29 fixed the
+    same-class bug in ``tools/patch_font_now.py``; round 32 extracts this
+    helper so all four callers share one canonical resolution path and cannot
+    drift again.
+    """
+    return Path(__file__).resolve().parent.parent / "resources" / "fonts"
+
+
 def resolve_font(
     resources_fonts_dir: Path,
     explicit_file: Optional[str] = None,

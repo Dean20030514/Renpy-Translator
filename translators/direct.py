@@ -33,7 +33,7 @@ from core.glossary import Glossary
 from core.translation_db import TranslationDB
 from core.translation_utils import ProgressTracker, ProgressBar
 from file_processor import estimate_tokens, read_file
-from core.font_patch import apply_font_patch, resolve_font
+from core.font_patch import apply_font_patch, resolve_font, default_resources_fonts_dir
 
 # Re-export 兼容层：下游调用方 (main.py / engines/renpy_engine.py /
 # tests/test_all.py / tests/test_batch1.py / tests/test_direct_pipeline.py)
@@ -519,8 +519,11 @@ def run_pipeline(args: argparse.Namespace) -> None:
             logger.info(f"[复制] 复制了 {asset_count} 个资源文件")
 
     # 自动字体补丁（可选）
+    # Round 32: migrated from ``Path(__file__).parent / "resources" / "fonts"``
+    # which was missing one ``.parent`` (translators/ is one level below root)
+    # and silently returned None for the fonts dir on source-code runs.
     if getattr(args, "patch_font", False):
-        resources_fonts = Path(__file__).parent / "resources" / "fonts"
+        resources_fonts = default_resources_fonts_dir()
         font_path = resolve_font(resources_fonts, args.font_file or None)
         if font_path:
             apply_font_patch(output_dir / "game", game_dir, font_path)

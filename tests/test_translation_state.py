@@ -540,6 +540,36 @@ def test_runtime_hook_emit_if_requested_respects_flag():
     print("[OK] runtime_hook_emit_if_requested_respects_flag")
 
 
+def test_default_resources_fonts_dir_points_to_project_root():
+    """Round 32 Commit 1: ``default_resources_fonts_dir`` resolves to
+    ``<project_root>/resources/fonts`` regardless of which caller imports it.
+
+    Guards against the round 29 / round 32 class of bug where callers in
+    subpackages used ``Path(__file__).parent`` with one too few ``.parent``
+    steps and silently fell through to ``resolve_font``'s "fonts dir not
+    found" warning branch on source-code runs (the bug only disappeared
+    after PyInstaller bundled ``resources/`` at the expected relative path).
+    """
+    from core.font_patch import default_resources_fonts_dir
+
+    fonts_dir = default_resources_fonts_dir()
+    # Must be absolute so callers do not depend on process cwd.
+    assert fonts_dir.is_absolute()
+    # Must resolve to ``<project_root>/resources/fonts``.
+    assert fonts_dir.name == "fonts"
+    assert fonts_dir.parent.name == "resources"
+    project_root = fonts_dir.parent.parent
+    # Sanity: at project root we should see the canonical entry points.
+    assert (project_root / "main.py").is_file()
+    assert (project_root / "core" / "font_patch.py").is_file()
+    # Directory should actually exist in a checked-out tree and contain at
+    # least one bundled font (NotoSansSC-Regular.ttf per round 32 layout).
+    assert fonts_dir.is_dir()
+    ttf_files = list(fonts_dir.glob("*.ttf"))
+    assert ttf_files, "resources/fonts/ must contain at least one .ttf"
+    print("[OK] default_resources_fonts_dir_points_to_project_root")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -559,6 +589,8 @@ def run_all() -> int:
         # Round 31 Tier C (runtime-hook emitter)
         test_runtime_hook_emit_builds_map_and_copies_template,
         test_runtime_hook_emit_if_requested_respects_flag,
+        # Round 32 Commit 1 (default_resources_fonts_dir helper)
+        test_default_resources_fonts_dir_points_to_project_root,
     ]
     for t in tests:
         t()

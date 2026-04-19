@@ -23,7 +23,7 @@ import re
 import shutil
 from pathlib import Path
 
-from core.font_patch import resolve_font
+from core.font_patch import resolve_font, default_resources_fonts_dir
 
 logger = logging.getLogger("renpy_translator")
 
@@ -85,7 +85,10 @@ def _apply_tl_game_patches(game_dir: Path, tl_lang: str,
     """
     from core.font_patch import load_font_config
 
-    resources_fonts = Path(__file__).parent / "resources" / "fonts"
+    # Round 32: migrated from ``Path(__file__).parent / "resources" / "fonts"``
+    # which was missing one ``.parent`` (translators/ is one level below root)
+    # and silently returned None for the fonts dir on source-code runs.
+    resources_fonts = default_resources_fonts_dir()
     font_path = resolve_font(resources_fonts)
     if not font_path:
         logger.info("[TL-PATCH] 未找到中文字体，跳过字体补丁")
