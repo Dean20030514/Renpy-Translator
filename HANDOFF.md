@@ -165,4 +165,184 @@ HANDOFF round 34 挂起的三项绿色小项（🟢）已全部完成于 round 3
 
 ---
 
-**本文件由第 35 轮末尾自动生成，作为第 36 轮起点。**
+## 🔍 Round 31-35 深度检查发现（r35 收尾后专项审计）
+
+用户要求"深度检查第 31-35 轮"后进行的专项审查。3 个并行 Explore 代理从
+correctness / 测试覆盖 / 安全三个维度报告，经手工核实后得到下列结论。
+
+### 🔴 已**验证复现**的真实 Bug — round 36 必修
+
+#### H1: ProgressTracker 语言切换 resume 误跳（HIGH）
+
+**位置**：`core/translation_utils.py::ProgressTracker::is_chunk_done`（以及
+`is_file_done` / `get_file_translations`）
+
+**复现脚本**（刚才已跑通）：
+```python
+import json, tempfile
+from pathlib import Path
+from core.translation_utils import ProgressTracker
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / 'progress.json'
+    # pre-r35 progress (bare keys，从之前的 zh 运行留下)
+    p.write_text(json.dumps({
+        'completed_files': [],
+        'completed_chunks': {'a.rpy': [1, 2, 3]},
+        'results': {'a.rpy': [{'line': 1, 'zh': 'X'}]},
+        'stats': {},
+    }), encoding='utf-8')
+    # 升级后切换到 ja
+    pt_ja = ProgressTracker(p, language='ja')
+    # 预期：False（ja 从未翻译过）
+    # 实际：True / True / True（fallback 命中 zh bare key）
+    print([pt_ja.is_chunk_done('a.rpy', x) for x in [1,2,3]])  # [True, True, True]
+```
+
+**根因**：r35 的 bare-key fallback 设计服务"单语言从 r34 升 r35 保 resume"
+场景，**没**区分"同语言续跑"vs"跨语言污染"。切换语言时 ja 运行被误认为
+已完成 zh 的那些 chunks，导致 DB 里这些位置永远空缺。
+
+**修复方案**（~5 行）：
+```python
+# 方案 A（推荐）：fallback 只在 namespaced bucket 从未写入时触发
+def is_chunk_done(self, rel_path, part):
+    chunks = self.data.get("completed_chunks", {})
+    if self.language:
+        namespaced_key = self._key(rel_path)
+        if namespaced_key in chunks:  # 有 namespaced 数据 → 不 fallback
+            return part in chunks[namespaced_key]
+    return part in chunks.get(rel_path, [])
+
+# 方案 B：mark_chunk_done 首次写入时顺手清理对应 bare bucket（显式迁移）
+```
+
+**测试补充**：`tests/test_translation_state.py` 加
+`test_progress_tracker_language_switch_does_not_leak_across_langs`
+（构造 pre-r35 zh 数据 → language="ja" 构造 tracker → 断言 is_chunk_done
+全 False）。
+
+---
+
+#### H2: `repr(float('inf')/'nan')` emit 破坏生成的 .rpy（HIGH）
+
+**位置**：`core/runtime_hook_emitter.py::_emit_overrides_rpy` 第 ~345 行
+的 `lines.append(f"        {k} = {clean[k]!r}")`
+
+**复现脚本**（刚才已跑通）：
+```python
+import json, tempfile
+from pathlib import Path
+from core.runtime_hook_emitter import emit_runtime_hook
+# JSON 标准不支持 Infinity 但 Python json.loads 默认允许
+bad = json.loads('{"gui_overrides": {"gui.text_size": Infinity}}')
+# isinstance(inf, float) == True, not bool == True → 过 safety check
+# repr(inf) == 'inf'（非合法 Python literal）
+entries = [{'file':'a.rpy','line':1,'original':'X','translation':'Y','status':'ok'}]
+with tempfile.TemporaryDirectory() as td:
+    out = Path(td) / 'game'
+    emit_runtime_hook(out, entries, font_config=bad)
+    # 生成的 zz_tl_inject_gui.rpy 含:
+    #     gui.text_size = inf   ← NameError at runtime
+```
+
+**根因**：`_sanitise_overrides` 值类型检查只看 `isinstance(raw_val, (int,
+float)) and not isinstance(raw_val, bool)`，没排除 `inf` / `-inf` / `nan`。
+`repr(inf)` 产出的字符串 `"inf"` 在 Ren'Py 的 `init python` 上下文不是合法
+标识符 → 游戏启动 NameError。
+
+**修复方案**（~2 行）：
+```python
+import math  # 顶部加
+# _sanitise_overrides 内 isinstance 检查后加：
+if isinstance(raw_val, float) and not math.isfinite(raw_val):
+    logger.warning("[TL-INJECT] skipping non-finite %s value for %s: %r",
+                   category_name, raw_key, raw_val)
+    continue
+```
+
+**测试补充**：`tests/test_translation_state.py::test_sanitise_overrides_
+rejects_non_finite_floats` — inf / -inf / nan 均被 filter。
+
+---
+
+### 🟡 Medium 风险 — round 36/37 酌情修
+
+| # | 位置 | 问题 | 触发条件 | 修复工作量 |
+|---|------|------|---------|----------|
+| M1 | `core/translation_db.py::load()` | v2 schema + 部分 entries 缺 language 字段时 backfill 被跳过 | 只在手工编辑 DB JSON 时出现（hypothetical）| 扩 backfill 条件，~3 行 + 1 测试 |
+| M2 | `core/font_patch.py:91` / `core/translation_db.py:132` / `tools/merge_translations_v2.py:64` | 3 处 JSON loader 无文件大小上限 | 用户自供巨大 JSON 导致 OOM | 加 50MB cap，~5 行 × 3 处 |
+| M3 | `main.py:342-353` 外循环 | 循环末尾 `args.target_lang` 停在最后语言（不是第一个）| 无实际 reader，但未来扩展易踩 | 用局部变量替代 args 修改，~3 行 |
+| M4 | `tools/translation_editor.py::_apply_v2_edits:431` | `v2_path` 字段无路径白名单 | 用户从不可信源拿 edits.json | 加 path-prefix 校验，~10 行 |
+| M5 | `tools/_translation_editor_html.py` + `_apply_v2_edits` | side-by-side 编辑为空串的语义歧义（JS 跳过 vs Python 跳过的一致性） | 用户主动清空某语言 cell | 文档化 + 小 UI 提示，~5 行 |
+
+---
+
+### ⚫ Pre-existing 遗留（不是 r31-35 引入，但本次审计发现）
+
+**HANDOFF 历史声称"零大文件 > 800 行"不实**。git blame 确认这 4 个文件
+自 r31 之前就超，r31-35 **均未触碰**：
+
+| 文件 | 当前行数 | 最近一次被 r31-35 修改 |
+|------|---------|---------------------|
+| `tools/rpyc_decompiler.py` | 974 | 无 |
+| `core/api_client.py` | 965 | 无 |
+| `tests/test_engines.py` | 962 | 无 |
+| `gui.py` | 815 | 无 |
+
+round 36+ 可考虑独立一轮技术债清理（参 r17 / r29 / r32 的拆分 precedent）。
+或接受"800 是软上限；这 4 个文件历史形成"作正式政策例外。
+
+---
+
+### ❌ Agent 报告中经核实**不准确**的指控（记录在此防下次误用）
+
+防止下次对话重新做同样的 bad diagnosis。
+
+| Agent | 原 Claim | 核实结果 |
+|-------|---------|---------|
+| Agent 2 | "CLAUDE.md 声称 307 实际 362，虚报 55" | **误读**。CLAUDE.md 准确写 376。 |
+| Agent 2 | "smoke_test 不存在，虚计 13 条" | **错**。文件在 `tests/smoke_test.py`（9252 字节，13 tests）。 |
+| Agent 2 | "22 / 212 orphan 测试（无 `run_all`）" | **误判**。Standalone suites 用 inline runner 是**设计模式**（test_engines / test_batch1 等 10 套件都这样），不进 test_all.py meta-runner 是**有意**的。test_all.py 只覆盖 6 个"核心 split"；其余套件独立跑。 |
+| Agent 3 | "CRITICAL path traversal in `_apply_v2_edits`" | **过度升级**。威胁模型需 attacker 控制 edits.json；正常流程操作员自导自入同一 JSON。实际 LOW-MEDIUM。 |
+| Agent 3 | "CRITICAL regex DoS via `_SAFE_GUI_KEY`" | **夸大**。Python `re` 非 NFA，polynomial 非 exponential。200-char length cap 即缓解。MEDIUM 顶。 |
+| Agent 3 | "XSS in banner innerHTML" | **误判**。所有 `innerHTML` 赋值都走 `esc()` helper（用 `textContent` 转 `innerHTML` 的正确 pattern），实际安全。 |
+
+---
+
+### 📋 Round 36 建议执行顺序
+
+**必做（都很小）**：
+1. **修 H1 ProgressTracker bare-key fallback** — ~5 行 + 1 regression 测试
+2. **修 H2 `_sanitise_overrides` 加 isfinite 检查** — ~2 行 + 1 安全测试
+
+**推荐（防御性加固）**：
+3. M2 JSON size cap × 3 处 — ~15 行
+4. M3 `main.py` args 循环后不污染 — ~3 行
+5. M4 `_apply_v2_edits` path 白名单 — ~10 行
+
+**大项（建议独立一轮）**：
+6. 拆分 4 个 pre-existing > 800 行文件（`rpyc_decompiler.py` / `api_client.py` /
+   `test_engines.py` / `gui.py`）— 参 r17 / r29 / r32
+
+**round 35 原 HANDOFF 候选不变**（以下三项并行考虑）：
+- 🟢 tl-mode / retranslate per-language prompt（让 `--tl-mode ja` 真实工作）
+- 🟢 `config_overrides` 值类型扩 bool
+- 🟢 editor side-by-side mobile 自适应
+
+---
+
+### ✅ 整体质量评估
+
+- 向后兼容：✅ 所有 default path 保 byte-identical
+- 测试覆盖：✅ 新加 69 个测试有实质断言（Agent 2 指控的 3 项"空洞"经核实只是"可以更强"而非"无效"）
+- 新功能 correctness：✅ 主流程无 bug，只有两个 edge case bug（H1/H2）
+- 文档同步：⚠️ HANDOFF 历史"零大文件"声明不实（pre-existing），其余准确
+
+**R31-35 的 5 轮 steady-state 迭代交付质量 B+**（主流程稳、两个 edge case bug、
+pre-existing 技术债未清）。建议 round 36 先修 H1/H2 再进新功能。
+
+---
+
+**本文件由第 35 轮末尾生成 + 深度审计补注，作为第 36 轮起点。**
+**下次对话：直接读 `HANDOFF.md` 这一 section，决定 round 36 先修 H1/H2 还是走原
+HANDOFF 候选方向。**
