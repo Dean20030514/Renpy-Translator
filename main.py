@@ -78,6 +78,27 @@ def _ratio_float(value: str) -> float:
     return fv
 
 
+def _parse_target_langs(raw: str) -> list[str]:
+    """Round 35 Subtask 1: parse ``--target-lang`` into a list.
+
+    ``"zh"``        → ``["zh"]``             (single lang, round-34 behaviour)
+    ``"zh-tw"``     → ``["zh-tw"]``          (BCP-47 hyphen preserved)
+    ``"zh,ja"``     → ``["zh", "ja"]``       (comma-separated multi-lang)
+    ``"zh, ja ,ja"`` → ``["zh", "ja"]``      (whitespace stripped, dupes kept
+                                              as-is for operator visibility)
+    ``""`` / ``None`` / ``",,,"`` → ``["zh"]`` (safe default fallback)
+
+    The outer translation loop in :func:`main` iterates over this list,
+    swapping ``args.target_lang`` + refreshing ``args.lang_config`` each
+    time, so downstream code that reads the singular form stays
+    unchanged from round 34.
+    """
+    if not raw:
+        return ["zh"]
+    langs = [lang.strip() for lang in str(raw).split(",") if lang.strip()]
+    return langs or ["zh"]
+
+
 # ============================================================
 # CLI 入口
 # ============================================================
@@ -138,7 +159,11 @@ def main():
     parser.add_argument("--log-file", default="", metavar="PATH",
                         help="保存详细日志到文件")
     parser.add_argument("--target-lang", default=None,
-                        help="目标语言 (默认: zh 简体中文)")
+                        help="目标语言 (默认: zh 简体中文)。Round 35: "
+                             "支持逗号分隔多语言（如 ``--target-lang zh,ja,zh-tw``）"
+                             "触发外层语言循环，每语言跑一次流水线；"
+                             "API 成本 N 倍。注意 ``--tl-mode`` / ``--retranslate`` "
+                             "的 prompt 是中文专用，多语言下会报错")
     parser.add_argument("--input-price", type=float, default=None, metavar="USD",
                         help="手动指定输入价格 (每百万 tokens, 美元)")
     parser.add_argument("--output-price", type=float, default=None, metavar="USD",
@@ -217,6 +242,17 @@ def main():
     args.max_chunk_tokens = cfg.get("max_chunk_tokens", 4000)
     args.max_response_tokens = cfg.get("max_response_tokens", 32768)
     args.target_lang = cfg.get("target_lang", "zh")
+    # Round 35 Subtask 1: ``--target-lang zh,ja,zh-tw`` comma-separated
+    # splits into a list of per-language runs.  Single-language syntax
+    # (``--target-lang zh`` / ``--target-lang zh-tw``) stays a 1-element
+    # list so the outer loop below has a single iteration — round-34
+    # behaviour is byte-identical.  BCP-47 tags use hyphens not commas,
+    # so ``zh-tw`` is unambiguously a single language code.
+    args.target_langs = _parse_target_langs(args.target_lang)
+    # args.target_lang stays the first (or only) language so downstream
+    # code that reads the singular form keeps working during the first
+    # iteration of the outer loop.
+    args.target_lang = args.target_langs[0]
     args.min_dialogue_density = cfg.get("min_dialogue_density", 0.20)
     args.tl_lang = cfg.get("tl_lang", "chinese")
     if args.dict is None:
@@ -258,6 +294,25 @@ def main():
         logger.error("[ERROR] --retranslate 和 --tl-mode 互斥，不能同时使用")
         sys.exit(1)
 
+    # Round 35 Subtask 1: multi-language guard.  ``tl-mode`` and
+    # ``retranslate`` share Chinese-only system prompts (see
+    # core/prompts.py::TLMODE_SYSTEM_PROMPT + RETRANSLATE_SYSTEM_PROMPT —
+    # both hardcode the ``"zh"`` output field regardless of target_lang)
+    # so multi-language invocation would silently produce duplicate
+    # Chinese translations stored under each non-zh language bucket.
+    # Error out with an actionable message rather than letting that
+    # land in the DB.
+    if len(args.target_langs) > 1 and (tl_mode or args.retranslate):
+        logger.error(
+            "[ERROR] --target-lang %s 指定了多语言，但 --%s 的 prompt 是"
+            "中文专用（只认 zh 字段），多语言模式会产出错误结果。请：(a) "
+            "单语言运行；或 (b) 去掉 --%s 改用 direct-mode",
+            ",".join(args.target_langs),
+            "tl-mode" if tl_mode else "retranslate",
+            "tl-mode" if tl_mode else "retranslate",
+        )
+        sys.exit(1)
+
     # Round 28 A-H-3 Minimal: unified engine routing.  Every engine
     # (Ren'Py + auto + rpgmaker + csv + jsonl) now goes through the same
     # ``engines.resolve_engine(...).run(args)`` entry.  Ren'Py-specific
@@ -270,7 +325,32 @@ def main():
     if engine is None:
         logger.error(f"[ERROR] 无法创建引擎: {engine_arg}")
         sys.exit(1)
-    engine.run(args)
+
+    # Round 35 Subtask 1: outer language loop.  Single-language runs take
+    # this path exactly once (no observable behaviour change from r34).
+    # Multi-language runs iterate once per language, re-using the same
+    # ``engine`` instance but swapping ``args.target_lang`` + refreshing
+    # ``args.lang_config``.  API cost scales N× the source file size; the
+    # warning prints up front so the operator can Ctrl-C before anything
+    # is spent.
+    if len(args.target_langs) > 1:
+        logger.warning(
+            "[MULTI-LANG] 即将对 %d 种语言 %s 各跑一次翻译流水线，"
+            "API 成本约为单语言的 %d 倍。按 Ctrl-C 取消。",
+            len(args.target_langs), args.target_langs, len(args.target_langs),
+        )
+    for _idx, _lang in enumerate(args.target_langs):
+        args.target_lang = _lang
+        # lang_config 依赖 target_lang；每次迭代刷新，direct-mode 的 system
+        # prompt 才会匹配新语言。
+        args.lang_config = get_language_config(_lang)
+        if len(args.target_langs) > 1:
+            logger.info(
+                "[MULTI-LANG] === 语言 %d/%d: %s (%s) ===",
+                _idx + 1, len(args.target_langs), _lang,
+                args.lang_config.native_name,
+            )
+        engine.run(args)
 
 
 if __name__ == "__main__":
