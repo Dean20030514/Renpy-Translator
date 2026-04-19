@@ -209,7 +209,11 @@ def run_generic_pipeline(engine, args) -> None:
     provider = getattr(args, 'provider', 'xai') or 'xai'
     model = getattr(args, 'model', '') or ''
     api_key = getattr(args, 'api_key', '') or ''
-    config = APIConfig(provider=provider, model=model, api_key=api_key)
+    config = APIConfig(
+        provider=provider, model=model, api_key=api_key,
+        custom_module=getattr(args, 'custom_module', '') or '',
+        sandbox_plugin=getattr(args, 'sandbox_plugin', False),
+    )
     config.timeout = getattr(args, 'timeout', 180.0) or 180.0
     config.temperature = getattr(args, 'temperature', 0.1) or 0.1
     config.max_response_tokens = getattr(args, 'max_response_tokens', 32768) or 32768

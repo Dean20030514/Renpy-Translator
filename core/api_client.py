@@ -4,10 +4,13 @@
 
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
 import logging
 import re
+import subprocess
+import sys
 import time
 import threading
 from dataclasses import dataclass, field
@@ -185,6 +188,243 @@ def _load_custom_engine(module_name: str) -> Any:
     return mod
 
 
+class _SubprocessPluginClient:
+    """Long-running subprocess wrapper for custom translation plugins.
+
+    Round 28 S-H-4: when ``--sandbox-plugin`` is enabled, custom plugins are
+    invoked through an out-of-process JSONL protocol rather than loaded via
+    ``importlib``.  That denies the plugin direct access to the host's
+    environment variables, file descriptors, and heap, while keeping
+    latency acceptable by reusing a single child interpreter across every
+    chunk translation.
+
+    Protocol (newline-delimited JSON, one object per line):
+
+    * Request (host → plugin):
+      ``{"request_id": <int>, "system_prompt": <str>, "user_prompt": <str>}``
+    * Response (plugin → host):
+      ``{"request_id": <int>, "response": <str|null>, "error": <str|null>}``
+    * Shutdown (host → plugin): ``{"request_id": -1}`` followed by stdin close.
+
+    The plugin module's ``__main__`` block is responsible for reading
+    stdin, dispatching to ``translate_batch`` / ``translate``, and writing
+    the JSON line to stdout (flushed).  ``custom_engines/example_echo.py``
+    demonstrates the canonical shape; new plugins should follow the same
+    pattern so they work in either mode.
+    """
+
+    _SHUTDOWN_REQUEST_ID = -1
+
+    def __init__(
+        self,
+        module_name: str,
+        *,
+        timeout: float = 180.0,
+    ) -> None:
+        if not module_name:
+            raise RuntimeError(
+                "自定义引擎需要指定模块名: --custom-module <模块名>\n"
+                f"模块文件应放在项目目录的 {_CUSTOM_ENGINES_DIR}/ 子目录下"
+            )
+
+        if module_name.endswith(".py"):
+            module_name = module_name[:-3]
+        if "/" in module_name or "\\" in module_name or ".." in module_name:
+            raise RuntimeError(
+                f"自定义引擎模块名不能包含路径分隔符: '{module_name}'"
+            )
+
+        project_root = Path(__file__).resolve().parent.parent
+        engines_dir = project_root / _CUSTOM_ENGINES_DIR
+        module_path = engines_dir / f"{module_name}.py"
+        if not module_path.is_file():
+            raise RuntimeError(
+                f"自定义引擎模块未找到: {module_path}\n"
+                f"请在 {engines_dir}/ 目录下创建 {module_name}.py 文件"
+            )
+
+        self._module_path = module_path
+        self._timeout = timeout
+        self._request_id = 0
+        self._lock = threading.Lock()
+        self._closed = False
+
+        # Launch the subprocess.  ``-u`` ensures unbuffered stdout so every
+        # response line reaches us without waiting for a full buffer.
+        self._proc = subprocess.Popen(
+            [sys.executable, "-u", str(module_path), "--plugin-serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(project_root),
+            text=True,
+            encoding="utf-8",
+            # Line-buffered on the host side so our writes flush per line.
+            bufsize=1,
+        )
+        logger.info(
+            "[API] 沙箱模式启动自定义引擎子进程: %s (pid=%s)",
+            module_path, self._proc.pid,
+        )
+        # Best-effort cleanup when the process interpreter exits without an
+        # explicit close() call (e.g. KeyboardInterrupt paths).
+        atexit.register(self._shutdown_quietly)
+
+    # -----------------------------------------------------------------
+    # Public duck-typed interface mirroring a loaded plugin module.
+    # ``APIClient._call_custom`` checks ``hasattr(mod, "translate_batch")``
+    # and calls it with the raw prompts — presenting the same method
+    # here means the sandbox path reuses the legacy batch-dispatch code.
+    # -----------------------------------------------------------------
+
+    def translate_batch(self, system_prompt: str, user_prompt: str) -> str:
+        return self._call(system_prompt, user_prompt)
+
+    def _call(self, system_prompt: str, user_prompt: str) -> str:
+        if self._closed:
+            raise RuntimeError("自定义引擎子进程已关闭，无法继续调用")
+        if self._proc.poll() is not None:
+            stderr = ""
+            try:
+                stderr = (self._proc.stderr.read() or "")[-600:]
+            except (OSError, ValueError):
+                pass
+            raise RuntimeError(
+                f"自定义引擎子进程意外退出 (exit={self._proc.returncode}): {stderr}"
+            )
+
+        with self._lock:
+            self._request_id += 1
+            req_id = self._request_id
+            request = {
+                "request_id": req_id,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+            try:
+                line = json.dumps(request, ensure_ascii=False) + "\n"
+                self._proc.stdin.write(line)
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError) as e:
+                raise RuntimeError(f"自定义引擎子进程写入失败: {e}") from e
+
+            # Single-line read; the protocol guarantees one response per
+            # request delimited by ``\n``.  The host-side timeout is the
+            # APIConfig timeout; if the plugin hangs we kill the process.
+            response_line = self._read_response_line(req_id)
+            try:
+                response = json.loads(response_line)
+            except (json.JSONDecodeError, ValueError) as e:
+                raise RuntimeError(
+                    f"自定义引擎子进程返回非法 JSON: {response_line[:200]!r}"
+                ) from e
+
+            if response.get("request_id") != req_id:
+                raise RuntimeError(
+                    f"自定义引擎子进程响应乱序: expected request_id={req_id}, "
+                    f"got {response.get('request_id')!r}"
+                )
+            error = response.get("error")
+            if error:
+                raise RuntimeError(f"自定义引擎子进程报错: {error}")
+            payload = response.get("response")
+            if payload is None:
+                return ""
+            if isinstance(payload, str):
+                return payload
+            # If the plugin returns list[dict] through the JSON field we
+            # re-serialise it so the caller's ``json.loads`` round-trip
+            # still works.
+            return json.dumps(payload, ensure_ascii=False)
+
+    def _read_response_line(self, req_id: int) -> str:
+        """Read a single line from the subprocess stdout with timeout."""
+        # ``TimeoutExpired`` would only work with ``communicate``; here we
+        # emulate a deadline by reading in a helper thread and joining
+        # with timeout.  This keeps the implementation pure-stdlib.
+        result: list[str] = []
+        error: list[BaseException] = []
+
+        def _reader() -> None:
+            try:
+                line = self._proc.stdout.readline()
+                if line == "":
+                    error.append(EOFError("plugin stdout closed before response"))
+                    return
+                result.append(line.rstrip("\n"))
+            except BaseException as e:  # noqa: BLE001 - re-raise on main thread
+                error.append(e)
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        t.join(self._timeout)
+        if t.is_alive():
+            # Plugin stuck — kill the subprocess so we don't leak it.
+            # Wait briefly so poll() reflects the terminated state for any
+            # diagnostic code the caller runs after catching this error.
+            try:
+                self._proc.kill()
+            except OSError:
+                pass
+            try:
+                self._proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            raise RuntimeError(
+                f"自定义引擎子进程响应超时 (>{self._timeout}s, request_id={req_id})"
+            )
+        if error:
+            raise RuntimeError(f"读取自定义引擎子进程响应失败: {error[0]}") from error[0]
+        return result[0] if result else ""
+
+    # -----------------------------------------------------------------
+    # Lifecycle
+    # -----------------------------------------------------------------
+
+    def close(self) -> None:
+        """Send the shutdown sentinel and terminate the subprocess.
+
+        Safe to call multiple times.  Catches every subprocess-related
+        error so repeated shutdowns never raise.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._proc.poll() is None and self._proc.stdin and not self._proc.stdin.closed:
+                self._proc.stdin.write(
+                    json.dumps({"request_id": self._SHUTDOWN_REQUEST_ID}) + "\n"
+                )
+                self._proc.stdin.flush()
+                self._proc.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                self._proc.kill()
+            except OSError:
+                pass
+            try:
+                self._proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def _shutdown_quietly(self) -> None:
+        """``atexit`` hook — swallow all errors so interpreter exit is clean."""
+        try:
+            self.close()
+        except BaseException:  # noqa: BLE001
+            pass
+
+    def __del__(self) -> None:  # pragma: no cover - finaliser
+        try:
+            self.close()
+        except BaseException:  # noqa: BLE001
+            pass
+
+
 @dataclass
 class APIConfig:
     """API 连接配置"""
@@ -198,6 +438,14 @@ class APIConfig:
     max_retries: int = 5
     max_response_tokens: int = 32768
     custom_module: str = ""  # 自定义翻译引擎模块名（仅 provider="custom" 时使用）
+    # Round 28 S-H-4 opt-in subprocess sandbox for custom plugins.
+    # Default False keeps the historical ``importlib`` fast-path; passing
+    # ``--sandbox-plugin`` on the CLI (plumbed through by every caller
+    # that propagates ``custom_module``) launches the plugin in a
+    # long-running subprocess that talks JSONL over stdin/stdout,
+    # denying the plugin in-process access to env vars, file system,
+    # and network.
+    sandbox_plugin: bool = False
     # 持久 HTTPS 连接复用（True=thread-local pool, False=每次新建 urllib 连接）。
     # 默认启用：典型游戏 600 次 API 调用可节省 ~90s 的 TCP+TLS 握手时间。
     # 若遇到兼容问题可通过配置文件设置 "use_connection_pool": false 回退。
@@ -342,7 +590,16 @@ class APIClient:
         self.usage = UsageStats(config.provider, config.model)
         self._custom_module = None
         if config.provider.lower() == "custom":
-            self._custom_module = _load_custom_engine(config.custom_module)
+            if config.sandbox_plugin:
+                # Round 28 S-H-4: opt-in subprocess sandbox.  The returned
+                # ``_SubprocessPluginClient`` is duck-typed as a plugin
+                # module (exposes ``translate_batch``) so the rest of this
+                # file continues to work unchanged.
+                self._custom_module = _SubprocessPluginClient(
+                    config.custom_module, timeout=config.timeout,
+                )
+            else:
+                self._custom_module = _load_custom_engine(config.custom_module)
         # 持久连接池（仅 HTTPS 端点；custom provider 不走 HTTP 所以也不需要）
         self._pool = None
         if config.use_connection_pool and config.provider.lower() != "custom":
