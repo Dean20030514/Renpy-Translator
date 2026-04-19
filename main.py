@@ -339,18 +339,30 @@ def main():
             "API 成本约为单语言的 %d 倍。按 Ctrl-C 取消。",
             len(args.target_langs), args.target_langs, len(args.target_langs),
         )
-    for _idx, _lang in enumerate(args.target_langs):
-        args.target_lang = _lang
-        # lang_config 依赖 target_lang；每次迭代刷新，direct-mode 的 system
-        # prompt 才会匹配新语言。
-        args.lang_config = get_language_config(_lang)
-        if len(args.target_langs) > 1:
-            logger.info(
-                "[MULTI-LANG] === 语言 %d/%d: %s (%s) ===",
-                _idx + 1, len(args.target_langs), _lang,
-                args.lang_config.native_name,
-            )
-        engine.run(args)
+    # Round 37 M3: save pre-loop state so any post-loop reader (future
+    # reporting code, integration tests, CLI chaining) observes the
+    # canonical first-language value rather than the last iteration's
+    # residue.  No current reader depends on this invariant but future
+    # extensions would silently regress without it, so the save/restore
+    # pair is a cheap defensive guard.
+    _saved_target_lang = args.target_lang
+    _saved_lang_config = args.lang_config
+    try:
+        for _idx, _lang in enumerate(args.target_langs):
+            args.target_lang = _lang
+            # lang_config 依赖 target_lang；每次迭代刷新，direct-mode 的 system
+            # prompt 才会匹配新语言。
+            args.lang_config = get_language_config(_lang)
+            if len(args.target_langs) > 1:
+                logger.info(
+                    "[MULTI-LANG] === 语言 %d/%d: %s (%s) ===",
+                    _idx + 1, len(args.target_langs), _lang,
+                    args.lang_config.native_name,
+                )
+            engine.run(args)
+    finally:
+        args.target_lang = _saved_target_lang
+        args.lang_config = _saved_lang_config
 
 
 if __name__ == "__main__":
