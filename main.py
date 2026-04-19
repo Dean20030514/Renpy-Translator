@@ -113,6 +113,11 @@ def main():
     parser.add_argument("--resume", action="store_true", help="从上次中断处继续")
     parser.add_argument("--dict", nargs="*", default=None, metavar="PATH",
                         help="外部词典文件（CSV/JSONL，可多个）")
+    parser.add_argument("--ui-button-whitelist", nargs="*", default=None, metavar="PATH",
+                        help="UI 按钮白名单扩展文件（.txt 每行一词 + # 注释 / .json list，可多个）。"
+                             "扩展的按钮会在 Python 端 is_common_ui_button 返回 True，并在启用 "
+                             "--emit-runtime-hook 时通过 sidecar ui_button_whitelist.json 同步到 "
+                             "inject_hook.rpy 运行时")
     parser.add_argument("--copy-assets", action="store_true",
                         help="复制非 .rpy 资源文件到输出目录")
     parser.add_argument("--workers", type=int, default=None,
@@ -213,6 +218,15 @@ def main():
         args.dict = cfg.get("dict", []) or []
     if args.exclude is None:
         args.exclude = cfg.get("exclude", []) or []
+    # Round 32 Commit 2: UI-button whitelist extension files.  Loader is
+    # best-effort (missing files / bad JSON log warning + skip), so we
+    # can always call through regardless of CLI / config presence.  MUST
+    # complete before engine.run(args) spawns the ThreadPoolExecutor.
+    if args.ui_button_whitelist is None:
+        args.ui_button_whitelist = cfg.get("ui_button_whitelist", []) or []
+    if args.ui_button_whitelist:
+        from file_processor import load_ui_button_whitelist
+        load_ui_button_whitelist(args.ui_button_whitelist)
 
     # 解析目标语言配置
     from core.lang_config import get_language_config

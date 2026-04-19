@@ -30,6 +30,11 @@ from file_processor.checker import (
     _restore_placeholders_in_translations,
     _restore_locked_terms_in_translations,
     _fix_chinese_placeholder_drift_in_translations,
+    # Round 32 Commit 2: runtime-configurable UI-button whitelist extensions
+    add_ui_button_whitelist,
+    load_ui_button_whitelist,
+    clear_ui_button_whitelist,
+    get_ui_button_whitelist_extensions,
 )
 from file_processor.patcher import (
     apply_translations,
@@ -71,6 +76,11 @@ __all__ = [
     "_restore_placeholders_in_translations",
     "_restore_locked_terms_in_translations",
     "_fix_chinese_placeholder_drift_in_translations",
+    # Round 32 Commit 2: runtime-configurable UI-button whitelist extensions
+    "add_ui_button_whitelist",
+    "load_ui_button_whitelist",
+    "clear_ui_button_whitelist",
+    "get_ui_button_whitelist_extensions",
     # patcher
     "apply_translations",
     "_replace_string_in_line",

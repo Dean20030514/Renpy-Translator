@@ -85,12 +85,31 @@ def build_translations_map(
     return mapping
 
 
+def _write_json_atomic(path: Path, data: object) -> None:
+    """Write ``data`` as pretty UTF-8 JSON atomically via temp + os.replace.
+
+    Shared helper so every artefact emitted by the runtime hook (translations,
+    ui whitelist sidecar, and future v2 schema envelopes) uses identical
+    crash-safety: an interrupted run never leaves a half-written file.
+    Keys are sorted for stable diffs; ``ensure_ascii=False`` keeps CJK
+    content readable when users inspect the files.
+    """
+    import os as _os
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(
+        json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+    _os.replace(str(tmp_path), str(path))
+
+
 def emit_runtime_hook(
     output_game_dir: Path,
     translation_db_entries: Iterable[Mapping[str, object]],
     *,
     hook_template_path: Path | None = None,
     hook_filename: str = "zz_tl_inject_hook.rpy",
+    ui_button_extensions: Iterable[str] | None = None,
 ) -> tuple[Path, Path, int]:
     """Write ``translations.json`` + copy the inject hook into
     ``output_game_dir``.
@@ -107,6 +126,12 @@ def emit_runtime_hook(
             Default uses the ``zz_`` prefix so Ren'Py loads it last among
             ``init python early:`` blocks — safest order for a monkey-patch
             shim that depends on other game init running first.
+        ui_button_extensions: Optional iterable of UI-button whitelist
+            extensions (round 32 Subtask A).  When non-empty, written to a
+            sidecar ``ui_button_whitelist.json`` next to ``translations.json``
+            so ``inject_hook.rpy`` can mirror the Python-side extensions at
+            runtime.  Empty / None → sidecar file is NOT created, keeping
+            default output byte-compatible with round 31.
 
     Returns:
         (translations_json_path, hook_rpy_path, entry_count)
@@ -133,15 +158,20 @@ def emit_runtime_hook(
     # so an interrupted run never leaves a half-written JSON.
     mapping = build_translations_map(translation_db_entries)
     json_path = output_game_dir / "translations.json"
-    tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-    # Sort keys for stable diffs across re-runs; ensure_ascii=False to keep
-    # Chinese readable when users inspect the file.
-    tmp_path.write_text(
-        json.dumps(mapping, ensure_ascii=False, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
-    import os as _os
-    _os.replace(str(tmp_path), str(json_path))
+    _write_json_atomic(json_path, mapping)
+
+    # Round 32 Subtask A: optional UI-button whitelist sidecar.  Written
+    # only when the caller supplied non-empty extensions — default output
+    # stays byte-compatible with round 31 (translations.json + hook only).
+    if ui_button_extensions is not None:
+        ext_sorted = sorted({str(t) for t in ui_button_extensions if isinstance(t, str) and t})
+        if ext_sorted:
+            ui_json_path = output_game_dir / "ui_button_whitelist.json"
+            _write_json_atomic(ui_json_path, {"extensions": ext_sorted})
+            logger.info(
+                "[TL-INJECT] emitted UI button sidecar: %d extensions → %s",
+                len(ext_sorted), ui_json_path.name,
+            )
 
     # Copy the hook .rpy — shutil.copy2 preserves mtime/permissions so
     # Ren'Py's .rpyc cache invalidation still works when the template
@@ -190,6 +220,17 @@ def emit_if_requested(
             logger.info("[TL-INJECT] skip emit — translation_db empty")
             return
         output_game_dir = Path(output_dir) / "game"
-        emit_runtime_hook(output_game_dir, entries)
+        # Round 32 Subtask A: mirror the Python-side UI-button whitelist
+        # extensions into a sidecar JSON so the inject_hook can read them
+        # at runtime.  Returns frozenset (already empty / populated by
+        # main.py before engine.run); we pass through unconditionally —
+        # emit_runtime_hook treats empty input as "don't emit sidecar".
+        ui_ext: Iterable[str] | None = None
+        try:
+            from file_processor import get_ui_button_whitelist_extensions
+            ui_ext = get_ui_button_whitelist_extensions()
+        except ImportError:
+            ui_ext = None
+        emit_runtime_hook(output_game_dir, entries, ui_button_extensions=ui_ext)
     except (OSError, ValueError, FileNotFoundError) as e:
         logger.warning("[TL-INJECT] emit failed, continuing: %s", e)

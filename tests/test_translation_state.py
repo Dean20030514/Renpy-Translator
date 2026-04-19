@@ -540,6 +540,71 @@ def test_runtime_hook_emit_if_requested_respects_flag():
     print("[OK] runtime_hook_emit_if_requested_respects_flag")
 
 
+def test_emit_runtime_hook_writes_ui_sidecar_when_extensions_set():
+    """Round 32 Subtask A: ``emit_runtime_hook`` writes a sidecar
+    ``ui_button_whitelist.json`` next to ``translations.json`` when
+    ``ui_button_extensions`` is non-empty.  File has canonical
+    ``{"extensions": [...]}`` shape with sorted tokens.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        # Deliberately mixed-case / whitespace: emitter must pass through the
+        # already-normalised tokens verbatim (the normalisation happens on
+        # the Python-side ``add_ui_button_whitelist`` path before we get here).
+        emit_runtime_hook(
+            out_game, entries,
+            ui_button_extensions=["存档", "读档", "main hub"],
+        )
+        sidecar = out_game / "ui_button_whitelist.json"
+        assert sidecar.is_file(), "sidecar ui_button_whitelist.json must be emitted"
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        assert "extensions" in data
+        # Sorted for stable diffs.
+        assert data["extensions"] == sorted(["存档", "读档", "main hub"])
+        # Primary translations.json + hook still emitted.
+        assert (out_game / "translations.json").is_file()
+        assert (out_game / "zz_tl_inject_hook.rpy").is_file()
+    print("[OK] emit_runtime_hook_writes_ui_sidecar_when_extensions_set")
+
+
+def test_emit_runtime_hook_skips_ui_sidecar_when_empty():
+    """Round 32 Subtask A: empty / None ``ui_button_extensions`` must NOT
+    create a sidecar file — default output stays byte-compatible with
+    round 31 (translations.json + hook only).
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{
+        "file": "a.rpy", "line": 1, "original": "Hello",
+        "translation": "你好", "status": "ok",
+    }]
+
+    for ext in (None, [], (), frozenset(), {""}):
+        with tempfile.TemporaryDirectory() as td:
+            out_game = Path(td) / "game"
+            emit_runtime_hook(out_game, entries, ui_button_extensions=ext)
+            assert not (out_game / "ui_button_whitelist.json").exists(), (
+                f"sidecar must not be created for ui_button_extensions={ext!r}"
+            )
+            # But translations.json + hook still get emitted.
+            assert (out_game / "translations.json").is_file()
+            assert (out_game / "zz_tl_inject_hook.rpy").is_file()
+    print("[OK] emit_runtime_hook_skips_ui_sidecar_when_empty")
+
+
 def test_default_resources_fonts_dir_points_to_project_root():
     """Round 32 Commit 1: ``default_resources_fonts_dir`` resolves to
     ``<project_root>/resources/fonts`` regardless of which caller imports it.
@@ -591,6 +656,9 @@ def run_all() -> int:
         test_runtime_hook_emit_if_requested_respects_flag,
         # Round 32 Commit 1 (default_resources_fonts_dir helper)
         test_default_resources_fonts_dir_points_to_project_root,
+        # Round 32 Commit 2 (UI whitelist sidecar)
+        test_emit_runtime_hook_writes_ui_sidecar_when_extensions_set,
+        test_emit_runtime_hook_skips_ui_sidecar_when_empty,
     ]
     for t in tests:
         t()

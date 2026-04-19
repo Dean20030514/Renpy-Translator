@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -426,18 +426,145 @@ COMMON_UI_BUTTONS: frozenset[str] = frozenset({
 })
 
 
+def _normalise_ui_button(text: str) -> str:
+    """Lower-case + collapse-whitespace rule shared by ``is_common_ui_button``
+    and the ``add_ui_button_whitelist`` loader so lookups and inserts stay
+    aligned.  Returns an empty string for non-strings or all-whitespace input.
+    """
+    if not isinstance(text, str):
+        return ""
+    return " ".join(text.strip().lower().split())
+
+
 def is_common_ui_button(text: str) -> bool:
     """Return True if ``text`` looks like a standard Ren'Py UI button whose
     English string is often wired to screen layout / hotkeys.
 
-    Normalises case + whitespace before the lookup.  Not intended to be an
-    exhaustive classifier — just a fast "smells like a button" hint.  Extend
-    ``COMMON_UI_BUTTONS`` when real games hit false negatives.
+    Normalises case + whitespace before the lookup, then checks both the
+    immutable ``COMMON_UI_BUTTONS`` baseline and the runtime-configurable
+    ``_ui_button_extensions`` set populated by ``load_ui_button_whitelist``.
+    Not intended to be an exhaustive classifier — just a fast "smells like
+    a button" hint.
     """
-    if not isinstance(text, str):
+    normalised = _normalise_ui_button(text)
+    if not normalised:
         return False
-    normalised = " ".join(text.strip().lower().split())
-    return bool(normalised) and normalised in COMMON_UI_BUTTONS
+    return normalised in COMMON_UI_BUTTONS or normalised in _ui_button_extensions
+
+
+# ============================================================
+# Round 32 Commit 2: runtime-configurable UI-button whitelist extensions.
+# ``COMMON_UI_BUTTONS`` above is the immutable baseline copied byte-for-byte
+# from the competitor hook's curated list.  Operators can layer project-
+# specific tokens (e.g. Chinese ``存档`` / ``读档``) on top via the
+# ``--ui-button-whitelist`` CLI flag or the ``ui_button_whitelist`` config
+# key, and those extensions are mirrored to hook-side via the sidecar
+# ``ui_button_whitelist.json`` emitted by ``core/runtime_hook_emitter.py``.
+#
+# Thread-safety contract: ``_ui_button_extensions`` is a frozenset that is
+# *rebound* (not mutated) on every load/add/clear.  Attribute rebind is
+# atomic under the GIL, so readers of ``is_common_ui_button`` in worker
+# threads always observe a consistent snapshot.  All loaders MUST complete
+# before the first ``engine.run(args)`` spawns a ThreadPoolExecutor.
+# ============================================================
+
+_ui_button_extensions: frozenset[str] = frozenset()
+
+
+def add_ui_button_whitelist(tokens: Iterable[str]) -> int:
+    """Rebind ``_ui_button_extensions`` with ``tokens`` merged in.
+
+    Returns the number of previously-unseen entries that were inserted.
+    Tokens are normalised via ``_normalise_ui_button``; empties and
+    non-strings are silently dropped.  Idempotent: replaying the same
+    token list is a no-op.
+    """
+    global _ui_button_extensions
+    cleaned = {_normalise_ui_button(t) for t in tokens}
+    cleaned.discard("")
+    before = len(_ui_button_extensions)
+    _ui_button_extensions = frozenset(_ui_button_extensions | cleaned)
+    return len(_ui_button_extensions) - before
+
+
+def load_ui_button_whitelist(paths: Iterable[Union[str, Path]]) -> int:
+    """Load one or more ``.txt`` / ``.json`` whitelist files into the
+    extension set.  Returns the total number of new entries added across
+    all files.
+
+    ``.txt`` format (also the fallback for unknown extensions):
+        * UTF-8 (BOM tolerated via ``utf-8-sig`` decode)
+        * one token per line
+        * lines starting with ``#`` and blank lines are skipped
+
+    ``.json`` format:
+        * UTF-8, top-level JSON array of strings, e.g. ``["存档", "读档"]``
+        * other shapes log a warning and the file is skipped
+
+    Best-effort loader: missing files, read errors, and malformed JSON log
+    a warning and move on.  The translation run is never aborted by a
+    whitelist problem.
+    """
+    import json as _json
+
+    total_added = 0
+    for raw_path in paths:
+        if not raw_path:
+            continue
+        p = Path(str(raw_path))
+        if not p.is_file():
+            logger.warning("[UI-WHITELIST] 文件不存在或不可读，跳过: %s", p)
+            continue
+        try:
+            text = p.read_text(encoding="utf-8-sig")
+        except OSError as e:
+            logger.warning("[UI-WHITELIST] 读取失败，跳过 %s: %s", p, e)
+            continue
+
+        suffix = p.suffix.lower()
+        tokens: list[str] = []
+        if suffix == ".json":
+            try:
+                data = _json.loads(text)
+            except ValueError as e:
+                logger.warning("[UI-WHITELIST] JSON 解析失败，跳过 %s: %s", p, e)
+                continue
+            if not isinstance(data, list):
+                logger.warning(
+                    "[UI-WHITELIST] JSON 结构应为 list[str]，跳过 %s", p,
+                )
+                continue
+            tokens = [t for t in data if isinstance(t, str)]
+        else:
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                tokens.append(stripped)
+
+        added = add_ui_button_whitelist(tokens)
+        total_added += added
+        logger.info(
+            "[UI-WHITELIST] %s: 新增 %d 条 UI 按钮（文件原始 %d 条）",
+            p, added, len(tokens),
+        )
+    return total_added
+
+
+def clear_ui_button_whitelist() -> None:
+    """Rebind the extension set back to empty.  Primarily for test isolation
+    (the project has no pytest fixtures; every new test calls this at the top).
+    """
+    global _ui_button_extensions
+    _ui_button_extensions = frozenset()
+
+
+def get_ui_button_whitelist_extensions() -> frozenset[str]:
+    """Return a snapshot of the current extensions.  Already a frozenset so
+    the caller cannot mutate module state inadvertently; callers that need
+    the union with the baseline should call ``is_common_ui_button`` directly.
+    """
+    return _ui_button_extensions
 
 
 # ============================================================

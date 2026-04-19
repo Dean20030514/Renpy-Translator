@@ -538,6 +538,198 @@ def test_filter_checked_translations_fixes_placeholder_drift():
     print("[OK] filter_checked_translations_fixes_placeholder_drift")
 
 
+def test_load_ui_button_whitelist_txt():
+    """Round 32 Commit 2: .txt whitelist loader honours UTF-8-sig, skips
+    ``#`` comments + blank lines, and feeds ``is_common_ui_button``.
+    """
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        is_common_ui_button,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+
+    # Content includes a BOM, a comment, a blank line, mixed case, and
+    # whitespace variants we expect to normalise to the same token.
+    content = "\ufeff# customised UI buttons\n存档\n读档\n\n  Main Hub  \n# trailing comment\nProceed\n"
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w", encoding="utf-8") as f:
+        f.write(content)
+        tmp_path = f.name
+    try:
+        added = load_ui_button_whitelist([tmp_path])
+        # 4 distinct tokens: 存档 / 读档 / main hub / proceed (comments + blanks skipped)
+        assert added == 4, f"expected 4 new entries, got {added}"
+
+        # Python-side lookups must now succeed (including normalisation).
+        assert is_common_ui_button("存档")
+        assert is_common_ui_button("读档")
+        assert is_common_ui_button("main hub")
+        assert is_common_ui_button("Main Hub")  # case-insensitive
+        assert is_common_ui_button("  main   hub  ")  # whitespace collapse
+        assert is_common_ui_button("Proceed")
+        assert is_common_ui_button("proceed")
+
+        # Baseline entries are still recognised.
+        assert is_common_ui_button("OK")
+        assert is_common_ui_button("Save")
+
+        # Unrelated strings still fail.
+        assert not is_common_ui_button("Hello world")
+
+        # Replaying the same file is a no-op.
+        added_again = load_ui_button_whitelist([tmp_path])
+        assert added_again == 0
+
+        # Extensions snapshot is a frozenset containing just the new tokens.
+        ext = get_ui_button_whitelist_extensions()
+        assert isinstance(ext, frozenset)
+        assert "存档" in ext
+        assert "main hub" in ext
+        # Baseline must NOT leak into the extension snapshot.
+        assert "ok" not in ext
+    finally:
+        Path(tmp_path).unlink()
+        clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_txt")
+
+
+def test_load_ui_button_whitelist_json():
+    """Round 32 Commit 2: .json whitelist loader accepts top-level list of
+    strings and rejects other shapes with a warning.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        is_common_ui_button,
+    )
+
+    clear_ui_button_whitelist()
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as f:
+        _json.dump(["存档", "读档", "Proceed", 42, None, "  back to menu  "], f, ensure_ascii=False)
+        good_path = f.name
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as f:
+        _json.dump({"not": "a list"}, f)
+        bad_path = f.name
+    try:
+        # Good file: list with 3 strings (non-strings silently dropped).
+        added = load_ui_button_whitelist([good_path])
+        # 存档 / 读档 / proceed / back to menu = 4 distinct tokens
+        assert added == 4, f"expected 4 new entries, got {added}"
+        assert is_common_ui_button("存档")
+        assert is_common_ui_button("Proceed")
+        assert is_common_ui_button("Back to Menu")
+
+        # Bad shape: warning path, nothing added.
+        added_bad = load_ui_button_whitelist([bad_path])
+        assert added_bad == 0
+
+        # Missing file: warning path, nothing added.
+        added_missing = load_ui_button_whitelist(["/does/not/exist/ever.json"])
+        assert added_missing == 0
+    finally:
+        Path(good_path).unlink()
+        Path(bad_path).unlink()
+        clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_json")
+
+
+def test_ui_button_whitelist_builtin_untouched():
+    """Round 32 Commit 2: loading extensions must not mutate the baseline
+    ``COMMON_UI_BUTTONS`` frozenset — it stays the same object identity
+    and the same contents.
+    """
+    from file_processor import (
+        clear_ui_button_whitelist,
+        add_ui_button_whitelist,
+        COMMON_UI_BUTTONS,
+    )
+
+    clear_ui_button_whitelist()
+    baseline_id = id(COMMON_UI_BUTTONS)
+    baseline_len = len(COMMON_UI_BUTTONS)
+
+    add_ui_button_whitelist(["扩展按钮 A", "扩展按钮 B"])
+
+    # Re-import to simulate a fresh reader — the module-level constant
+    # must still be the exact same frozenset object.
+    from file_processor import COMMON_UI_BUTTONS as COMMON_UI_BUTTONS_RELOADED
+    assert id(COMMON_UI_BUTTONS_RELOADED) == baseline_id
+    assert len(COMMON_UI_BUTTONS_RELOADED) == baseline_len
+    assert "扩展按钮 A".lower() not in COMMON_UI_BUTTONS_RELOADED
+
+    clear_ui_button_whitelist()
+    print("[OK] ui_button_whitelist_builtin_untouched")
+
+
+def test_clear_ui_button_whitelist_restores_baseline():
+    """Round 32 Commit 2: ``clear_ui_button_whitelist`` drops every
+    extension while keeping the baseline untouched.
+    """
+    from file_processor import (
+        clear_ui_button_whitelist,
+        add_ui_button_whitelist,
+        is_common_ui_button,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+    add_ui_button_whitelist(["存档", "读档"])
+    assert is_common_ui_button("存档")
+    assert len(get_ui_button_whitelist_extensions()) == 2
+
+    clear_ui_button_whitelist()
+    assert not is_common_ui_button("存档")
+    assert not is_common_ui_button("读档")
+    assert get_ui_button_whitelist_extensions() == frozenset()
+
+    # Baseline must still be reachable after clear.
+    assert is_common_ui_button("OK")
+    assert is_common_ui_button("Save")
+    print("[OK] clear_ui_button_whitelist_restores_baseline")
+
+
+def test_ui_button_whitelist_rebinds_frozenset():
+    """Round 32 Commit 2: ``_ui_button_extensions`` is REBOUND, not mutated,
+    on every add/clear.  This is the thread-safety contract — a worker
+    thread that captured a reference to the previous frozenset must still
+    see a stable snapshot while the main thread extends the whitelist.
+    """
+    from file_processor import (
+        clear_ui_button_whitelist,
+        add_ui_button_whitelist,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+    snap_empty = get_ui_button_whitelist_extensions()
+    assert isinstance(snap_empty, frozenset)
+
+    add_ui_button_whitelist(["alpha"])
+    snap_alpha = get_ui_button_whitelist_extensions()
+    # Rebind: different object identity from the empty snapshot.
+    assert snap_alpha is not snap_empty
+    # Prior snapshot is unchanged (frozenset, not mutated).
+    assert snap_empty == frozenset()
+    assert snap_alpha == frozenset({"alpha"})
+
+    add_ui_button_whitelist(["beta"])
+    snap_both = get_ui_button_whitelist_extensions()
+    assert snap_both is not snap_alpha
+    assert snap_alpha == frozenset({"alpha"})  # still immutable
+    assert snap_both == frozenset({"alpha", "beta"})
+
+    clear_ui_button_whitelist()
+    print("[OK] ui_button_whitelist_rebinds_frozenset")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -578,6 +770,12 @@ def run_all() -> int:
         test_is_common_ui_button,
         test_fix_chinese_placeholder_drift,
         test_filter_checked_translations_fixes_placeholder_drift,
+        # Round 32 Commit 2 (UI whitelist configurable via sidecar JSON)
+        test_load_ui_button_whitelist_txt,
+        test_load_ui_button_whitelist_json,
+        test_ui_button_whitelist_builtin_untouched,
+        test_clear_ui_button_whitelist_restores_baseline,
+        test_ui_button_whitelist_rebinds_frozenset,
     ]
     for t in tests:
         t()

@@ -97,12 +97,46 @@ if _TL_INJECT_ACTIVE:
             "on", "off", "enable", "disable",
         ))
 
+        # ------------------------------------------------------------------
+        # Round 32 Subtask A: optional user-supplied UI-button extensions.
+        # Mirrors ``file_processor._ui_button_extensions`` via the sidecar
+        # ``ui_button_whitelist.json`` emitted alongside ``translations.json``
+        # when ``--ui-button-whitelist`` was set on the translate side.  Same
+        # degradation rules as ``_TL_MAP`` — missing / malformed file → empty
+        # set, never aborts hook load.
+        # ------------------------------------------------------------------
+        _TL_UI_EXT = set()
+        _TL_UI_EXT_PATH = os.path.join(config.gamedir, "ui_button_whitelist.json")
+        if os.path.exists(_TL_UI_EXT_PATH):
+            try:
+                with open(_TL_UI_EXT_PATH, "r") as _f:
+                    _raw_ui = _f.read()
+                if isinstance(_raw_ui, bytes):
+                    _raw_ui = _raw_ui.decode("utf-8")
+                _data_ui = json.loads(_raw_ui)
+                if isinstance(_data_ui, dict) and isinstance(_data_ui.get("extensions"), list):
+                    for _tok in _data_ui["extensions"]:
+                        try:
+                            if isinstance(_tok, bytes):
+                                _tok = _tok.decode("utf-8")
+                            if isinstance(_tok, str):
+                                _n = " ".join(_tok.strip().lower().split())
+                                if _n:
+                                    _TL_UI_EXT.add(_n)
+                        except Exception:
+                            pass
+            except (IOError, OSError, ValueError) as _e:
+                sys.stderr.write("[TL-INJECT] failed to load ui_button_whitelist.json: %s\n" % _e)
+                _TL_UI_EXT = set()
+
         def _tl_is_ui_button(s):
             if not isinstance(s, str):
                 return False
             try:
                 t = " ".join(s.strip().lower().split())
-                return bool(t) and t in _UI_BUTTONS
+                if not t:
+                    return False
+                return t in _UI_BUTTONS or t in _TL_UI_EXT
             except Exception:
                 return False
 

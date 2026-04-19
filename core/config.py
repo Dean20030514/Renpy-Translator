@@ -64,6 +64,8 @@ _CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "exclude": {"type": list},
     "dict": {"type": list},
     "use_connection_pool": {"type": bool},
+    # Round 32 Commit 2: UI-button whitelist extension files
+    "ui_button_whitelist": {"type": list},
 }
 
 
