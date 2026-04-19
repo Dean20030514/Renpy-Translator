@@ -41,6 +41,8 @@ _SAFE_GUI_KEY = re.compile(r"^gui\.[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0
 
 def _iter_translation_pairs(
     entries: Iterable[Mapping[str, object]],
+    *,
+    entry_language_filter: "str | None" = None,
 ) -> Iterable[tuple[str, str]]:
     """Yield (original, translation) pairs for successful entries only.
 
@@ -48,6 +50,21 @@ def _iter_translation_pairs(
     must be a dict with ``original`` / ``translation`` / ``status`` fields.
     Entries without a translation or with non-``ok`` status are skipped so
     the runtime hook never ships a failed translation.
+
+    Args:
+        entries: iterable of entry dicts (``TranslationDB.entries`` shape).
+        entry_language_filter: optional language code.  When non-None, entries
+            are further filtered by their ``language`` field:
+            - entries with ``language == filter`` are kept;
+            - entries with ``language`` absent / ``None`` are kept (legacy
+              v1 entries pre-round-34 have no language; they're treated as
+              universally compatible so v1 DB files still emit correctly);
+            - entries with ``language`` set to a different string are dropped.
+
+            Prevents multi-language DBs (round 34+) from cross-bucket leakage:
+            without this filter, ``build_translations_map`` would collapse by
+            ``original`` alone and could pick a ja translation for a zh emit.
+            Set to ``None`` (default) to preserve round-33 behaviour exactly.
     """
     for entry in entries:
         status = str(entry.get("status", "") or "").lower()
@@ -59,6 +76,12 @@ def _iter_translation_pairs(
             continue
         if not original or not translation:
             continue
+        if entry_language_filter is not None:
+            entry_lang = entry.get("language")
+            # None bucket (legacy entries) passes through; explicit strings
+            # must match; anything else (type mismatch, empty string) drops.
+            if entry_lang is not None and entry_lang != entry_language_filter:
+                continue
         yield original, translation
 
 
@@ -67,6 +90,7 @@ def build_translations_map(
     *,
     target_lang: str = "zh",
     schema_version: int = 1,
+    entry_language_filter: "str | None" = None,
 ) -> dict:
     """Collapse a ``TranslationDB.entries`` iterable into the runtime hook
     translations JSON payload.
@@ -86,6 +110,12 @@ def build_translations_map(
             an ``_schema_version`` / ``_format`` / ``default_lang`` envelope
             so ``inject_hook.rpy`` can distinguish the two at load time.
             Default stays v1 so existing runs produce byte-identical output.
+        entry_language_filter: optional — when set, only entries whose
+            ``language`` field equals this value (or is absent / None for
+            legacy v1 rows) contribute to the output map.  Round 34 adds
+            this so multi-language DBs can emit per-language v2 output
+            without ja translations leaking into the zh bucket.  Set to
+            ``None`` (default) for round-33 byte-identical behaviour.
 
     Returns:
         dict — either the flat v1 map or the v2 envelope, per
@@ -99,7 +129,9 @@ def build_translations_map(
 
     mapping: dict[str, str] = {}
     conflicts = 0
-    for original, translation in _iter_translation_pairs(entries):
+    for original, translation in _iter_translation_pairs(
+        entries, entry_language_filter=entry_language_filter,
+    ):
         existing = mapping.get(original)
         if existing is None:
             mapping[original] = translation
@@ -263,6 +295,7 @@ def emit_runtime_hook(
     font_config: Mapping[str, object] | None = None,
     schema_version: int = 1,
     target_lang: str = "zh",
+    entry_language_filter: "str | None" = None,
 ) -> tuple[Path, Path, int]:
     """Write ``translations.json`` + copy the inject hook into
     ``output_game_dir``.
@@ -307,6 +340,12 @@ def emit_runtime_hook(
             ``_schema_version`` key.
         target_lang: Language code used to key v2 buckets.  Ignored for v1.
             Default ``"zh"`` matches ``core.config.DEFAULTS["target_lang"]``.
+        entry_language_filter: optional — restrict input entries to those
+            whose ``language`` field matches this value (or is absent, for
+            v1-era legacy rows).  Round 34 ``emit_if_requested`` sets this
+            from ``args.target_lang`` on the v2 path so a multi-language
+            DB doesn't cross-contaminate language buckets.  ``None``
+            (default) preserves round-33 behaviour exactly.
 
     Returns:
         (translations_json_path, hook_rpy_path, entry_count)
@@ -337,6 +376,7 @@ def emit_runtime_hook(
         translation_db_entries,
         target_lang=target_lang,
         schema_version=schema_version,
+        entry_language_filter=entry_language_filter,
     )
     json_path = output_game_dir / "translations.json"
     _write_json_atomic(json_path, payload)
@@ -494,6 +534,13 @@ def emit_if_requested(
         schema_raw = str(getattr(args, "runtime_hook_schema", "v1") or "v1").lower()
         schema_version = 2 if schema_raw == "v2" else 1
         target_lang = str(getattr(args, "target_lang", "") or "zh") or "zh"
+        # Round 34 Commit 1: on the v2 path, filter entries by the caller's
+        # target_lang so a multi-language TranslationDB (r34+) doesn't leak
+        # ja translations into a zh emit bucket.  v1 path leaves the filter
+        # as None — the flat map has no language dimension, so filtering
+        # would be over-restrictive for legacy single-lang DBs where every
+        # entry is effectively the caller's current lang anyway.
+        entry_lang_filter = target_lang if schema_version == 2 else None
         emit_runtime_hook(
             output_game_dir, entries,
             ui_button_extensions=ui_ext,
@@ -501,6 +548,7 @@ def emit_if_requested(
             font_config=font_config_dict,
             schema_version=schema_version,
             target_lang=target_lang,
+            entry_language_filter=entry_lang_filter,
         )
     except (OSError, ValueError, FileNotFoundError) as e:
         logger.warning("[TL-INJECT] emit failed, continuing: %s", e)

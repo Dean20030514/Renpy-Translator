@@ -777,6 +777,9 @@ def run_all() -> int:
         test_emit_gui_overrides_rpy_rejects_unsafe_keys,
         test_emit_gui_overrides_rpy_rejects_unsafe_values,
         test_emit_if_requested_resolves_font_config,
+        # NOTE: Round 34 Commit 1 ``entry_language_filter`` tests live in
+        # ``tests/test_runtime_hook_filter.py`` (kept out of this file to
+        # respect the CLAUDE.md 800-line soft limit after round 33's split).
     ]
     for t in tests:
         t()
