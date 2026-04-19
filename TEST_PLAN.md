@@ -8,22 +8,30 @@
 
 ### 现有测试文件
 
+> **Round 29 变更**：`tests/test_all.py` 原 2,539 行（113 个测试）已拆分为 5 个聚焦文件；`test_all.py` 现为 meta-runner，历史 CLI 调用 `python tests/test_all.py` 继续工作。
+
 | 文件 | 类型 | 覆盖范围 | 用例数 | 需 API |
 |------|------|----------|--------|--------|
-| `tests/test_all.py` | 单元+集成测试 | core.api_client / file_processor / core.glossary / core.prompts / main / core.translation_utils / translators.retranslator / translators.renpy_text_utils / core.translation_db / core.config / core.lang_config / tools.review_generator / translators.direct / translators.tl_parser nvl ID 修正 / translators.screen / **locked_terms 预替换** | 94 | 否 |
+| `tests/test_all.py` | **Meta-runner（round 29）** | 调用下方 5 个拆分文件的 `run_all()`，打印总计 | 0（聚合器） | 否 |
+| `tests/test_api_client.py` | API 客户端测试（round 29 拆分） | core.api_client：APIConfig / UsageStats / RateLimiter / JSON 解析 / 定价 / HTTP 重试 / 连接池 / 响应体上限 / API Key 子进程隔离 | 19 | 否 |
+| `tests/test_file_processor.py` | 文件处理器测试（round 29 拆分） | file_processor：splitter（estimate_tokens / block 边界 / force_split）、checker（protect/restore/filter 包装）、patcher（apply_translations / 转义）、validator（菜单标识 / lang_config） | 33 | 否 |
+| `tests/test_translators.py` | 翻译器层测试（round 29 拆分） | translators：direct chunk 拆分/重试、tl_parser nvl ID 修正、retranslator 密度、screen 扫描/提取/替换、pipeline 导入冒烟 | 24 | 否 |
+| `tests/test_glossary_prompts_config.py` | Glossary/Prompts/Config 测试（round 29 拆分） | core.glossary（基础 / dedup / 线程安全 / Ren'Py 扫描）、locked_terms 预替换、prompts（系统 / 日语 / 中文）、core.config（加载 / CLI 覆盖 / 校验）、core.lang_config | 24 | 否 |
+| `tests/test_translation_state.py` | 翻译状态测试（round 29 拆分） | ProgressTracker（cleanup / resume / normalize / 并发 flush / write 顺序）、TranslationDB（round-trip / 并发 upsert / 原子写 / line=0）、dedup、StringEntry fallback、progress bar、review HTML 集成 | 13 | 否 |
 | `tests/test_engines.py` | 引擎抽象层测试 | engines.EngineProfile / engines.TranslatableUnit / engines.EngineDetector / engines.RenPyEngine / engines.EngineBase / engines.CSVEngine / engines.generic_pipeline / checker 参数化 / core.prompts addon / engines.RPGMakerMVEngine / core.glossary RPG Maker | 62 | 否 |
 | `tests/smoke_test.py` | 冒烟测试 | validate_translation 所有 Warning/Error Code + strings 统计 | 13 | 否 |
-| `tests/test_rpa_unpacker.py` | RPA 解包测试 | RPA-3.0/2.0 解包、XOR key 变体、prefix bytes、版本检测、损坏文件、目录批量解包 | 14 | 否 |
-| `tests/test_rpyc_decompiler.py` | rpyc 反编译测试 | RPYC2 二进制格式、RestrictedUnpickler、Say/Menu/TranslateString 文本提取、Unicode、平台检测 | 17 | 否 |
+| `tests/test_rpa_unpacker.py` | RPA 解包测试 | RPA-3.0/2.0 解包、XOR key 变体、prefix bytes、版本检测、损坏文件、目录批量解包、ZIP Slip 防护、大小预检查（round 26） | 16 | 否 |
+| `tests/test_rpyc_decompiler.py` | rpyc 反编译测试 | RPYC2 二进制格式、RestrictedUnpickler、Say/Menu/TranslateString 文本提取、Unicode、平台检测、Tier1/Tier2 白名单同步（round 26） | 18 | 否 |
 | `tests/test_lint_fixer.py` | lint 修复测试 | 7 种 lint 错误模式解析、old/new 对修复、translate 块修复、连续空行清理、降级检测 | 15 | 否 |
 | `tests/test_tl_dedup.py` | tl-mode 去重测试 | 去重基础/阈值/speaker 隔离/StringEntry/apply 复用/无翻译降级 | 10 | 否 |
 | `tests/test_batch1.py` | 批次一功能测试 | RPA 打包（往返/header/随机key/嵌套/Unicode/验证）+ 默认语言（zh/ja/ko/zh-tw/不覆盖）+ JSON 解析重试 + Lint 集成 | 18 | 否 |
 | `tests/test_translation_editor.py` | HTML 校对工具测试 | 导出（基本/多条/空/XSS）+ 提取（tl/db）+ 导入（tl/空槽/db/备份/缺失/空译文）+ 转义 | 13 | 否 |
-| `tests/test_custom_engine.py` | 自定义引擎测试 | 加载（正常/扩展名/不存在/空名/路径遍历/无接口）+ 配置（2）+ 调用（batch string/single/batch list） | 11 | 否 |
+| `tests/test_custom_engine.py` | 自定义引擎测试 | 加载（正常/扩展名/不存在/空名/路径遍历/无接口）+ 配置（sandbox_plugin 默认）+ 调用（batch/single/list）+ **subprocess 沙箱**（roundtrip/request_id/异常包装/路径穿越/缺失/超时/幂等关闭，round 28） | 19 | 否 |
 | `translators/tl_parser.py` (内建) | 自测试 | 状态机解析 / fill_translation / extract_quoted_text / postprocess / _sanitize_translation 边界 | 75 | 否 |
+| `translators/screen.py` (内建) | 自测试 | _should_skip / _line_has_underscore_wrap / extract_screen_strings / _deduplicate_entries / _replace_screen_strings_in_file / Notify / tt.Action | 51 | 否 |
 | `tests/test_single.py` | 端到端测试 | 单文件完整翻译流程（API→回写→校验） | 1 | **是** |
 
-> **自动化测试总计**：94 + 62 + 13 + 14 + 17 + 15 + 10 + 18 + 13 + 11 = **267** 个用例（不含 translators/tl_parser 内建 75 断言 + translators/screen 内建 51 断言）。
+> **自动化测试总计**：19 + 33 + 24 + 24 + 13 + 62 + 13 + 16 + 18 + 15 + 10 + 18 + 13 + 19 = **297** 主测试 + 4 集成测试（2 direct_pipeline + 2 tl_pipeline）= **301** 个自动化用例（另有 75 + 51 = 126 个 translators 内建断言）。
 
 > **注**：`gui.py`（Tkinter GUI）和 `build.py`（PyInstaller 打包）为手动测试，不纳入自动化测试体系。验证方式：`python gui.py` 弹出窗口 + `python build.py` 产出 .exe。
 
@@ -479,26 +487,39 @@ assert result["summary"]["untranslated_ratio"] == 0.5
 ### 无 API 测试（推荐日常使用）
 
 ```bash
-# 全部 267 个自动化用例（< 10 秒）
-python tests/test_all.py             # 94 个单元+集成测试
+# 聚合运行（所有 113 个 test_all 用例）
+python tests/test_all.py             # meta-runner，调用下方 5 个拆分文件
+
+# 或单独运行某个拆分类别（round 29 拆分）
+python tests/test_api_client.py              # 19 个 API 客户端测试
+python tests/test_file_processor.py          # 33 个文件处理器测试
+python tests/test_translators.py             # 24 个翻译器层测试
+python tests/test_glossary_prompts_config.py # 24 个 Glossary/Prompts/Config 测试
+python tests/test_translation_state.py       # 13 个翻译状态测试
+
+# 其他独立测试套件
 python tests/test_engines.py         # 62 个引擎抽象层测试
 python tests/smoke_test.py           # 13 个校验规则冒烟测试
-python tests/test_rpa_unpacker.py    # 14 个 RPA 解包测试
-python tests/test_rpyc_decompiler.py # 17 个 rpyc 反编译测试
+python tests/test_rpa_unpacker.py    # 16 个 RPA 解包测试
+python tests/test_rpyc_decompiler.py # 18 个 rpyc 反编译测试
 python tests/test_lint_fixer.py      # 15 个 lint 修复测试
 python tests/test_tl_dedup.py        # 10 个 tl 去重测试
 python tests/test_batch1.py          # 18 个批次一功能测试（RPA打包+默认语言+JSON重试+lint）
 python tests/test_translation_editor.py # 13 个翻译编辑器测试（HTML导出/导入）
-python tests/test_custom_engine.py   # 11 个自定义引擎测试（加载/安全/配置/调用）
+python tests/test_custom_engine.py   # 19 个自定义引擎测试（legacy 11 + subprocess 沙箱 8）
+python tests/test_direct_pipeline.py # 2 个 direct-mode 集成测试
+python tests/test_tl_pipeline.py     # 2 个 tl-mode 集成测试
 python -m translators.tl_parser --test  # 75 个解析器断言（内建）
+python -m translators.screen            # 51 个 screen 翻译器断言（内建）
 ```
 
 全部通过预期输出：
 ```
-ALL 94 TESTS PASSED          (tests/test_all.py)
+ALL 113 TESTS PASSED         (tests/test_all.py — 5 拆分文件聚合)
 ALL 62 ENGINE TESTS PASSED   (tests/test_engines.py)
 All tests passed              (tests/smoke_test.py)
-All 75 assertions passed.     (translators/tl_parser.py)
+ALL 75 assertions passed      (translators/tl_parser.py)
+ALL 51 SCREEN TRANSLATOR TESTS PASSED  (translators/screen.py)
 ```
 
 ### 需 API 测试

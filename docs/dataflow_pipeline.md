@@ -2,6 +2,15 @@
 
 # 一键流水线 + 核心算法
 
+## CLI 入口统一路由（round 28 A-H-3）
+
+`main.py` 不再自己分派 translators/，所有 `--engine` 值（含默认 auto 和 renpy）
+都走 `engines.resolve_engine(args.engine or "auto", Path(args.game_dir)).run(args)`。
+Ren'Py 的 tl-mode / tl-screen / retranslate / direct 四个分支由
+`engines/renpy_engine.py::RenPyEngine.run()` 在内部分派到对应的
+`translators/` 管线。`one_click_pipeline.py` 则是更高层的四阶段编排，
+内部仍按需调用 `run_main()` 触发具体的翻译流程。
+
 ## 四阶段一键流水线（one_click_pipeline.py）
 
 ```
