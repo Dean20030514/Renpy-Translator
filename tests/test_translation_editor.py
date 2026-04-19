@@ -331,6 +331,180 @@ def test_escape_for_rpy():
 
 
 # ============================================================
+# Round 33 Subtask 3 — v2 envelope support
+# ============================================================
+
+def _make_v2_envelope(
+    path: Path, translations: dict, default_lang: str = "zh",
+) -> None:
+    """Write a v2 translations.json envelope to ``path`` for tests."""
+    path.write_text(
+        json.dumps({
+            "_schema_version": 2,
+            "_format": "renpy-translate",
+            "default_lang": default_lang,
+            "translations": translations,
+        }, ensure_ascii=False, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+
+
+def test_extract_from_v2_envelope():
+    """Round 33 Subtask 3: ``_extract_from_db`` auto-detects a v2 envelope
+    and returns entries keyed to the target language bucket, with v2
+    routing fields preserved so save-back can locate the source file.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "merged.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは"},
+            "World": {"zh": "世界", "ja": "世界"},
+            "Orphan": {"fr": "Bonjour"},  # no zh bucket
+        }, default_lang="zh")
+
+        # Default: target_lang = envelope's default_lang = "zh"
+        entries = _extract_from_db(v2_path)
+        assert len(entries) == 3
+        # All entries are flagged as v2 source + share the v2_path.
+        for e in entries:
+            assert e["source"] == "v2"
+            assert e["v2_path"] == str(v2_path)
+            assert e["v2_lang"] == "zh"
+            assert e["v2_default_lang"] == "zh"
+            assert e["v2_langs_seen"] == ["fr", "ja", "zh"]
+        entries_by_orig = {e["original"]: e for e in entries}
+        assert entries_by_orig["Hello"]["translation"] == "你好"
+        assert entries_by_orig["World"]["translation"] == "世界"
+        # Orphan has no zh bucket → empty translation.
+        assert entries_by_orig["Orphan"]["translation"] == ""
+
+        # Explicit v2_lang = "ja" pivots the translation column.
+        entries_ja = _extract_from_db(v2_path, v2_lang="ja")
+        ja_by_orig = {e["original"]: e for e in entries_ja}
+        assert ja_by_orig["Hello"]["translation"] == "こんにちは"
+        assert ja_by_orig["Hello"]["v2_lang"] == "ja"
+        assert ja_by_orig["Orphan"]["translation"] == ""
+
+        # v1 translation_db.json still works via the same entry point.
+        v1_path = td_path / "v1_db.json"
+        v1_path.write_text(json.dumps({
+            "version": 1,
+            "entries": [
+                {"file": "a.rpy", "line": 1, "original": "Legacy",
+                 "translation": "遗留", "status": "ok"},
+            ],
+        }), encoding="utf-8")
+        v1_entries = _extract_from_db(v1_path)
+        assert len(v1_entries) == 1
+        assert v1_entries[0]["source"] == "db"
+        assert "v2_path" not in v1_entries[0]
+    print("[OK] test_extract_from_v2_envelope")
+
+
+def test_import_to_v2_envelope():
+    """Round 33 Subtask 3: ``import_edits`` with ``source: "v2"`` edits
+    writes back to the target ``translations.json`` file, updating the
+    selected language bucket of the named original.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "merged.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは"},
+            "World": {"zh": "世界"},
+        }, default_lang="zh")
+
+        edits = [
+            {
+                "source": "v2",
+                "v2_path": str(v2_path),
+                "v2_lang": "zh",
+                "file": str(v2_path),
+                "line": 1,
+                "original": "Hello",
+                "old_translation": "你好",
+                "new_translation": "你好呀",
+            },
+            {
+                "source": "v2",
+                "v2_path": str(v2_path),
+                "v2_lang": "ja",
+                "file": str(v2_path),
+                "line": 1,
+                "original": "Hello",
+                "old_translation": "こんにちは",
+                "new_translation": "こんにちは～",
+            },
+        ]
+        edits_path = td_path / "edits.json"
+        edits_path.write_text(json.dumps(edits), encoding="utf-8")
+
+        result = import_edits(edits_path, create_backup=True)
+        assert result["applied"] == 2
+        assert result["files_modified"] == 1
+        assert result["skipped"] == 0
+
+        loaded = json.loads(v2_path.read_text(encoding="utf-8"))
+        assert loaded["_schema_version"] == 2
+        assert loaded["translations"]["Hello"]["zh"] == "你好呀"
+        assert loaded["translations"]["Hello"]["ja"] == "こんにちは～"
+        # Untouched entries preserved.
+        assert loaded["translations"]["World"]["zh"] == "世界"
+
+        # Backup exists alongside the v2 file.
+        bak = v2_path.with_suffix(".json.bak")
+        assert bak.exists()
+        bak_data = json.loads(bak.read_text(encoding="utf-8"))
+        assert bak_data["translations"]["Hello"]["zh"] == "你好"  # original
+    print("[OK] test_import_to_v2_envelope")
+
+
+def test_v2_envelope_preserves_non_edited_languages():
+    """Round 33 Subtask 3: editing one language bucket must not disturb
+    any other language bucket in the same original's dict, nor any
+    untouched original's translations, nor top-level envelope metadata.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        v2_path = td_path / "merged.json"
+        _make_v2_envelope(v2_path, {
+            "Hello": {"zh": "你好", "ja": "こんにちは", "ko": "안녕하세요"},
+            "World": {"zh": "世界", "ja": "世界"},
+        }, default_lang="zh")
+
+        edits = [{
+            "source": "v2",
+            "v2_path": str(v2_path),
+            "v2_lang": "zh",
+            "file": str(v2_path),
+            "line": 1,
+            "original": "Hello",
+            "old_translation": "你好",
+            "new_translation": "您好",
+        }]
+        edits_path = td_path / "edits.json"
+        edits_path.write_text(json.dumps(edits), encoding="utf-8")
+
+        result = import_edits(edits_path, create_backup=False)
+        assert result["applied"] == 1
+
+        loaded = json.loads(v2_path.read_text(encoding="utf-8"))
+        # Envelope top-level keys intact.
+        assert loaded["_schema_version"] == 2
+        assert loaded["_format"] == "renpy-translate"
+        assert loaded["default_lang"] == "zh"
+        # Edited bucket changed.
+        assert loaded["translations"]["Hello"]["zh"] == "您好"
+        # Sibling language buckets UNCHANGED byte-for-byte.
+        assert loaded["translations"]["Hello"]["ja"] == "こんにちは"
+        assert loaded["translations"]["Hello"]["ko"] == "안녕하세요"
+        # Other originals UNCHANGED.
+        assert loaded["translations"]["World"] == {"zh": "世界", "ja": "世界"}
+    print("[OK] test_v2_envelope_preserves_non_edited_languages")
+
+
+# ============================================================
 # Runner
 # ============================================================
 
@@ -348,6 +522,10 @@ ALL_TESTS = [
     test_import_missing_file,
     test_import_empty_new_translation,
     test_escape_for_rpy,
+    # Round 33 Subtask 3 — v2 envelope read/write
+    test_extract_from_v2_envelope,
+    test_import_to_v2_envelope,
+    test_v2_envelope_preserves_non_edited_languages,
 ]
 
 

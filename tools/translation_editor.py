@@ -89,10 +89,29 @@ def _extract_from_tl_dir(tl_dir: Path) -> List[Dict[str, Any]]:
     return entries
 
 
-def _extract_from_db(db_path: Path) -> List[Dict[str, Any]]:
-    """Extract translation entries from translation_db.json."""
+def _extract_from_db(
+    db_path: Path, *, v2_lang: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Extract translation entries from ``translation_db.json`` OR from a
+    v2 ``translations.json`` envelope (round 33 Subtask 3).
+
+    Auto-detects the v2 envelope via ``_schema_version`` and routes to
+    :func:`_extract_from_v2_envelope`.  For v1 legacy ``translation_db.json``
+    the behaviour is byte-identical to round 32.
+
+    Args:
+        db_path: Path to the JSON file.  Accepts either the flat v1
+            ``translation_db.json`` shape (``{"entries": [...]}``) or a v2
+            envelope (``{"_schema_version": 2, "translations": {...}}``).
+        v2_lang: For v2 input, which language bucket to populate the
+            ``translation`` field with (and therefore which bucket edits
+            will write back to).  Defaults to the envelope's
+            ``default_lang``.  Ignored for v1 inputs.
+    """
     data = json.loads(db_path.read_text(encoding="utf-8"))
-    raw_entries = data.get("entries", [])
+    if isinstance(data, dict) and data.get("_schema_version") == 2:
+        return _extract_from_v2_envelope(data, db_path, lang=v2_lang)
+    raw_entries = data.get("entries", []) if isinstance(data, dict) else []
     entries: List[Dict[str, Any]] = []
     for e in raw_entries:
         entries.append({
@@ -105,6 +124,70 @@ def _extract_from_db(db_path: Path) -> List[Dict[str, Any]]:
             "identifier": "",
             "source_file": e.get("file", ""),
             "source_line": e.get("line", 0),
+        })
+    return entries
+
+
+def _extract_from_v2_envelope(
+    data: Dict[str, Any],
+    db_path: Path,
+    *,
+    lang: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Extract entries from a v2 ``translations.json`` envelope (round 33 Subtask 3).
+
+    Produces one row per original string, whose ``translation`` field comes
+    from ``translations[original][lang]``.  ``lang`` defaults to the
+    envelope's ``default_lang`` when ``None``.  If the chosen language has
+    no translation for a given original, ``translation`` is an empty string
+    (the HTML renders it as "(empty)" the same as any untranslated row).
+
+    Extra per-entry keys kept for the round-trip:
+        * ``v2_path`` — the source file (so ``import_edits`` can write back
+          without a CLI flag).
+        * ``v2_lang`` — which bucket this entry's ``translation`` came from.
+        * ``v2_langs_seen`` — sorted list of every language key present
+          in the envelope (surfaced in the editor's v2 banner so
+          operators know which other buckets exist).
+    """
+    default_lang = str(data.get("default_lang") or "zh")
+    target_lang = lang or default_lang
+    translations = data.get("translations", {})
+    if not isinstance(translations, dict):
+        return []
+
+    all_langs: set[str] = set()
+    for bucket in translations.values():
+        if isinstance(bucket, dict):
+            for k in bucket:
+                if isinstance(k, str):
+                    all_langs.add(k)
+    langs_seen = sorted(all_langs)
+
+    entries: List[Dict[str, Any]] = []
+    for i, original in enumerate(sorted(translations.keys()), start=1):
+        if not isinstance(original, str):
+            continue
+        bucket = translations.get(original)
+        if not isinstance(bucket, dict):
+            continue
+        t = bucket.get(target_lang, "")
+        if not isinstance(t, str):
+            t = ""
+        entries.append({
+            "source": "v2",
+            "file": str(db_path),
+            "line": i,  # synthetic index so the HTML sorts deterministically
+            "original": original,
+            "translation": t,
+            "character": "",
+            "identifier": "",
+            "source_file": str(db_path),
+            "source_line": i,
+            "v2_path": str(db_path),
+            "v2_lang": target_lang,
+            "v2_default_lang": default_lang,
+            "v2_langs_seen": langs_seen,
         })
     return entries
 
@@ -146,9 +229,12 @@ tr.hidden { display: none; }
 .file-header { background: #eceff1; padding: 6px 10px; font-weight: bold; font-size: 13px; border-top: 2px solid #b0bec5; }
 .file-header td { padding: 6px 10px; }
 #no-results { display: none; text-align: center; padding: 40px; color: #999; font-size: 16px; }
+#v2-banner { display: none; background: #fff3e0; border-bottom: 2px solid #ffb74d; color: #e65100; padding: 8px 16px; font-size: 13px; position: sticky; top: 49px; z-index: 60; }
+#v2-banner code { background: #fff; padding: 1px 6px; border-radius: 3px; font-size: 12px; }
 </style>
 </head>
 <body>
+<div id="v2-banner"></div>
 <div class="toolbar">
   <input type="text" id="search" placeholder="Search original or translation..." autocomplete="off">
   <button class="btn-primary" onclick="doSearch()">Search</button>
@@ -179,7 +265,26 @@ let totalModified = 0;
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
+function initV2Banner() {
+  // Round 33 Subtask 3: surface v2 envelope context so operators see
+  // which bucket they are editing and what other languages are present.
+  const v2Entry = META.find(e => e.source === "v2");
+  if (!v2Entry) return;
+  const banner = document.getElementById("v2-banner");
+  const langsSeen = v2Entry.v2_langs_seen || [];
+  const other = langsSeen.filter(l => l !== v2Entry.v2_lang);
+  const otherHtml = other.length
+    ? " | Other buckets in file: " + other.map(l => "<code>" + esc(l) + "</code>").join(", ")
+    : " | This is the only language bucket in the file.";
+  banner.innerHTML =
+    "<b>v2 envelope mode</b> — editing <code>" + esc(v2Entry.v2_lang) + "</code> bucket of <code>" +
+    esc(v2Entry.v2_path) + "</code>" + otherHtml +
+    " &nbsp;(re-run with <code>--v2-lang OTHER</code> to edit other buckets)";
+  banner.style.display = "block";
+}
+
 function init() {
+  initV2Banner();
   let lastFile = "";
   META.forEach((e, i) => {
     if (e.file !== lastFile) {
@@ -276,7 +381,7 @@ function exportEdits() {
     const idx = parseInt(r.dataset.idx);
     const m = META[idx];
     const newTrans = r.querySelector(".col-trans").textContent.trim();
-    edits.push({
+    const rec = {
       source: m.source,
       file: m.file,
       line: m.line,
@@ -284,7 +389,14 @@ function exportEdits() {
       old_translation: m.translation,
       new_translation: newTrans,
       identifier: m.identifier || "",
-    });
+    };
+    // Round 33 Subtask 3: preserve v2 routing fields so import_edits can
+    // locate the target file + language bucket without a CLI flag.
+    if (m.source === "v2") {
+      rec.v2_path = m.v2_path;
+      rec.v2_lang = m.v2_lang;
+    }
+    edits.push(rec);
   });
   if (!edits.length) { alert("No modifications to export."); return; }
   const blob = new Blob([JSON.stringify(edits, null, 2)], {type: "application/json"});
@@ -317,7 +429,7 @@ def export_html(
     # Sanitize entries for JSON embedding
     safe_entries = []
     for e in entries:
-        safe_entries.append({
+        safe = {
             "source": e.get("source", ""),
             "file": e.get("file", ""),
             "line": e.get("line", 0),
@@ -327,7 +439,13 @@ def export_html(
             "identifier": e.get("identifier", ""),
             "source_file": e.get("source_file", ""),
             "source_line": e.get("source_line", 0),
-        })
+        }
+        # Round 33 Subtask 3: preserve v2 envelope routing keys (only
+        # present for ``source == "v2"`` rows; harmless for others).
+        for v2_key in ("v2_path", "v2_lang", "v2_default_lang", "v2_langs_seen"):
+            if v2_key in e:
+                safe[v2_key] = e[v2_key]
+        safe_entries.append(safe)
 
     metadata_json = json.dumps(safe_entries, ensure_ascii=False)
     html_content = _HTML_TEMPLATE.replace("__METADATA__", metadata_json)
@@ -366,17 +484,30 @@ def import_edits(
     if not edits:
         return {"applied": 0, "skipped": 0, "files_modified": 0}
 
+    applied = 0
+    skipped = 0
+    files_modified = 0
+
+    # Round 33 Subtask 3: v2 envelope edits are grouped by v2_path (the
+    # JSON file) and written via a dedicated ``_apply_v2_edits`` helper.
+    # The regex-based .rpy editor path stays unchanged for tl/db sources.
+    v2_edits = [e for e in edits if e.get("source") == "v2"]
+    non_v2_edits = [e for e in edits if e.get("source") != "v2"]
+    if v2_edits:
+        v2_stats = _apply_v2_edits(v2_edits, create_backup=create_backup)
+        applied += v2_stats["applied"]
+        skipped += v2_stats["skipped"]
+        files_modified += v2_stats["files_modified"]
+    if not non_v2_edits:
+        return {"applied": applied, "skipped": skipped, "files_modified": files_modified}
+
     # Group edits by file
     by_file: Dict[str, List[Dict[str, Any]]] = {}
-    for edit in edits:
+    for edit in non_v2_edits:
         f = edit.get("file", "")
         if not f:
             continue
         by_file.setdefault(f, []).append(edit)
-
-    applied = 0
-    skipped = 0
-    files_modified = 0
 
     for filepath_str, file_edits in sorted(by_file.items()):
         filepath = Path(filepath_str)
@@ -467,6 +598,105 @@ def _escape_for_rpy(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _apply_v2_edits(
+    v2_edits: List[Dict[str, Any]],
+    *,
+    create_backup: bool = True,
+) -> Dict[str, int]:
+    """Apply ``source: "v2"`` edits by rewriting the target v2 envelope JSON
+    file(s) in place (round 33 Subtask 3).
+
+    Groups edits by ``v2_path`` so each v2 JSON file is loaded, updated, and
+    written atomically once.  Updates only ``translations[original][lang]``
+    — every other key / bucket / sibling language is preserved byte-for-byte.
+
+    An edit is skipped (with a warning) when:
+        * the ``v2_path`` file no longer exists or is not a v2 envelope;
+        * the ``new_translation`` field is empty or missing;
+        * the referenced ``original`` key is not in the envelope's
+          ``translations`` dict (rename from browser, or stale edit).
+    """
+    applied = 0
+    skipped = 0
+    files_modified = 0
+
+    by_path: Dict[str, List[Dict[str, Any]]] = {}
+    for edit in v2_edits:
+        p = edit.get("v2_path") or edit.get("file") or ""
+        if not p:
+            skipped += 1
+            continue
+        by_path.setdefault(p, []).append(edit)
+
+    for path_str, path_edits in sorted(by_path.items()):
+        path = Path(path_str)
+        if not path.is_file():
+            logger.warning("[V2-EDIT] file not found, skipping %d edits: %s",
+                           len(path_edits), path)
+            skipped += len(path_edits)
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning("[V2-EDIT] cannot read %s: %s", path, e)
+            skipped += len(path_edits)
+            continue
+        if not isinstance(data, dict) or data.get("_schema_version") != 2:
+            logger.warning(
+                "[V2-EDIT] %s is not a v2 envelope, skipping %d edits",
+                path, len(path_edits),
+            )
+            skipped += len(path_edits)
+            continue
+        translations = data.get("translations")
+        if not isinstance(translations, dict):
+            logger.warning("[V2-EDIT] %s missing ``translations`` dict", path)
+            skipped += len(path_edits)
+            continue
+
+        if create_backup:
+            bak = path.with_suffix(path.suffix + ".bak")
+            if not bak.exists():
+                shutil.copy2(path, bak)
+
+        path_changed = False
+        for edit in path_edits:
+            original = edit.get("original", "")
+            lang = edit.get("v2_lang") or data.get("default_lang") or "zh"
+            new_trans = edit.get("new_translation", "")
+            if not isinstance(new_trans, str) or not new_trans.strip():
+                skipped += 1
+                continue
+            if not isinstance(original, str) or original not in translations:
+                logger.warning(
+                    "[V2-EDIT] original %r not found in %s, skipping",
+                    original, path,
+                )
+                skipped += 1
+                continue
+            bucket = translations[original]
+            if not isinstance(bucket, dict):
+                bucket = {}
+                translations[original] = bucket
+            bucket[lang] = new_trans
+            applied += 1
+            path_changed = True
+
+        if path_changed:
+            # Atomic write mirrors core/runtime_hook_emitter._write_json_atomic
+            # so an interrupted run never truncates the envelope.
+            import os as _os
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            _os.replace(str(tmp_path), str(path))
+            files_modified += 1
+
+    return {"applied": applied, "skipped": skipped, "files_modified": files_modified}
+
+
 # ============================================================
 # CLI
 # ============================================================
@@ -480,7 +710,10 @@ def main() -> None:
     group.add_argument("--import-json", type=str, metavar="PATH", help="Import edits from JSON file")
 
     parser.add_argument("--tl-dir", type=str, help="tl/<lang>/ directory for tl-mode export")
-    parser.add_argument("--db", type=str, help="translation_db.json path for direct-mode export")
+    parser.add_argument("--db", type=str, help="translation_db.json path for direct-mode export (auto-detects v2 translations.json)")
+    parser.add_argument("--v2-lang", type=str, default=None, metavar="LANG",
+                        help="For v2 envelope input: which language bucket to edit "
+                             "(default: envelope's default_lang)")
     parser.add_argument("--output", "-o", default="translation_editor.html", help="Output HTML path")
     parser.add_argument("--no-backup", action="store_true", help="Skip .bak backup on import")
     args = parser.parse_args()
@@ -492,7 +725,7 @@ def main() -> None:
         if args.tl_dir:
             entries = _extract_from_tl_dir(Path(args.tl_dir))
         elif args.db:
-            entries = _extract_from_db(Path(args.db))
+            entries = _extract_from_db(Path(args.db), v2_lang=args.v2_lang)
         else:
             parser.error("--export requires --tl-dir or --db")
             return
