@@ -35,40 +35,9 @@
 - 第二十七轮：分层收尾 — A-H-2（3 wrapper 下沉 `file_processor/checker.py`）+ A-H-5（`tools/font_patch.py` → `core/font_patch.py`）；测试 293 保持
 - 第二十八轮：A-H-3 Minimal 路由统一 + S-H-4 Dual-mode 插件沙箱（`--sandbox-plugin` opt-in）+ `main.py` 潜伏 `os` bug 修复；测试 293→301
 - 第二十九轮：Priority B 持续优化 — `tests/test_all.py` 2539 行拆为 5 个聚焦文件 + 49 行 meta-runner（113 tests/1 命令）+ `tools/patch_font_now.py:27` 路径 bug（`__file__.parent` 少一层）修复 + TEST_PLAN/dataflow_pipeline 文档刷新；测试 301 保持
+- 第三十轮：冷启动审计后的 4 项 robustness 加固 — `_SubprocessPluginClient` stderr 10 KB 上限 + Popen 异常 atexit 兜底 + http_pool `except Exception` 收窄 + `retranslator.quality_report` 死代码清理；README/engine_guide 刷新；测试 301→302
 
 ## 详细记录
-
-### 第三十轮：冷启动质量审计后的 4 项加固 + 文档深度刷新
-
-HANDOFF.md round 29 把 Priority A + B 都清零后，第 30 轮先做一次冷启动的
-全面质量扫描（两个独立 Explore 代理交叉检查），然后按发现执行。扫描结果
-"no material findings" — 没有新的高危 bug 可修；只剩若干 robustness 小项
-和 docs 陈旧面。本轮一次收敛这 4 项小加固 + 2 项文档刷新。
-
-**A · Robustness fixes（低风险防御性改动）**：
-
-314. `core/api_client.py::_SubprocessPluginClient._call` 第 289 行 `stderr.read()` 改为 `stderr.read(10_000)`。pathological 插件在异常退出时可能把几 MB 错误日志写到 stderr；之前的无界 read 理论上可 OOM 宿主进程。新增 10 KB 硬上限 + 保留原 600 字符 tail slice 不变。新增回归测试 `test_sandbox_stderr_read_bounded`：插件写 3 KB 到 stderr 后 `sys.exit(7)`，断言宿主报出 `exit=7` 错误 + 消息长度 < 2000 字符。测试数 301→302
-315. `core/api_client.py::_SubprocessPluginClient.__init__` 加 try/except 兜底：之前如果 `subprocess.Popen(...)` 成功但 `atexit.register` 之前（之间）抛异常（极端场景），会留下孤儿子进程。新版在 except `BaseException` 分支里 `proc.kill() + wait(2)` 清理，然后 re-raise。正常路径零性能影响
-316. `core/http_pool.py::_get_or_create` + `_drop_connection` 的连接清理分支把 `except Exception` 收窄为 `except (OSError, http.client.HTTPException)`。原来过宽的 catch 会把 `AttributeError` / `TypeError` 之类的编程错误（例如重构后连接对象类型变了）悄悄吞掉，现在会让这类 bug 直接向上 bubble
-317. `translators/retranslator.py` 清理死代码 `quality_report` 参数（位于 `retranslate_file` 签名 + 内部赋值 + `run_retranslate_pipeline` 调用 + `pipeline/stages.py::_run_retranslate_phase` 对应字典构造）。该参数被填充但从未被保存/返回，属于 round 23 前 direct.py 拆分时遗留的 dead plumbing。`translators/direct.py::run_pipeline` 的同名 `quality_report` 是真在用（保存为 `quality_report.json`），未受影响
-
-**B · 文档深度刷新**：
-
-318. `README.md` 特性一览追加 4 个 round 26-29 能力：`--sandbox-plugin` opt-in 插件沙箱、统一引擎入口 `engines.resolve_engine(...).run(args)`、`TranslationDB` 并发安全（RLock + 原子写）。保留原有所有描述，只增补不删除
-319. `docs/engine_guide.md` 新增"自定义引擎插件（`--provider custom --custom-module NAME`）"整节：接口契约、两种运行模式对照表（legacy vs sandbox）、sandbox 模式 `_plugin_serve` 插件模板 + 完整 JSONL 协议细节、超时/stderr 截断/shutdown sentinel 行为、`custom_engines/example_echo.py` 参考指引。此前 engine_guide 只讲 EngineBase 抽象，完全没提 custom provider 轴
-320. CHANGELOG / CLAUDE.md / .cursorrules / HANDOFF.md 按惯例同步
-
-**结果**：
-- 12 测试套件 + tl_parser 75 + screen 51 内建自测全绿；测试数 301 → 302（+1 stderr 边界）
-- 零源代码文件超过 800 行；`translators/retranslator.py` 轻微瘦身（-7 行死代码）
-- HANDOFF Priority A + B 保持清空；本轮新增 1 项监控类改进（stderr 边界防御），2 项文档深度刷新
-- 冷启动 Explore 确认"no material findings"—项目已到达"多年可维护"的稳定点
-
-**本轮未做**（留给第 31+ 轮）：
-- CI Windows runner（仍是外部基础设施项）
-- docs/constants.md / docs/quality_chain.md / docs/roadmap.md 深度复查（本轮只做 engine_guide；其他基本仍然准确）
-- A-H-3 Medium / S-H-4 Breaking（需真实游戏 + 社区反馈，非 AI 独立可推进）
-- Glossary 线程安全文档化（当前架构单线程，不是 bug，但可在 CLAUDE.md 原则里加一行明确）
 
 ### 第三十一轮：从竞品 renpy_hook_template_py3.rpy 提炼 3 项技巧 + 新增运行时注入模式
 
@@ -293,6 +262,160 @@ HANDOFF.md 重写为 32 → 33 交接（测试 307→326、3 项"续做 round 31
 - A-H-3 Medium/Deep / S-H-4 Breaking（需真实 API + 社区反馈）
 - `inject_hook.rpy` 字体替换的 `--font-config` 信号传递（本轮只打包字体文件，
   未透传 font size 配置）
+
+### 第三十三轮：round 32 延续三小项 — v2 merge 工具 + `--font-config` 透传 + editor v2 适配（+ 顺手拆分 test_translation_state）
+
+HANDOFF round 32 挂起的三项"🟢 自然延续 round 32 方向（小项）"本轮按用户
+指定一次全做。实施过程中在 Commit 3 末尾发现 `tests/test_translation_state.py`
+已累积到 1256 行（远超 CLAUDE.md 800 行软上限，与 round 29 拆分 `test_all.py`
+同性质），用户批准顺手拆分成 Commit 4 prep，故本轮共 **5 commits**，每个
+bisect-safe。
+
+**Commit 1 · Subtask 1：v2 translations.json merge 工具**
+
+346. 新增 `tools/merge_translations_v2.py`（~260 行，零依赖纯 stdlib）：
+   - `main(argv=None) -> int` + `sys.exit(main())` wrapper（仿
+     `tools/rpa_unpacker.py` / `rpyc_decompiler.py` 模板）
+   - Library API `merge_v2_translations(paths, *, default_lang, strict) -> dict`
+     返回一个新的 v2 envelope；对每个输入严格校验 `_schema_version == 2`
+     （v1 flat JSON 直接报错 exit=1），遍历 `translations` 累积
+     `{original: {lang: translation}}`
+   - 冲突规则：同 `(original, lang)` 对第一次出现胜出，warning 打印；
+     `--strict` 时改为立即 MergeError + exit=1
+   - 输出 `default_lang` 优先级：`--default-lang` flag > 第一个输入的
+     `default_lang` > `"zh"` 硬 fallback
+   - 原子写（temp + `os.replace`），与
+     `core/runtime_hook_emitter._write_json_atomic` 一致的崩溃安全保证
+347. 新增 `tests/test_merge_translations_v2.py`（~290 行，12 tests）
+   独立测试套件不进 meta-runner，模仿 `test_rpa_unpacker.py` 风格：
+   - Library 9 条：2 lang 合并 / first-wins / envelope 保留 / v1 拒收 /
+     malformed JSON / 缺文件 / default_lang 显式覆盖 / strict 模式 /
+     fallback "zh"
+   - CLI 3 条：happy path / 缺文件 rc=1 / strict 冲突 rc=1
+
+**Commit 2 · Subtask 2：`--font-config` 透传到 runtime hook（生成 zz_tl_inject_gui.rpy）**
+
+关键设计决策：**生成独立 `.rpy` 文件**而非走 sidecar JSON + hook 代码
+解析。理由：Ren'Py 惯用 `init 999 python:` 高优先级 block 覆盖 gui.rpy
+的 `define gui.xxx = N` 默认值；把覆盖值作为 Python 字面量内嵌到生成
+的 .rpy 里最简单安全，无需运行时 JSON 解析。
+
+348. `core/runtime_hook_emitter.py` 新增私有 `_SAFE_GUI_KEY` 正则
+`^gui\.[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*$`：禁止任何
+能逃逸 "attribute assignment" 形状的 key（空白、操作符、分号注入等）。
+349. 新增 `_sanitise_gui_overrides(overrides)` 过滤器：key 必须匹配
+`_SAFE_GUI_KEY`；value 必须是 `int` / `float`（不是 `bool` — 即使 Python
+把 `True` 当 `int(1)` 我们也拒收，因为没有 `gui.*` 需要布尔）。每个
+过滤事件打 warning。
+350. 新增 `_emit_gui_overrides_rpy(output_game_dir, overrides, *, filename=
+"zz_tl_inject_gui.rpy")` 生成目标 .rpy，shape：
+```
+init 999 python:
+    import os
+    if os.environ.get("RENPY_TL_INJECT") == "1":
+        gui.text_size = 22
+        gui.name_text_size = 24
+```
+`init 999` 保证在游戏 gui.rpy 的 `define` 之后执行覆盖；env var guard
+让文件与游戏一起分发安全。原子写 temp + os.replace。空/全被过滤 →
+不生成文件（保 round 32 字节兼容）
+351. `emit_runtime_hook` 新增 `font_config: Mapping | None = None` kwarg；
+`emit_if_requested` 读 `args.font_config` path，调
+`core.font_patch.load_font_config`（与 static `--patch-font` 共享），把
+dict 透传给 emitter
+352. 测试 +5（round 33 先放在 `test_translation_state.py`，Commit 4 prep
+再 move 到新 `test_runtime_hook.py`）：
+   - `test_emit_gui_overrides_rpy_when_font_config_has_overrides`（有序键、
+     env 守卫、int+float 字面量）
+   - `test_emit_gui_overrides_rpy_skips_when_empty`（5 种 no-op 形状）
+   - `test_emit_gui_overrides_rpy_rejects_unsafe_keys`（6 种注入变体全挡）
+   - `test_emit_gui_overrides_rpy_rejects_unsafe_values`（str/list/dict/
+     bool/None 全拒）
+   - `test_emit_if_requested_resolves_font_config`（e2e path → aux rpy）
+
+**Commit 3 · Subtask 3：translation_editor 读写 v2 envelope**
+
+353. `tools/translation_editor.py::_extract_from_db` auto-detect v2：JSON 顶层
+`_schema_version == 2` → 路由到新增 `_extract_from_v2_envelope(data,
+db_path, *, lang=None)`。v1 `translation_db.json` 路径逐字节不变。
+354. `_extract_from_v2_envelope` 为每个 original 生成 row，`translation`
+取自 `bucket[lang]`（`lang` 默认 envelope 的 `default_lang`）。额外
+带入 `v2_path` / `v2_lang` / `v2_default_lang` / `v2_langs_seen` 路由
+字段，让 save-back 无需 CLI flag
+355. HTML 模板新增 `#v2-banner` 元素（默认隐藏）+ JS `initV2Banner()`：
+v2 row 存在时自动显示 "v2 envelope mode — editing &lt;lang&gt; bucket of
+&lt;file&gt; | Other buckets: ..."。`exportEdits()` 为 v2 edit 附加
+`v2_path` + `v2_lang` 字段。`export_html` 保留 v2 路由 key 到 metadata
+JSON
+356. `import_edits` 路由 `source == "v2"` edits 到新增 `_apply_v2_edits(v2_
+edits, *, create_backup)`：按 `v2_path` 分组，加载每个 v2 envelope，
+更新 `translations[original][lang]` 就地，原子写（temp + os.replace）+
+可选 `.bak`。非 v2 edits 继续走原有 regex-on-rpy 路径
+357. `main` CLI 新增 `--v2-lang LANG`（可选，默认 envelope 的 `default_lang`）
+358. 测试 +3（`tests/test_translation_editor.py`，13 → 16）：
+   - `test_extract_from_v2_envelope`（auto-detect、default lang、显式 lang
+     override、orphan bucket → 空、v1 仍走原路径）
+   - `test_import_to_v2_envelope`（两条 edit 不同 lang 写进同一文件，
+     `.bak` 保存 pre-edit envelope）
+   - `test_v2_envelope_preserves_non_edited_languages`（编辑 zh 不动 ja/ko
+     buckets；envelope 顶层 metadata 保持）
+
+**Commit 4 prep · 拆分 tests/test_translation_state.py**
+
+359. Round 29 拆分 `test_all.py` 后，round 31–33 持续往
+`test_translation_state.py` 注入 runtime_hook 相关测试（+1 r31，+13 r32，
++5 r33 Commit 2），文件膨胀到 **1256 行**，与 round 29 拆分前的 2539 行
+同性质（都是 57%+ 超 800 行软上限）。用户批准把顺手修并入本轮作 Commit
+4 prep。零行为变化，纯结构 refactor。
+360. 新增 `tests/test_runtime_hook.py`（791 行），21 runtime-hook 测试
+byte-identical 拷贝（round 31 Tier C × 2 + round 32 Commit 1 × 1 +
+Subtask A × 2 + Subtask B × 4 + Subtask C × 7 + round 33 Subtask 2 × 5）
+361. `tests/test_translation_state.py` 瘦身回 504 行，只留 13 条 ProgressTracker
+/ TranslationDB / dedup / progress-bar / review-html 测试
+362. `tests/test_all.py` meta-runner 从 5 模块扩为 6：新增
+`test_runtime_hook.run_all()` 调用；docstring 同步更新成"six focused
+modules"。模块级聚合数还是 **142**（19+41+24+24+13+21），分布更合理
+
+**Commit 5 · Docs 同步**
+
+363. 本文件（CHANGELOG_RECENT.md）：round 30 详细压缩进"演进摘要"一行；
+31/32/33 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
+364. CLAUDE.md 项目身份段追加 round 33 新能力（merge 工具 / font-config
+runtime 透传 / editor v2 编辑）+ 测试数 326 → 346；`.cursorrules` 同步
+365. HANDOFF.md 重写为 33 → 34 交接（测试 346、15 测试套件、round 32
+延续三小项全部 ✅）
+
+**结果**：
+- 15 测试套件 + `tl_parser` 75 + `screen` 51 内建自测全绿；测试 **326 → 346**
+  （+12 Commit 1 / +5 Commit 2 / +3 Commit 3 / +0 Commit 4 prep 纯拆分）
+- 所有新功能 default off：`tools/merge_translations_v2.py` 是新独立工具，
+  仅在用户显式运行时触发；`--font-config` runtime 透传仅当
+  `--emit-runtime-hook` 同时开启时生效；`--v2-lang` 仅当 editor 读 v2
+  文件时生效。既有 tl-mode / direct-mode / retranslate / screen / 静态
+  `--patch-font` 行为 byte-identical
+- 新增文件 3 个：
+  - `tools/merge_translations_v2.py`（~260 行）
+  - `tests/test_merge_translations_v2.py`（~290 行，独立套件）
+  - `tests/test_runtime_hook.py`（791 行，从 translation_state 拆出来的 21 测试）
+- 修改文件 6 个：`core/runtime_hook_emitter.py` (+~140) / `tools/translation_
+  editor.py` (+~230) / `tests/test_translation_editor.py` (+~240) /
+  `tests/test_translation_state.py` (从 1256 回到 504) / `tests/test_all.py`
+  (+~5) / `CHANGELOG_RECENT.md` + `CLAUDE.md` + `.cursorrules` + `HANDOFF.md`
+- **所有源文件仍 < 800 行**（最接近 test_runtime_hook.py 791 / tools/
+  translation_editor.py 749 / translators/direct.py 601）
+
+**本轮未做**（留给第 34+ 轮）：
+- `TranslationDB.entries` 加 `language` 字段（当前 v2 仍在 emit 层手工
+  指定 lang bucket；源头数据结构未扩，后续多语言翻译 first-class 支持
+  需要 DB schema 升级 + 数据迁移）
+- A-H-3 Medium/Deep（让 Ren'Py 走 generic_pipeline 6 阶段 / 完全退役
+  DialogueEntry）
+- S-H-4 Breaking（强制所有插件走 subprocess，retire importlib 路径）
+- RPG Maker Plugin Commands(356) / 加密 RPA / RGSS 归档 / JS 硬编码
+- Editor HTML 多语言**同页**编辑（当前每 `--v2-lang` 跑一次，多轮切换
+  仍可行但非"单页"体验）
+- CI Windows runner + docs/constants.md / quality_chain.md / roadmap.md
+  深度复查（连续 4 轮被记到未做列表）
 
 ## 已回滚
 
