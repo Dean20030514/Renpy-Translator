@@ -100,7 +100,6 @@ def _run_retranslate_phase(
 
     rt_total_translated = 0
     rt_total_warnings: list[str] = []
-    rt_quality: dict[str, list[dict]] = {}
 
     for idx, (rpy_path, n_ut) in enumerate(files_to_rt, 1):
         rel = rpy_path.relative_to(full_translated_root)
@@ -113,7 +112,6 @@ def _run_retranslate_phase(
                 rt_client,
                 rt_glossary,
                 rt_progress,
-                rt_quality,
                 genre=args.genre,
                 translation_db=rt_db,
                 run_id=rt_run_id,

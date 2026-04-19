@@ -167,7 +167,6 @@ def retranslate_file(
     client: APIClient,
     glossary: Glossary,
     progress: ProgressTracker,
-    quality_report: Optional[dict[str, list[dict]]] = None,
     genre: str = "adult",
     context_lines: int = 3,
     max_per_chunk: int = 20,
@@ -273,8 +272,6 @@ def retranslate_file(
         glossary_locked=glossary.locked_terms,
         glossary_no_translate=glossary.no_translate,
     )
-    if quality_report is not None and issues:
-        quality_report[rel_path] = issues
     for issue in issues:
         if issue["level"] == "error":
             all_warnings.append(f"行 {issue['line']}: {issue['message']}")
@@ -419,7 +416,6 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
     start_time = time.time()
     total_translated = 0
     total_warnings: list[str] = []
-    quality_report: dict[str, list[dict]] = {}
 
     for i, (rpy_path, n_ut) in enumerate(files_with_untranslated, 1):
         rel = rpy_path.relative_to(game_dir)
@@ -428,7 +424,7 @@ def run_retranslate_pipeline(args: argparse.Namespace) -> None:
         try:
             count, warnings = retranslate_file(
                 rpy_path, game_dir, output_dir, client, glossary, progress,
-                quality_report, genre=args.genre,
+                genre=args.genre,
                 translation_db=translation_db,
                 run_id=run_id, stage="retranslate",
                 provider=config.provider, model=config.model,
