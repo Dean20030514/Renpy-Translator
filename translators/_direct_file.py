@@ -37,8 +37,6 @@ from core.translation_utils import (
     ProgressTracker,
     TranslationContext,
     _deduplicate_translations,
-    _filter_checked_translations,
-    _restore_placeholders_in_translations,
     _strip_char_prefix,
 )
 from file_processor import (
@@ -49,6 +47,8 @@ from file_processor import (
     read_file,
     split_file,
     validate_translation,
+    _filter_checked_translations,
+    _restore_placeholders_in_translations,
 )
 from translators._direct_chunk import _translate_chunk_with_retry
 

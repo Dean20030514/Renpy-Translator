@@ -32,13 +32,13 @@ from core.translation_utils import (
     ProgressTracker,
     TranslationContext,
     _build_fallback_dicts,
-    _filter_checked_translations,
     _match_string_entry_fallback,
-    _restore_placeholders_in_translations,
 )
 from file_processor import (
     check_response_item,
     protect_placeholders,
+    _filter_checked_translations,
+    _restore_placeholders_in_translations,
 )
 
 # Re-export 兼容层：下游调用方 (main.py / engines/renpy_engine.py /

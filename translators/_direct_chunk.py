@@ -33,6 +33,8 @@ from core.translation_utils import (
     TranslationContext,
     CHECKER_DROP_RATIO_THRESHOLD,
     MIN_DROPPED_FOR_WARNING,
+)
+from file_processor import (
     _restore_placeholders_in_translations,
     _restore_locked_terms_in_translations,
     _filter_checked_translations,

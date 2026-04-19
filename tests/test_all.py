@@ -636,9 +636,8 @@ def test_is_untranslated_dialogue():
 
 
 def test_restore_placeholders_in_translations():
-    """测试 _restore_placeholders_in_translations 辅助函数"""
-    from core.translation_utils import _restore_placeholders_in_translations
-    from file_processor import protect_placeholders
+    """测试 _restore_placeholders_in_translations 辅助函数（round 27 A-H-2: now in file_processor）"""
+    from file_processor import _restore_placeholders_in_translations, protect_placeholders
     text = "Hello [name], welcome to {color=#f00}town{/color}!"
     protected, mapping = protect_placeholders(text)
     translations = [
@@ -694,8 +693,8 @@ def test_progress_normalize():
 
 
 def test_filter_checked_translations():
-    """T47: _filter_checked_translations 正常/空译文/占位符缺失"""
-    from core.translation_utils import _filter_checked_translations
+    """T47: _filter_checked_translations 正常/空译文/占位符缺失（round 27 A-H-2: now in file_processor）"""
+    from file_processor import _filter_checked_translations
     items = [
         {"line": 1, "original": "Hello", "zh": "你好"},
         {"line": 2, "original": "World", "zh": ""},          # 空译文 → dropped

@@ -17,12 +17,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from file_processor import (
-    check_response_item,
-    restore_placeholders,
-)
-
 logger = logging.getLogger("renpy_translator")
+
+# Round 27 A-H-2: ``_filter_checked_translations`` /
+# ``_restore_placeholders_in_translations`` /
+# ``_restore_locked_terms_in_translations`` were moved to
+# ``file_processor.checker`` to eliminate the reverse dependency
+# ``core → file_processor``.  Callers should now import them from
+# ``file_processor`` directly (translators/direct_chunk, translators/
+# direct_file, translators/tl_mode, translators/retranslator all
+# already updated).
 
 # ============================================================
 # 可配置阈值常量
@@ -274,42 +278,6 @@ def _strip_char_prefix(translations: list[dict]) -> None:
                 t[key] = m.group(1)
 
 
-def _restore_placeholders_in_translations(
-    translations: list[dict],
-    ph_mapping: list[tuple[str, str]],
-    extra_keys: tuple[str, ...] = (),
-) -> None:
-    """将翻译结果中的占位符令牌还原为原始文本。
-
-    默认还原 original 和 zh 字段，extra_keys 可追加额外字段（如 tl-mode 的 id）。
-    """
-    keys = ("original", "zh") + extra_keys
-    for t in translations:
-        for key in keys:
-            val = t.get(key)
-            if val:
-                t[key] = restore_placeholders(val, ph_mapping)
-
-
-def _restore_locked_terms_in_translations(
-    translations: list[dict],
-    lt_mapping: list[tuple[str, str]],
-    extra_keys: tuple[str, ...] = (),
-) -> None:
-    """将翻译结果中的锁定术语令牌替换为中文译名。
-
-    默认处理 original 和 zh 字段。注意：对 original 字段也做还原，
-    这样 validator 看到的 original 是还原后的文本，不含令牌。
-    """
-    from file_processor.checker import restore_locked_terms
-    keys = ("original", "zh") + extra_keys
-    for t in translations:
-        for key in keys:
-            val = t.get(key)
-            if val:
-                t[key] = restore_locked_terms(val, lt_mapping)
-
-
 _PH_TOKEN_RE = re.compile(r"__RENPY_PH_\d+__")
 
 
@@ -362,31 +330,6 @@ def _match_string_entry_fallback(
         if zh:
             return zh, 4
     return None, 0
-
-
-def _filter_checked_translations(
-    translations: list[dict],
-    line_offset: int = 0,
-) -> tuple[list[dict], int, list[dict], list[str]]:
-    """对翻译结果逐条执行 checker，分流为 kept / dropped。
-
-    Returns:
-        (kept, dropped_count, dropped_items, warnings)
-    """
-    kept: list[dict] = []
-    dropped_items: list[dict] = []
-    dropped_count = 0
-    warnings: list[str] = []
-    for t in translations:
-        item_warnings = check_response_item(t, line_offset=line_offset)
-        if item_warnings:
-            dropped_count += 1
-            dropped_items.append(t)
-            for w in item_warnings:
-                warnings.append(f"[CHECK-DROPPED] {w}")
-        else:
-            kept.append(t)
-    return kept, dropped_count, dropped_items, warnings
 
 
 def _deduplicate_translations(translations: list[dict]) -> list[dict]:

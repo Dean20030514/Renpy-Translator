@@ -26,10 +26,12 @@ from core.prompts import build_retranslate_system_prompt, build_retranslate_user
 from core.translation_db import TranslationDB
 from core.translation_utils import (
     ProgressTracker,
-    _restore_placeholders_in_translations,
     _strip_char_prefix,
-    _filter_checked_translations,
     _deduplicate_translations,
+)
+from file_processor import (
+    _restore_placeholders_in_translations,
+    _filter_checked_translations,
 )
 
 logger = logging.getLogger("renpy_translator")

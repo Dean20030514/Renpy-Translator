@@ -23,6 +23,9 @@ from file_processor.checker import (
     _count_translatable_lines_in_chunk,
     check_response_chunk,
     check_response_item,
+    _filter_checked_translations,
+    _restore_placeholders_in_translations,
+    _restore_locked_terms_in_translations,
 )
 from file_processor.patcher import (
     apply_translations,
@@ -57,6 +60,9 @@ __all__ = [
     "_count_translatable_lines_in_chunk",
     "check_response_chunk",
     "check_response_item",
+    "_filter_checked_translations",
+    "_restore_placeholders_in_translations",
+    "_restore_locked_terms_in_translations",
     # patcher
     "apply_translations",
     "_replace_string_in_line",

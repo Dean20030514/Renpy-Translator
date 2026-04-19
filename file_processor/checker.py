@@ -316,3 +316,75 @@ def check_response_item(item: dict, line_offset: int = 0,
             parts.append(f"译文多出占位符 {extra}")
         warnings.append(f"行 {line}: 占位符与原文不一致 — {'; '.join(parts)}")
     return warnings
+
+
+# ============================================================
+# Bulk response post-processing (round 27 A-H-2 — pushed down from
+# ``core/translation_utils.py`` to eliminate the core → file_processor
+# reverse dependency).  These wrappers operate on lists of response
+# dicts ``{"line", "original", "zh", ...}`` and belong next to the
+# single-item primitives they delegate to.
+# ============================================================
+
+def _filter_checked_translations(
+    translations: list[dict],
+    line_offset: int = 0,
+) -> tuple[list[dict], int, list[dict], list[str]]:
+    """Run ``check_response_item`` on each translation dict and split the
+    input into kept / dropped / warnings.
+
+    Returns ``(kept, dropped_count, dropped_items, warnings)``.  Empty
+    results are returned when ``translations`` is empty — callers never
+    need to guard against ``None``.
+    """
+    kept: list[dict] = []
+    dropped_items: list[dict] = []
+    dropped_count = 0
+    warnings: list[str] = []
+    for t in translations:
+        item_warnings = check_response_item(t, line_offset=line_offset)
+        if item_warnings:
+            dropped_count += 1
+            dropped_items.append(t)
+            for w in item_warnings:
+                warnings.append(f"[CHECK-DROPPED] {w}")
+        else:
+            kept.append(t)
+    return kept, dropped_count, dropped_items, warnings
+
+
+def _restore_placeholders_in_translations(
+    translations: list[dict],
+    ph_mapping: list[tuple[str, str]],
+    extra_keys: tuple[str, ...] = (),
+) -> None:
+    """In-place: restore ``[var]`` / ``{tag}`` placeholders across every
+    translation dict's ``original`` / ``zh`` fields (plus any ``extra_keys``
+    the caller names — e.g. ``id`` for tl-mode).
+    """
+    keys = ("original", "zh") + extra_keys
+    for t in translations:
+        for key in keys:
+            val = t.get(key)
+            if val:
+                t[key] = restore_placeholders(val, ph_mapping)
+
+
+def _restore_locked_terms_in_translations(
+    translations: list[dict],
+    lt_mapping: list[tuple[str, str]],
+    extra_keys: tuple[str, ...] = (),
+) -> None:
+    """In-place: restore locked-term tokens (``__LOCKED_0__`` etc.) back
+    to their translated forms across every translation dict's fields.
+
+    Both ``original`` and ``zh`` are processed so downstream validators
+    see the post-restore text and don't flag the token itself as a
+    placeholder mismatch.
+    """
+    keys = ("original", "zh") + extra_keys
+    for t in translations:
+        for key in keys:
+            val = t.get(key)
+            if val:
+                t[key] = restore_locked_terms(val, lt_mapping)
