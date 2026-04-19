@@ -145,20 +145,29 @@ class TranslationDB:
                     self.entries = []
             else:
                 self.entries = []
-            # Round 34 forced backfill: v1-era entries adopt caller's default
-            # language.  This is the documented migration path; callers that
-            # want to preserve None-bucket behaviour should construct without
-            # ``default_language``.
-            if (
-                self.version < self.SCHEMA_VERSION
-                and self.default_language is not None
-            ):
+            # Round 34 / Round 37 M1: forced backfill for any entry lacking
+            # a ``language`` field when caller constructed with
+            # ``default_language``.  Originally gated on ``version <
+            # SCHEMA_VERSION`` (v1 migration path), but a hand-edited v2 DB
+            # or a third-party tool can produce a v2 file whose entries
+            # still lack language fields — those must also backfill or
+            # they'd stay in the None bucket permanently while subsequent
+            # ``upsert_entry`` auto-fills fresh writes to the default
+            # bucket, causing ``(file,line,orig,None)`` vs
+            # ``(file,line,orig,zh)`` duplicate-bucket drift.  Callers
+            # that want to preserve None-bucket behaviour should
+            # construct without ``default_language``.
+            if self.default_language is not None:
+                any_backfilled = False
                 for entry in self.entries:
                     if isinstance(entry, dict) and "language" not in entry:
                         entry["language"] = self.default_language
-                # Mark dirty so the next save rewrites at SCHEMA_VERSION with
-                # the backfilled language values persisted — one-way upgrade.
-                self._dirty = True
+                        any_backfilled = True
+                if any_backfilled:
+                    # Mark dirty so the next save rewrites at SCHEMA_VERSION
+                    # with the backfilled language values persisted — one-
+                    # way upgrade.
+                    self._dirty = True
             self._rebuild_index()
             if not self._dirty:
                 self._dirty = False

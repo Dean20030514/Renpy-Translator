@@ -280,6 +280,55 @@ def test_save_load_roundtrip_version_bumps_to_2():
     print("[OK] test_save_load_roundtrip_version_bumps_to_2")
 
 
+def test_load_backfills_v2_entries_missing_language():
+    """Round 37 M1: ``load()`` backfills the language field on ANY entry
+    that lacks it when ``default_language`` is set — not just v1-migrated
+    files.  A v2 envelope (hand-edited or third-party-produced) with
+    partial language coverage must also get backfilled to prevent
+    ``(file,line,orig,None)`` vs ``(file,line,orig,zh)`` duplicate-bucket
+    drift with subsequent ``upsert_entry`` calls.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+    from core.translation_db import TranslationDB
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "db.json"
+        # Hand-written v2 DB: one entry with language, one without.
+        p.write_text(json.dumps({
+            "version": 2,
+            "entries": [
+                {"file": "a.rpy", "line": 1, "original": "Hi",
+                 "translation": "嗨", "status": "ok", "language": "zh"},
+                # Missing language — partial v2 file (third-party tool
+                # or hand edit).
+                {"file": "a.rpy", "line": 2, "original": "Bye",
+                 "translation": "再见", "status": "ok"},
+            ],
+        }), encoding="utf-8")
+
+        db = TranslationDB(p, default_language="zh")
+        db.load()
+        assert len(db.entries) == 2
+        assert db.entries[0].get("language") == "zh"
+        assert db.entries[1].get("language") == "zh", (
+            "M1: v2 entry missing language must be backfilled"
+        )
+        assert db._dirty is True, (
+            "M1: backfill must mark dirty so save() persists it"
+        )
+
+        # Control: if default_language is None, partial v2 file stays
+        # partial (no backfill — same as legacy).
+        db2 = TranslationDB(p, default_language=None)
+        db2.load()
+        assert "language" not in db2.entries[1], (
+            "M1 control: default_language=None must not backfill"
+        )
+    print("[OK] test_load_backfills_v2_entries_missing_language")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -293,6 +342,8 @@ def run_all() -> int:
         test_load_v1_with_default_language_backfills,
         test_default_language_none_means_legacy_behavior,
         test_save_load_roundtrip_version_bumps_to_2,
+        # Round 37 M1: v2 partial-coverage backfill
+        test_load_backfills_v2_entries_missing_language,
     ]
     for t in tests:
         t()
