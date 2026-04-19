@@ -248,27 +248,47 @@ class _SubprocessPluginClient:
         self._request_id = 0
         self._lock = threading.Lock()
         self._closed = False
+        # ``_proc`` is assigned before ``atexit.register`` so that if the
+        # Popen call itself raises (e.g. the interpreter binary vanished),
+        # the finalizer has nothing to tear down.  If any post-launch step
+        # raises, the try/except below guarantees we kill the child before
+        # propagating so a half-initialised instance never leaks a process.
+        self._proc = None
 
-        # Launch the subprocess.  ``-u`` ensures unbuffered stdout so every
-        # response line reaches us without waiting for a full buffer.
-        self._proc = subprocess.Popen(
-            [sys.executable, "-u", str(module_path), "--plugin-serve"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(project_root),
-            text=True,
-            encoding="utf-8",
-            # Line-buffered on the host side so our writes flush per line.
-            bufsize=1,
-        )
-        logger.info(
-            "[API] 沙箱模式启动自定义引擎子进程: %s (pid=%s)",
-            module_path, self._proc.pid,
-        )
-        # Best-effort cleanup when the process interpreter exits without an
-        # explicit close() call (e.g. KeyboardInterrupt paths).
-        atexit.register(self._shutdown_quietly)
+        try:
+            # Launch the subprocess.  ``-u`` ensures unbuffered stdout so
+            # every response line reaches us without waiting for a full
+            # buffer.
+            self._proc = subprocess.Popen(
+                [sys.executable, "-u", str(module_path), "--plugin-serve"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(project_root),
+                text=True,
+                encoding="utf-8",
+                # Line-buffered on the host side so our writes flush per line.
+                bufsize=1,
+            )
+            logger.info(
+                "[API] 沙箱模式启动自定义引擎子进程: %s (pid=%s)",
+                module_path, self._proc.pid,
+            )
+            # Best-effort cleanup when the process interpreter exits without
+            # an explicit close() call (e.g. KeyboardInterrupt paths).
+            atexit.register(self._shutdown_quietly)
+        except BaseException:
+            # Round 30 robustness: if we managed to start the child but
+            # something else (e.g. ``atexit.register``) raised before we
+            # finished initialising, kill the orphaned process so it
+            # doesn't linger.
+            if self._proc is not None and self._proc.poll() is None:
+                try:
+                    self._proc.kill()
+                    self._proc.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            raise
 
     # -----------------------------------------------------------------
     # Public duck-typed interface mirroring a loaded plugin module.
@@ -286,7 +306,10 @@ class _SubprocessPluginClient:
         if self._proc.poll() is not None:
             stderr = ""
             try:
-                stderr = (self._proc.stderr.read() or "")[-600:]
+                # Round 30 bound: cap stderr read at 10 KB so a pathological
+                # plugin spewing megabytes of text on exit cannot OOM the
+                # host.  Only the tail is shown in the error anyway.
+                stderr = (self._proc.stderr.read(10_000) or "")[-600:]
             except (OSError, ValueError):
                 pass
             raise RuntimeError(

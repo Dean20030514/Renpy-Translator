@@ -171,10 +171,14 @@ class HTTPSConnectionPool:
         if existing is not None and getattr(self._local, "key", None) == key:
             return existing
         # Different host/port (or no connection yet) — close any stale one first.
+        # Round 30: narrow the cleanup exception from bare ``Exception`` to the
+        # concrete ones ``http.client.HTTPConnection.close`` is documented to
+        # raise, so programming bugs (AttributeError, TypeError) propagate
+        # instead of being silently swallowed by connection-pool recycling.
         if existing is not None:
             try:
                 existing.close()
-            except Exception:
+            except (OSError, http.client.HTTPException):
                 pass
         conn = http.client.HTTPSConnection(
             host, port, timeout=self._timeout, context=_SHARED_SSL_CTX
@@ -189,7 +193,7 @@ class HTTPSConnectionPool:
         if existing is not None:
             try:
                 existing.close()
-            except Exception:
+            except (OSError, http.client.HTTPException):
                 pass
         self._local.conn = None
         self._local.key = None

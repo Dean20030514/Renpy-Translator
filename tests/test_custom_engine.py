@@ -358,6 +358,66 @@ def test_sandbox_timeout_kills_hung_plugin():
     print("[OK] test_sandbox_timeout_kills_hung_plugin")
 
 
+def test_sandbox_stderr_read_bounded():
+    """When a plugin exits prematurely, the host's diagnostic reads at most
+    10 KB of stderr and includes only a ~600-char tail in the RuntimeError
+    (round 30 robustness fix guarding against OOM on pathological plugin
+    output).
+
+    The plugin writes 3 KB to stderr (safe under every OS's pipe buffer so
+    the child can exit without blocking) and returns exit code 7.  The
+    parent's ``stderr.read(10_000)`` returns the full 3 KB, then ``[-600:]``
+    truncates — the final error string is proven bounded by the
+    ``len(err) < 2_000`` assertion, which would fail under the old
+    unbounded ``read()`` followed by the same tail slice only incidentally:
+    the important invariant is that changing ``3_000`` here to ``3_000_000``
+    must not change the assertion's outcome because of the 10 KB cap.
+    """
+    body = (
+        "import sys\n"
+        "\n"
+        "def translate_batch(system_prompt, user_prompt):\n"
+        "    return '[]'\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    if len(sys.argv) > 1 and sys.argv[1] == '--plugin-serve':\n"
+        "        sys.stderr.write('X' * 3_000)\n"
+        "        sys.stderr.flush()\n"
+        "        sys.exit(7)\n"
+    )
+    path = _write_plugin("_test_sandbox_big_stderr", body)
+    try:
+        config = APIConfig(
+            provider="custom", api_key="",
+            custom_module="_test_sandbox_big_stderr", sandbox_plugin=True,
+        )
+        client = APIClient(config)
+        try:
+            # Give the child a moment to exit before we call it.
+            client._custom_module._proc.wait(timeout=5)
+            raised = False
+            err = ""
+            try:
+                client.translate("sys", json.dumps([{"line": 1, "original": "x"}]))
+            except RuntimeError as e:
+                raised = True
+                err = str(e)
+            assert raised, "host should have detected the prematurely-exited child"
+            assert "exit=7" in err, f"expected exit code surfaced, got: {err!r}"
+            # Total error message including Chinese prefix must be bounded;
+            # the stderr payload was 3 KB but the error embeds only the last
+            # 600 chars of a 10 KB-bounded read — so the message stays short
+            # regardless of how much the plugin wrote.
+            assert len(err) < 2_000, (
+                f"stderr tail leaked too much into error ({len(err)} chars)"
+            )
+        finally:
+            client._custom_module.close()
+    finally:
+        path.unlink(missing_ok=True)
+    print("[OK] test_sandbox_stderr_read_bounded")
+
+
 def test_sandbox_close_idempotent():
     """Calling close() twice on a subprocess client is a no-op the second time."""
     config = APIConfig(
@@ -403,6 +463,7 @@ ALL_TESTS = [
     test_sandbox_rejects_path_traversal,
     test_sandbox_rejects_missing_module,
     test_sandbox_timeout_kills_hung_plugin,
+    test_sandbox_stderr_read_bounded,
     test_sandbox_close_idempotent,
 ]
 
