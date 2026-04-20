@@ -129,6 +129,79 @@ def test_retranslate_system_prompt_per_language_branch():
     print("[OK] test_retranslate_system_prompt_per_language_branch")
 
 
+def test_tl_chunk_reads_alias_field_from_mocked_response():
+    """Round 41 audit tail: verify the *response-read* side of r39
+    per-language dispatch.
+
+    ``test_tl_system_prompt_per_language_branch`` only asserts the
+    prompt tells the AI to use ``"ja"`` field.  This test feeds a
+    mocked ``_translate_one_tl_chunk`` a response where both the
+    "zh" placeholder (required by :func:`check_response_item`) and
+    the real target alias ("ja" / "jp") are populated with distinct
+    strings, and asserts ``kept_items`` takes the alias-resolved
+    value — proving ``ctx.lang_config`` actually drives
+    :func:`core.lang_config.resolve_translation_field`.
+
+    The "zh" field is a honeypot: if the r39 dispatch regressed to
+    the legacy ``t.get("zh", "")`` path, ``kept_items`` would contain
+    the "zh-honeypot-*" strings instead of the Japanese translations.
+    """
+    import unittest.mock as mock
+
+    from core.api_client import APIClient, APIConfig
+    from core.lang_config import get_language_config
+    from core.translation_utils import TranslationContext
+    from translators.tl_mode import _translate_one_tl_chunk
+
+    def fake_translate(_system_prompt, _user_prompt):
+        # "original" + "zh" are required by file_processor.checker
+        # (check_response_item looks only at those two fields).
+        # "ja" / "jp" are the real target-language aliases we expect
+        # resolve_translation_field to pick up.
+        return [
+            {"id": "e1", "line": 1, "original": "Hello",
+             "ja": "こんにちは", "zh": "zh-honeypot-1"},
+            {"id": "e2", "line": 2, "original": "World",
+             "jp": "世界", "zh": "zh-honeypot-2"},
+        ]
+
+    cfg = APIConfig(
+        provider="xai", api_key="test", model="grok",
+        max_retries=1, rpm=0, rps=0, use_connection_pool=False,
+    )
+    client = APIClient(cfg)
+    client.translate = mock.MagicMock(side_effect=fake_translate)
+
+    ctx = TranslationContext(
+        client=client,
+        system_prompt="test system prompt",
+        rel_path="script.rpy",
+        locked_terms_map={},
+        lang_config=get_language_config("ja"),
+    )
+
+    _rel, _ci, kept, dropped, _warns = _translate_one_tl_chunk(
+        ctx, "script.rpy", 0, "dummy chunk text",
+        [{"id": "e1"}, {"id": "e2"}],
+    )
+
+    assert dropped == 0, (
+        f"checker should not drop any item (both have original+zh); "
+        f"got dropped={dropped}"
+    )
+    assert kept.get("e1") == "こんにちは", (
+        "primary alias 'ja' not resolved via resolve_translation_field; "
+        f"got kept['e1']={kept.get('e1')!r} — if it is "
+        f"'zh-honeypot-1' the r39 dispatch regressed to legacy zh path"
+    )
+    assert kept.get("e2") == "世界", (
+        "secondary alias 'jp' not resolved via field_aliases chain; "
+        f"got kept['e2']={kept.get('e2')!r} — if it is "
+        f"'zh-honeypot-2' the r39 dispatch regressed to legacy zh path"
+    )
+    print("[OK] test_tl_chunk_reads_alias_field_from_mocked_response")
+
+
 def run_all() -> int:
     tests = [
         test_parse_target_langs_single_language,
@@ -140,6 +213,8 @@ def run_all() -> int:
         # Round 39 — tl-mode + retranslate per-language prompt
         test_tl_system_prompt_per_language_branch,
         test_retranslate_system_prompt_per_language_branch,
+        # Round 41 audit tail — response-side integration for r39 dispatch
+        test_tl_chunk_reads_alias_field_from_mocked_response,
     ]
     for t in tests:
         t()
