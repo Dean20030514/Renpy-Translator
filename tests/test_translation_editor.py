@@ -406,8 +406,12 @@ def test_import_to_v2_envelope():
     """Round 33 Subtask 3: ``import_edits`` with ``source: "v2"`` edits
     writes back to the target ``translations.json`` file, updating the
     selected language bucket of the named original.
+
+    Round 37 M4: the tempdir MUST be allocated under CWD so the
+    ``_apply_v2_edits`` path whitelist (CWD-rooted only) accepts the
+    legitimate test-generated v2_path.
     """
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(dir=str(Path.cwd())) as td:
         td_path = Path(td)
         v2_path = td_path / "merged.json"
         _make_v2_envelope(v2_path, {
@@ -541,8 +545,11 @@ def test_export_edits_multi_language_produces_per_lang_records():
     SAME original with DIFFERENT ``v2_lang`` values, ``_apply_v2_edits``
     writes each to its own bucket and leaves sibling buckets untouched.
     Simulates the browser-side multi-language edit flow.
+
+    Round 37 M4: tempdir under CWD so the ``_apply_v2_edits`` path
+    whitelist accepts the test-generated v2_path.
     """
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(dir=str(Path.cwd())) as td:
         td_path = Path(td)
         v2_path = td_path / "multi.json"
         _make_v2_envelope(v2_path, {
@@ -657,8 +664,11 @@ def test_v2_envelope_preserves_non_edited_languages():
     """Round 33 Subtask 3: editing one language bucket must not disturb
     any other language bucket in the same original's dict, nor any
     untouched original's translations, nor top-level envelope metadata.
+
+    Round 37 M4: tempdir under CWD so the ``_apply_v2_edits`` path
+    whitelist accepts the test-generated v2_path.
     """
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory(dir=str(Path.cwd())) as td:
         td_path = Path(td)
         v2_path = td_path / "merged.json"
         _make_v2_envelope(v2_path, {
@@ -697,6 +707,66 @@ def test_v2_envelope_preserves_non_edited_languages():
     print("[OK] test_v2_envelope_preserves_non_edited_languages")
 
 
+def test_apply_v2_edits_rejects_path_outside_cwd():
+    """Round 37 M4: ``_apply_v2_edits`` must skip edits whose ``v2_path``
+    resolves to a file outside the current working directory.  Prevents
+    a crafted / stale ``translation_edits.json`` from hijacking writes
+    over arbitrary filesystem paths on the operator's machine.
+
+    A corresponding edit with an under-CWD path is kept in the same call
+    so the test also confirms that legitimate edits still apply when
+    mixed with a rejected one.
+    """
+    import shutil
+    import tempfile
+    from tools.translation_editor import _apply_v2_edits
+
+    # Write an under-CWD v2 envelope so the legit edit can apply.
+    ok_dir = Path(tempfile.mkdtemp(prefix="_m4_ok_", dir=str(Path.cwd())))
+    # Write a sibling envelope outside CWD (system tempdir on every
+    # platform we support is NOT under project CWD).
+    outside_dir = Path(tempfile.mkdtemp(prefix="_m4_out_"))
+    try:
+        envelope = {
+            "_schema_version": 2,
+            "_format": "renpy-translate",
+            "default_lang": "zh",
+            "translations": {"Hi": {"zh": "原始"}},
+        }
+        ok_path = ok_dir / "ok.json"
+        outside_path = outside_dir / "out.json"
+        ok_path.write_text(json.dumps(envelope), encoding="utf-8")
+        outside_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+        edits = [
+            {"v2_path": str(outside_path), "v2_lang": "zh",
+             "original": "Hi", "new_translation": "攻击者控制"},
+            {"v2_path": str(ok_path), "v2_lang": "zh",
+             "original": "Hi", "new_translation": "合法编辑"},
+        ]
+        result = _apply_v2_edits(edits, create_backup=False)
+        assert result["applied"] == 1, (
+            "M4: legit under-CWD edit must still apply"
+        )
+        assert result["skipped"] == 1, (
+            "M4: outside-CWD edit must be skipped"
+        )
+        assert result["files_modified"] == 1, (
+            "M4: only the under-CWD file must be modified"
+        )
+        # Outside-CWD file must be byte-identical (untouched).
+        outside_loaded = json.loads(outside_path.read_text(encoding="utf-8"))
+        assert outside_loaded["translations"]["Hi"]["zh"] == "原始", (
+            "M4: outside-CWD file must not be written to"
+        )
+        # Under-CWD file must have the legit new translation.
+        ok_loaded = json.loads(ok_path.read_text(encoding="utf-8"))
+        assert ok_loaded["translations"]["Hi"]["zh"] == "合法编辑"
+    finally:
+        shutil.rmtree(ok_dir, ignore_errors=True)
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
 # ============================================================
 # Runner
 # ============================================================
@@ -727,6 +797,8 @@ ALL_TESTS = [
     test_side_by_side_toggle_and_styles_present_in_html,
     test_side_by_side_label_hidden_by_default,
     test_side_by_side_preserves_dropdown_coexistence,
+    # Round 37 M4 — v2_path CWD whitelist
+    test_apply_v2_edits_rejects_path_outside_cwd,
 ]
 
 

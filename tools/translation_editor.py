@@ -425,6 +425,11 @@ def _apply_v2_edits(
     — every other key / bucket / sibling language is preserved byte-for-byte.
 
     An edit is skipped (with a warning) when:
+        * the ``v2_path`` resolves to a path outside the current working
+          directory (round 37 M4 defensive check — prevents a crafted
+          edits.json from hijacking writes to system files);
+        * the ``v2_path`` file is larger than 50 MB (round 37 M2 memory
+          cap — the editor process heap stays bounded);
         * the ``v2_path`` file no longer exists or is not a v2 envelope;
         * the ``new_translation`` field is empty or missing;
         * the referenced ``original`` key is not in the envelope's
@@ -434,12 +439,45 @@ def _apply_v2_edits(
     skipped = 0
     files_modified = 0
 
+    # Round 37 M4: compute trust anchor once.  The operator is expected
+    # to invoke ``--import-json`` from a directory that is an ancestor
+    # of the v2 envelope(s) being edited — typically the project root
+    # or the output directory.  A resolved v2_path outside this anchor
+    # is treated as a stale or hostile edit and skipped with a warning
+    # (not raised, because a single bad edit shouldn't abort the whole
+    # import batch).
+    try:
+        trust_root: Optional[Path] = Path.cwd().resolve()
+    except OSError:
+        trust_root = None
+
     by_path: Dict[str, List[Dict[str, Any]]] = {}
     for edit in v2_edits:
         p = edit.get("v2_path") or edit.get("file") or ""
         if not p:
             skipped += 1
             continue
+        # Round 37 M4: path-prefix whitelist.  Resolve the path (follows
+        # symlinks, normalises ``..``) and require it to be within
+        # ``trust_root``.
+        if trust_root is not None:
+            try:
+                resolved = Path(p).resolve()
+            except OSError:
+                logger.warning(
+                    "[V2-EDIT] cannot resolve v2_path, skipping: %r", p,
+                )
+                skipped += 1
+                continue
+            try:
+                resolved.relative_to(trust_root)
+            except ValueError:
+                logger.warning(
+                    "[V2-EDIT] v2_path outside CWD %s, skipping: %s",
+                    trust_root, resolved,
+                )
+                skipped += 1
+                continue
         by_path.setdefault(p, []).append(edit)
 
     for path_str, path_edits in sorted(by_path.items()):
