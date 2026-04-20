@@ -8,9 +8,17 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Round 44 audit-tail: expand matrix to include Windows — the CLAUDE.md
+    # environment targets Windows native (user development), so CI should
+    # catch Windows-specific breakage (path separators, CRLF, subprocess
+    # CTRL_C_EVENT in gui_pipeline.py, Popen shell quoting) in addition to
+    # the baseline Linux run.  14 rounds of 'CI Windows runner' backlog
+    # closed by adding windows-latest to matrix.os.
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.9", "3.12", "3.13"]
 
     steps:
@@ -22,29 +30,48 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Syntax check (py_compile)
+        shell: bash
         run: |
           # entry points
           python -m py_compile main.py
           python -m py_compile one_click_pipeline.py
           python -m py_compile gui.py
+          python -m py_compile gui_handlers.py
+          python -m py_compile gui_pipeline.py
+          python -m py_compile gui_dialogs.py
           python -m py_compile start_launcher.py
           python -m py_compile build.py
-          # core
+          # core (includes r27 font_patch move + r40 api_plugin split)
           python -m py_compile core/__init__.py
           python -m py_compile core/api_client.py
+          python -m py_compile core/api_plugin.py
           python -m py_compile core/config.py
-          python -m py_compile core/lang_config.py
+          python -m py_compile core/font_patch.py
           python -m py_compile core/glossary.py
+          python -m py_compile core/http_pool.py
+          python -m py_compile core/lang_config.py
+          python -m py_compile core/pickle_safe.py
           python -m py_compile core/prompts.py
+          python -m py_compile core/runtime_hook_emitter.py
           python -m py_compile core/translation_db.py
           python -m py_compile core/translation_utils.py
-          # translators
+          # translators (includes r23 direct split + r24 tl_mode/tl_parser split + r26 screen split)
           python -m py_compile translators/__init__.py
           python -m py_compile translators/direct.py
+          python -m py_compile translators/_direct_chunk.py
+          python -m py_compile translators/_direct_file.py
+          python -m py_compile translators/_direct_cli.py
           python -m py_compile translators/tl_mode.py
+          python -m py_compile translators/_tl_patches.py
+          python -m py_compile translators/_tl_dedup.py
           python -m py_compile translators/retranslator.py
           python -m py_compile translators/screen.py
+          python -m py_compile translators/_screen_extract.py
+          python -m py_compile translators/_screen_patch.py
           python -m py_compile translators/tl_parser.py
+          python -m py_compile translators/_tl_postprocess.py
+          python -m py_compile translators/_tl_nvl_fix.py
+          python -m py_compile translators/_tl_parser_selftest.py
           python -m py_compile translators/renpy_text_utils.py
           # file_processor
           python -m py_compile file_processor/__init__.py
@@ -52,13 +79,19 @@ jobs:
           python -m py_compile file_processor/patcher.py
           python -m py_compile file_processor/checker.py
           python -m py_compile file_processor/validator.py
-          # tools
+          # tools (includes r33 merge_v2 + r34 editor_html + r40 rpyc split)
           python -m py_compile tools/__init__.py
-          python -m py_compile tools/font_patch.py
+          python -m py_compile tools/_rpyc_shared.py
+          python -m py_compile tools/_rpyc_tier2.py
+          python -m py_compile tools/rpyc_decompiler.py
           python -m py_compile tools/renpy_upgrade_tool.py
           python -m py_compile tools/review_generator.py
           python -m py_compile tools/rpa_packer.py
+          python -m py_compile tools/rpa_unpacker.py
+          python -m py_compile tools/merge_translations_v2.py
           python -m py_compile tools/translation_editor.py
+          python -m py_compile tools/_translation_editor_html.py
+          python -m py_compile tools/analyze_writeback_failures.py
           # custom_engines
           python -m py_compile custom_engines/example_echo.py
           # pipeline
@@ -66,7 +99,7 @@ jobs:
           python -m py_compile pipeline/helpers.py
           python -m py_compile pipeline/gate.py
           python -m py_compile pipeline/stages.py
-          # engines
+          # engines (r12-r13 abstract layer + r40 rpgmaker split)
           python -m py_compile engines/__init__.py
           python -m py_compile engines/engine_base.py
           python -m py_compile engines/engine_detector.py
@@ -75,31 +108,58 @@ jobs:
           python -m py_compile engines/rpgmaker_engine.py
           python -m py_compile engines/csv_engine.py
 
-      - name: Run unit tests (test_all.py)
+      # Core meta-runner (aggregates 6 focused suites: api_client /
+      # file_processor / translators / glossary_prompts_config /
+      # translation_state / runtime_hook)
+      - name: Run meta-runner (tests/test_all.py)
         run: python tests/test_all.py
 
-      - name: Run engine tests (test_engines.py)
+      # Independent suites (21 files as of r44)
+      - name: Run engine tests
         run: python tests/test_engines.py
-
-      - name: Run smoke tests (tests/smoke_test.py)
+      - name: Run engine tests (RPG Maker)
+        run: python tests/test_engines_rpgmaker.py
+      - name: Run smoke tests
         run: python tests/smoke_test.py
-
-      - name: Run batch-1 tests (RPA packer, default language, JSON retry, lint)
+      - name: Run batch-1 tests
         run: python tests/test_batch1.py
-
-      - name: Run translation editor tests
+      - name: Run translation editor v1 tests
         run: python tests/test_translation_editor.py
-
+      - name: Run translation editor v2 tests
+        run: python tests/test_translation_editor_v2.py
+      - name: Run merge_translations_v2 tests
+        run: python tests/test_merge_translations_v2.py
       - name: Run custom engine tests
         run: python tests/test_custom_engine.py
+      - name: Run tl_dedup tests
+        run: python tests/test_tl_dedup.py
+      - name: Run RPA unpacker tests
+        run: python tests/test_rpa_unpacker.py
+      - name: Run rpyc decompiler tests
+        run: python tests/test_rpyc_decompiler.py
+      - name: Run lint fixer tests
+        run: python tests/test_lint_fixer.py
+      - name: Run direct pipeline tests
+        run: python tests/test_direct_pipeline.py
+      - name: Run tl pipeline tests
+        run: python tests/test_tl_pipeline.py
+      - name: Run runtime hook filter tests
+        run: python tests/test_runtime_hook_filter.py
+      - name: Run translation_db language tests
+        run: python tests/test_translation_db_language.py
+      - name: Run multilang run tests
+        run: python tests/test_multilang_run.py
+      - name: Run override categories tests
+        run: python tests/test_override_categories.py
 
-      - name: Run tl_parser self-tests
+      # Internal self-tests (embedded in the module)
+      - name: Run tl_parser self-tests (75 assertions)
         run: python -c "from translators.tl_parser import _run_self_tests; _run_self_tests()"
-
-      - name: Run screen_translator self-tests
+      - name: Run screen_translator self-tests (51 assertions)
         run: python -c "from translators.screen import _run_self_tests; _run_self_tests()"
 
       - name: Verify zero third-party dependencies
+        shell: bash
         run: |
           python -c "
           import ast, sys, importlib.util, pathlib
@@ -135,6 +195,7 @@ jobs:
           "
 
       - name: Type check (informational)
+        shell: bash
         run: |
           pip install mypy --break-system-packages 2>/dev/null || pip install mypy
           mypy --ignore-missing-imports --no-error-summary core/translation_utils.py core/config.py file_processor/ core/api_client.py core/glossary.py core/translation_db.py || true
