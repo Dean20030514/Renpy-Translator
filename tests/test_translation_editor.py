@@ -707,6 +707,28 @@ def test_v2_envelope_preserves_non_edited_languages():
     print("[OK] test_v2_envelope_preserves_non_edited_languages")
 
 
+def test_side_by_side_label_has_empty_string_hint_tooltip():
+    """Round 37 M5: the side-by-side toolbar label carries a ``title``
+    tooltip reminding operators that empty cells are SKIPPED on import
+    (not interpreted as a delete command on the underlying bucket).
+    Documents the intentional semantic so operators who clear a cell
+    expecting bucket-removal discover the no-op behaviour up front.
+    """
+    from tools._translation_editor_html import HTML_TEMPLATE
+    # Tooltip lives in the static HTML template — assert directly on
+    # the constant so we don't need a tempdir / v2 envelope roundtrip.
+    assert 'id="v2-side-by-side-label"' in HTML_TEMPLATE, (
+        "M5: side-by-side label element missing from template"
+    )
+    assert 'title="Empty cells are skipped on import' in HTML_TEMPLATE, (
+        "M5: side-by-side label missing the 'empty cells skipped' tooltip"
+    )
+    # Also verify the tooltip mentions the remediation path (edit JSON).
+    assert "edit the v2 JSON file directly" in HTML_TEMPLATE, (
+        "M5: tooltip must point operators to the JSON-edit remediation"
+    )
+
+
 def test_apply_v2_edits_rejects_path_outside_cwd():
     """Round 37 M4: ``_apply_v2_edits`` must skip edits whose ``v2_path``
     resolves to a file outside the current working directory.  Prevents
@@ -799,6 +821,8 @@ ALL_TESTS = [
     test_side_by_side_preserves_dropdown_coexistence,
     # Round 37 M4 — v2_path CWD whitelist
     test_apply_v2_edits_rejects_path_outside_cwd,
+    # Round 37 M5 — empty-string cell = skip (not delete) + UI hint
+    test_side_by_side_label_has_empty_string_hint_tooltip,
 ]
 
 

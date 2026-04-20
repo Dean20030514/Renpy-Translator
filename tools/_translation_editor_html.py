@@ -73,7 +73,7 @@ th.col-trans-multi, td.col-trans-multi { font-size: 13px; }
   <label><input type="checkbox" id="only-empty" onchange="doSearch()"> Untranslated only</label>
   <label><input type="checkbox" id="only-modified" onchange="doSearch()"> Modified only</label>
   <label id="v2-lang-switch-label" style="display:none;">Language:&nbsp;<select id="v2-lang-switch"></select></label>
-  <label id="v2-side-by-side-label" style="display:none;"><input type="checkbox" id="v2-side-by-side" onchange="toggleSideBySide(this.checked)"> Side-by-side</label>
+  <label id="v2-side-by-side-label" style="display:none;" title="Empty cells are skipped on import (not treated as a delete). To remove a translation bucket, edit the v2 JSON file directly."><input type="checkbox" id="v2-side-by-side" onchange="toggleSideBySide(this.checked)"> Side-by-side</label>
   <button class="btn-warn" onclick="exportEdits()">Export Edits</button>
   <span class="stats" id="stats"></span>
 </div>

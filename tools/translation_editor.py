@@ -434,6 +434,15 @@ def _apply_v2_edits(
         * the ``new_translation`` field is empty or missing;
         * the referenced ``original`` key is not in the envelope's
           ``translations`` dict (rename from browser, or stale edit).
+
+    Round 37 M5: an empty-string ``new_translation`` — produced when an
+    operator clears a cell in the HTML editor (typically in side-by-side
+    mode) and exports edits — is treated as SKIP, not DELETE.  The
+    dominant use case is refining existing translations, and accidental
+    whitespace-clearing would be destructive without explicit
+    confirmation.  To remove a translation bucket entirely, edit the
+    v2 JSON file directly.  The side-by-side toolbar label carries a
+    ``title`` tooltip reminding operators of this semantic.
     """
     applied = 0
     skipped = 0
