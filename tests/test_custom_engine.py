@@ -418,6 +418,72 @@ def test_sandbox_stderr_read_bounded():
     print("[OK] test_sandbox_stderr_read_bounded")
 
 
+def test_sandbox_rejects_oversize_response_line():
+    """Round 43 audit-tail: ``_SubprocessPluginClient._read_response_line``
+    enforces a 50 MB cap per response line to prevent an adversarial or
+    malfunctioning plugin from OOMing the host with an unbounded single
+    line of stdout.  Pairs with the r30 stderr 10 KB cap to bound every
+    channel the host reads from.
+
+    Uses a stubbed ``_proc`` with a fake ``stdout.readline`` so the test
+    does not need to spin up a real subprocess nor actually allocate 50
+    MB — ``_MAX_PLUGIN_RESPONSE_BYTES`` is temporarily patched to a tiny
+    value (1 KB) and ``readline(1024)`` returns exactly 1024 bytes
+    without a newline to trip the oversize detection.
+    """
+    from unittest import mock
+
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    # Build a bare instance; __init__ would try to Popen a subprocess.
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+
+        def readline(self, size: int = -1) -> str:
+            # Simulate a plugin that emits exactly ``size`` bytes with
+            # no newline — the cap's worst case.
+            if size > 0:
+                return self._payload[:size]
+            return self._payload
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+    # Patch the cap to 1 KB so the test only needs 1 KB of payload.
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_BYTES", 1024):
+        client._proc = _FakeProc("X" * 2048)  # more than the cap, no newline
+        raised = False
+        try:
+            client._read_response_line(req_id=42)
+        except RuntimeError as e:
+            msg = str(e)
+            raised = (
+                "oversized" in msg.lower()
+                or "exceeded" in msg.lower()
+                or "bytes" in msg.lower()
+            )
+        assert raised, (
+            "plugin response > cap bytes without newline must raise "
+            "a RuntimeError; no RuntimeError observed"
+        )
+    print("[OK] test_sandbox_rejects_oversize_response_line")
+
+
 def test_sandbox_close_idempotent():
     """Calling close() twice on a subprocess client is a no-op the second time."""
     config = APIConfig(
@@ -465,6 +531,8 @@ ALL_TESTS = [
     test_sandbox_timeout_kills_hung_plugin,
     test_sandbox_stderr_read_bounded,
     test_sandbox_close_idempotent,
+    # Round 43 audit-tail: per-response-line size cap (matches r30 stderr cap)
+    test_sandbox_rejects_oversize_response_line,
 ]
 
 

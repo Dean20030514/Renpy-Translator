@@ -50,6 +50,18 @@ logger = logging.getLogger(__name__)
 
 _CUSTOM_ENGINES_DIR = "custom_engines"
 
+# Round 43 audit-tail: 50 MB cap on a single subprocess response line.
+# ``_SubprocessPluginClient`` reads plugin stdout one line at a time
+# via ``readline()``; without a bound, a misbehaving or adversarial
+# plugin can emit an unbounded single-line payload and OOM the host
+# before the JSON decoder even runs.  r30 already added a 10 KB stderr
+# cap for crash diagnostics; this matches it on the main response
+# channel.  50 MB is vastly more headroom than any legitimate batch
+# response needs (a full chunk worth of translations is typically
+# < 1 MB of JSON), but matches the cap used by the r37-r42 JSON
+# loaders for cross-module consistency.
+_MAX_PLUGIN_RESPONSE_BYTES = 50 * 1024 * 1024
+
 
 def _load_custom_engine(module_name: str) -> Any:
     """Load a custom translation engine module from ``custom_engines/`` directory.
@@ -300,9 +312,25 @@ class _SubprocessPluginClient:
 
         def _reader() -> None:
             try:
-                line = self._proc.stdout.readline()
+                # Round 43 audit-tail: bound the read so a misbehaving
+                # plugin cannot OOM the host with an unbounded single
+                # response line.  ``readline(N)`` returns up to N bytes
+                # OR up-to-and-including the next newline, whichever
+                # comes first — so if the plugin hits the cap without
+                # emitting a newline we detect the malformed response
+                # and raise instead of accepting a truncated line.
+                line = self._proc.stdout.readline(_MAX_PLUGIN_RESPONSE_BYTES)
                 if line == "":
                     error.append(EOFError("plugin stdout closed before response"))
+                    return
+                if (len(line) >= _MAX_PLUGIN_RESPONSE_BYTES
+                        and not line.endswith("\n")):
+                    error.append(RuntimeError(
+                        f"plugin response line exceeded "
+                        f"{_MAX_PLUGIN_RESPONSE_BYTES} bytes without "
+                        f"newline — treating as malformed oversized "
+                        f"response (request_id={req_id})"
+                    ))
                     return
                 result.append(line.rstrip("\n"))
             except BaseException as e:  # noqa: BLE001 - re-raise on main thread
