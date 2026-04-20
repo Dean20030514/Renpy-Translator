@@ -486,6 +486,32 @@ def test_apply_v2_edits_rejects_path_outside_cwd():
         shutil.rmtree(outside_dir, ignore_errors=True)
 
 
+def test_side_by_side_mobile_media_query_present():
+    """Round 38 C4: the HTML template ships an ``@media (max-width: 800px)``
+    block that keeps side-by-side editing usable on narrow viewports.
+    Previously the fixed 13% width per language collapsed to sub-75px
+    cells at 6 languages — unreadable on a phone.  The mobile block
+    sets ``min-width: 120px`` on ``.col-trans-multi`` cells and makes
+    the whole table horizontally scrollable so the page layout stays
+    anchored.
+    """
+    from tools._translation_editor_html import HTML_TEMPLATE
+    # Media query present with the expected breakpoint.
+    assert "@media (max-width: 800px)" in HTML_TEMPLATE, (
+        "C4: mobile media query missing from HTML template"
+    )
+    # min-width on the side-by-side cells.
+    assert "min-width: 120px" in HTML_TEMPLATE, (
+        "C4: side-by-side cell min-width rule missing"
+    )
+    # Horizontal scroll enabled at the table level.
+    assert "overflow-x: auto" in HTML_TEMPLATE, (
+        "C4: horizontal scroll rule missing"
+    )
+    # Scroll momentum for iOS Safari (non-essential polish but documented).
+    assert "-webkit-overflow-scrolling: touch" in HTML_TEMPLATE
+
+
 def test_side_by_side_label_has_empty_string_hint_tooltip():
     """Round 37 M5: the side-by-side toolbar label carries a ``title``
     tooltip reminding operators that empty cells are SKIPPED on import
@@ -529,6 +555,8 @@ ALL_TESTS = [
     test_apply_v2_edits_rejects_path_outside_cwd,
     # Round 37 M5 — empty-string cell = skip (not delete) + UI hint
     test_side_by_side_label_has_empty_string_hint_tooltip,
+    # Round 38 C4 — mobile @media adaptive CSS
+    test_side_by_side_mobile_media_query_present,
 ]
 
 

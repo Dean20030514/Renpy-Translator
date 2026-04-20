@@ -62,6 +62,21 @@ th.col-trans-multi, td.col-trans-multi { font-size: 13px; }
 #no-results { display: none; text-align: center; padding: 40px; color: #999; font-size: 16px; }
 #v2-banner { display: none; background: #fff3e0; border-bottom: 2px solid #ffb74d; color: #e65100; padding: 8px 16px; font-size: 13px; position: sticky; top: 49px; z-index: 60; }
 #v2-banner code { background: #fff; padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+
+/* Round 38 C4: mobile / narrow-viewport adaptation for side-by-side
+ * multi-column mode.  Below 800px the fixed 13% width per language
+ * collapses to sub-75px cells at 6 languages — too narrow to edit
+ * comfortably on a phone.  This @media block gives each side-by-side
+ * cell a readable ``min-width: 120px`` and lets the table scroll
+ * horizontally so the rest of the page stays anchored.
+ */
+@media (max-width: 800px) {
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  thead, tbody { display: table; width: 100%; }
+  .col-trans-multi { min-width: 120px; width: auto; }
+  /* File column takes too much space on narrow screens — trim back. */
+  .col-file { width: 120px; }
+}
 </style>
 </head>
 <body>
