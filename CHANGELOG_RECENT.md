@@ -41,152 +41,9 @@
 - 第三十三轮：round 32 延续三小项全包 — `tools/merge_translations_v2.py`（v2 多语言合并工具，独立 260 行纯 stdlib）+ `--font-config` 透传 runtime hook（生成 `zz_tl_inject_gui.rpy` `init 999` 覆盖 gui 字号/布局，`RENPY_TL_INJECT=1` env guard 安全）+ `tools/translation_editor.py` v2 envelope 适配（`--v2-lang` 选 bucket 编辑）+ Commit 4 prep 拆 `test_translation_state.py` 运行时 hook 测试到新 `test_runtime_hook.py`（791 行，21 测试）；测试 326→346
 - 第三十四轮：round 33 延续三小项全包 — `TranslationDB` schema v2 + `language` 字段 + 4-tuple 索引（`has_entry` / `filter_by_status` / `upsert_entry` language-aware；v1→v2 `load()` 强制回填防 duplicate-bucket 膨胀）+ `tools/translation_editor.py` HTML dropdown 同页多语言切换（per-lang `_edits` 状态 + 切换时 flush 保 pending）+ `_translation_editor_html.py` 模板抽离（368 行）+ `_OVERRIDE_CATEGORIES` 泛化 override 分派表（仅注册 gui，为 r35 config 扩展留点）+ Commit 1 prep `build_translations_map::entry_language_filter` 防 v2 emit 跨 bucket 污染；测试 346→363
 - 第三十五轮：round 34 延续三小项全包 — `ProgressTracker` 加 `language` kwarg + `_key()` namespace（`"<lang>:<rel_path>"` key，保 bare-key fallback 兼容 r34 progress.json resume）+ `main.py::_parse_target_langs` 解析 `--target-lang zh,ja,zh-tw` 逗号分隔多语言（外层 `engine.run` 循环 + `--tl-mode` / `--retranslate` 多语言 guard 因 prompt 中文专用）+ `tools/_translation_editor_html.py` `toggleSideBySide` / `_bindSideBySideCellEvents` + `.col-trans-multi` CSS 做 side-by-side 多列并列显示（dropdown 保留共存，flush-before-toggle 保 pending 不丢）+ `_OVERRIDE_CATEGORIES` 注册第二个 category `config_overrides`（扁平 `config.X = int|float` 仅，为 r38 bool 扩展留点）+ 新独立 suite `tests/test_multilang_run.py`；测试 363→376
+- 第三十六轮：深度审计驱动的 2 个 edge-case bug 修复（纯 fix 无新功能）— H1 `ProgressTracker` 跨语言 bare-key 污染（非 zh language-aware tracker 不再读/写 bare bucket；新增 class 常量 `_LEGACY_BARE_LANG = "zh"` 标注 pre-r35 implicit owner + `mark_file_done` 镜像守卫防非 zh 清 bare 数据）+ H2 `_sanitise_overrides` 加 `math.isfinite` 过滤拒收 `float('inf')/'-inf'/'nan'`（防 `repr(inf)='inf'` 写入 `init python:` block 致 Ren'Py 启动 NameError）；2 regression 测试；测试 376→378
 
 ## 详细记录
-
-### 第三十六轮：深度审计驱动的 2 个 edge-case bug 修复（H1 + H2）
-
-HANDOFF round 35 末尾的深度审计（3 个并行 Explore 代理从 correctness /
-测试覆盖 / 安全三维度报告，手工核实后）定位了 2 个**已复现验证**的真实
-bug。用户批准"仅修 H1 + H2"方向，本轮纯 fix 不加新功能，3 commits
-每个 bisect-safe。不扩场景、不拉新需求，保 r31-35 五轮 steady-state
-迭代的收敛节奏。
-
-**Commit 1：Fix H1 ProgressTracker 跨语言 bare-key 污染**
-
-`core/translation_utils.py::ProgressTracker` r35 加的 bare-key fallback
-设计只考虑"单语言 r34→r35 升级保 resume"场景；没考虑"之前跑过 zh，
-现在切 ja"。ja 的 `is_chunk_done` 会穿透 namespaced miss 命中 zh 遗留
-的 bare key，导致 ja 对应 chunk 被跳过但 DB 里没有 ja bucket 数据 —
-ja 输出永久空缺，用户察觉不到。审计复现脚本已手工跑通。
-
-411. `ProgressTracker` 新 class 级常量 `_LEGACY_BARE_LANG: str = "zh"`
-带 docstring 解释 pre-r35 convention（r35 前只支持 zh，bare keys 隐式
-属于 zh；与 `core/config.py::DEFAULTS["target_lang"]` 和 `main._parse_
-target_langs` 空 fallback 一致）。class docstring 同步加 r36 H1 设计
-说明段。
-412. 修改 4 个方法的 bare-key 访问逻辑（语义：非 zh language 的
-language-aware tracker 完全不读/不写 bare bucket）：
-   - `is_file_done`（第 198 行）：`self.language and self.language !=
-     _LEGACY_BARE_LANG` 时 namespaced miss 后**直接返回 False**，不再
-     穿透到 bare 查询
-   - `is_chunk_done`（第 212 行）：同上模式
-   - `get_file_translations`（第 245 行）：非 zh language 下只返回
-     namespaced bucket，跳过 bare bucket 合并（防 zh bare 数据污染
-     ja/ko 等的 resume 集合）
-   - `mark_file_done`（第 264 行）：cleanup 阶段 bare bucket 的两处 pop
-     操作加 `self.language is None or self.language == _LEGACY_BARE_
-     LANG` 守卫 — 非 zh tracker 不清 bare 数据（镜像保护：避免 ja 完成
-     后摧毁 hypothetical zh resume data）
-413. `tests/test_translation_state.py` +1 `test_progress_tracker_language_
-switch_does_not_leak_across_langs`（~50 行）：handcraft HANDOFF 审计的
-精确 reproducer（pre-r35 bare-key progress.json + `language='ja'`
-tracker），断言 is_file_done / is_chunk_done / get_file_translations
-全 False；ja mark_chunk_done + mark_file_done 后 bare bucket 仍含
-完整 zh 数据；zh 对照组开同样 pre-r35 文件仍能 resume（守 r35
-`test_progress_tracker_legacy_bare_keys_resume_under_language` 语义）
-414. `run_all()` 注册新测试 — meta-runner 148 → 149
-
-**Commit 2：Fix H2 `_sanitise_overrides` 拒绝非有限 float**
-
-`core/runtime_hook_emitter.py::_sanitise_overrides` 的值类型检查只排
-`bool` / 非 `(int, float)`，**没排** `inf` / `-inf` / `nan`。Python 的
-`json.loads` 默认接受 JSON `Infinity` / `NaN`（非 JSON 标准但 Python
-扩展），不可信 `font_config.json` 能偷渡 inf/nan；过现有 isinstance 闸
-门后 `repr(inf) == 'inf'` 写入 `zz_tl_inject_gui.rpy` 的 `init python:`
-block → Ren'Py 启动 NameError，游戏挂。审计复现脚本已手工跑通。
-
-415. `core/runtime_hook_emitter.py` 顶部 imports 段加 `import math`
-（按 stdlib 字母序插入：json / logging / math / re / shutil）
-416. `_sanitise_overrides`（第 224 行）在 bool/非数值闸门后、赋值到
-`clean[]` 前插入：
-```python
-if isinstance(raw_val, float) and not math.isfinite(raw_val):
-    logger.warning(
-        "[TL-INJECT] skipping non-finite %s value for %s: %r",
-        category_name, raw_key, raw_val,
-    )
-    continue
-```
-完全复用现有 warning log pattern。过滤自动覆盖所有注册的 category
-（`gui_overrides` / `config_overrides`）因共享 helper 入口
-417. `tests/test_runtime_hook_filter.py` +1 `test_sanitise_overrides_
-rejects_non_finite_floats`（~47 行）：构造混合 safe int/float + 不安全
-inf/-inf/nan 在 `gui_overrides` + `config_overrides` 下；emit 后断言
-aux rpy 含 safe 值赋值，不含任何 `= inf` / `= -inf` / `= nan` 字样；
-额外测 all-non-finite config 场景不生成 aux rpy（空 combined map →
-`_emit_overrides_rpy` 返回 None）。文件头 docstring 同步更新
-"Runtime-hook emitter micro-tests — safety / filter overflow suite"，
-解释 H2 测试放此处而非 `test_translation_state.py`（r34/r35 override
-convention）的原因：H1 补进后 test_translation_state.py 已 799 行，
-再加 H2 会越 800 软限
-
-**关键设计决定**：`_LEGACY_BARE_LANG = "zh"` 硬编码而非从 `core/config.py`
-动态读。理由：(1) 减少 import 依赖链；(2) 如未来改 default 语言，
-progress 数据语义被动变化是 surprising，显式更新常量 + docstring 强制
-人工 review 更安全；(3) class 级常量最小 scope。
-
-**Commit 3：Docs sync**
-
-418. 本文件（CHANGELOG_RECENT.md）：round 33 详细压缩进"演进摘要"
-一行；34/35/36 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
-419. CLAUDE.md 项目身份段追加 r36 修复 note（"r36 修 H1 bare-key 跨语言
-污染 + H2 inf/nan runtime hook 注入"）+ 测试数 376 → 378；`.cursorrules`
-同步（`cp CLAUDE.md .cursorrules`，字节相同）
-420. HANDOFF.md 重写为 36 → 37 交接：H1/H2 从"🔴 必修"挪到"✅ r36
-已修"section；保留 M1-M5 / pre-existing 4 个大文件 / r35 原绿色小项
-作 r37 候选；架构健康度表"潜伏 bug"清零日期更新到 round 36
-
-**结果**：
-- 17 测试套件 + `tl_parser` 75 + `screen` 51 内建自测全绿；测试 **376 → 378**
-  （+1 H1 在 `test_translation_state.py` / +1 H2 在 `test_runtime_hook_
-  filter.py`）
-- 所有改动向后兼容：
-  - `ProgressTracker(path)` 无 language kwarg 用法 byte-identical round-35
-  - `ProgressTracker(path, language="zh")` 语义 byte-identical round-35
-    （保 pre-r35 bare-key resume 测试 `test_progress_tracker_legacy_bare_
-    keys_resume_under_language`）
-  - 非 zh language-aware 调用是**唯一行为改变点** — 之前错误继承 zh
-    bare 数据，现在正确隔离
-  - `_sanitise_overrides` 仅在之前会 emit inf/nan（随后崩溃）的场景
-    改为 skip；默认路径零行为变化
-- 新增文件 0 个；修改文件 4 个（仅代码）+ 4 个（文档）：
-  - `core/translation_utils.py` 508 → 547（+1 常量 + 4 方法 gate + 扩
-    docstring）
-  - `core/runtime_hook_emitter.py` 649 → 661（+`import math` + 5 行
-    isfinite check + 说明 comment）
-  - `tests/test_translation_state.py` 733 → 799（+H1 test + 扩 run_all）
-  - `tests/test_runtime_hook_filter.py` 90 → 137（+H2 test + 扩 docstring
-    + 扩 run_all）
-  - CHANGELOG_RECENT.md / CLAUDE.md / .cursorrules / HANDOFF.md
-- 文件大小检查：最大 `tests/test_translation_state.py` 799 / `test_runtime_
-  hook.py` 794 / `tests/test_translation_editor.py` 751 / `core/runtime_
-  hook_emitter.py` 661 — 全部 < 800 ✓
-
-**本轮未做**（留给第 37+ 轮）：
-- M1 `TranslationDB.load()` v2 schema + 部分 entries 缺 language 字段
-  时 backfill 缺口（~3 行 + 1 测试）
-- M2 3 处 JSON loader 无文件大小上限（`core/font_patch.py:91` /
-  `core/translation_db.py:132` / `tools/merge_translations_v2.py:64`，
-  ~15 行）
-- M3 `main.py:342-353` 外循环末尾 `args.target_lang` 残留最后语言
-  （~3 行，无实际 reader，但未来扩展易踩）
-- M4 `tools/translation_editor.py::_apply_v2_edits:431` 的 `v2_path`
-  路径白名单（~10 行）
-- M5 side-by-side 编辑空串语义歧义文档化（JS / Python 一致性提示，
-  ~5 行）
-- Pre-existing 4 个 >800 行文件拆分（`tools/rpyc_decompiler.py` 974 /
-  `core/api_client.py` 965 / `tests/test_engines.py` 962 / `gui.py`
-  815）— 建议独立一轮参 r17 / r29 / r32 拆分 precedent
-- r35 原 HANDOFF 候选的 3 项绿色小项：tl-mode / retranslate per-lang
-  prompt（让 `--tl-mode ja` 真实工作）/ `config_overrides` 值类型扩
-  bool / editor side-by-side mobile 自适应
-- A-H-3 Medium / Deep（让 Ren'Py 走 generic_pipeline 6 阶段 / 完全退役
-  DialogueEntry）/ S-H-4 Breaking（强制所有插件走 subprocess）— 需
-  真实 API + 游戏验证
-- RPG Maker Plugin Commands / 加密 RPA / RGSS
-- CI Windows runner + docs/constants / quality_chain / roadmap 复查
-  （连续 7 轮欠账）
 
 ### 第三十七轮：M 级防御加固包（M1+M2+M3+M4+M5）
 
@@ -514,6 +371,140 @@ prompt + 其他 ~10 处 JSON loader size cap 扩展作 r39 候选
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - CI Windows runner + docs/constants / quality_chain / roadmap 复查
   （连续 9 轮欠账）
+
+### 第三十九轮："收尾包 Part 2"（test_state 拆 + tl-mode per-lang prompt + M2 phase-2）
+
+HANDOFF round 38→39 推荐的"收尾包 Part 2"方向：清理 r38 C3 加测试导致
+的 `test_translation_state.py` 越 800 软限 + 闭环 r35 最后一项挂了 4 轮
+的绿色小项（tl-mode / retranslate per-language prompt）+ 继续扩展 M2 到
+剩余用户面 JSON loader。用户同意后一轮全做。4 commits，每 bisect-safe。
+
+**Commit 1（prep）：拆 `tests/test_translation_state.py` 越软限**
+
+r38 C3 加 `test_gui_overrides_still_rejects_bool` 约 50 行后文件 850 行
+（799 → 850，+51），越 800 软限 50 行。按 r33 / r38 拆分 precedent 把
+r34/r35/r38 的 4 个 override-dispatch-table 相关测试 byte-identical 迁
+到新文件。纯结构 refactor，零行为变化。
+
+446. 新建 `tests/test_override_categories.py`（218 行，4 测试 + main
+runner）。文件头 docstring 解释拆分缘由 + 每个测试的归属（r34 / r35 /
+r38）
+447. `tests/test_translation_state.py` 瘦身到 681 行（850 → 681），剩
+17 个 ProgressTracker / TranslationDB / review-generator 测试
+448. 两文件都 `< 800` ✓；test 总数 21 保持（17 + 4）不变。meta-runner
+`test_all.py` 从 152 → 148（4 override 测试移出；新文件独立 suite
+贡献 4）
+
+**Commit 2：tl-mode + retranslate per-language prompt（r35 最后一项挂起）**
+
+r35 multi-lang 外循环之后，tl-mode 和 retranslate 的 system prompt 仍
+硬编码中文输出（`"zh"` 字段）。r35 加 guard 让 `--tl-mode --target-lang
+ja` 报错。r35 HANDOFF 挂起至今，r36/r37/r38 被其他优先级让行。r39 真
+实支持非 zh 目标：
+
+449. `core/prompts.py` 新增两个 generic 英文模板：
+  - `_GENERIC_TLMODE_SYSTEM_PROMPT`（带 `{target_language}` /
+    `{native_name}` / `{translation_instruction}` / `{field}` /
+    `{style_notes}` / `{glossary_block}` 占位符）
+  - `_GENERIC_RETRANSLATE_SYSTEM_PROMPT`（同上 + `>>>` 标记语法保留）
+450. `build_tl_system_prompt` + `build_retranslate_system_prompt` 加
+`lang_config` kwarg：`None` / `zh` / `zh-tw` → 既有中文模板 byte-
+identical r38；其他语言（`ja` / `ko` / 等）→ 新 generic 模板。CoT
+addon 分支也按 lang_code（非 zh 用 `_COT_ADDON_EN`）
+451. `core/translation_utils.py::TranslationContext` 加 optional
+`lang_config` 字段（default `None` 保 direct_file / tl_mode 现有 2 个
+callers 向后兼容）
+452. `translators/tl_mode.py::run_tl_pipeline` 透传 `args.lang_config`
+→ `build_tl_system_prompt` + `TranslationContext`；`_translate_chunk`
+response reader 在 `ctx.lang_config` 非 None 时用
+`core.lang_config.resolve_translation_field`（alias chain `"zh"` /
+`"ja"` / `"jp"` / `"japanese"` 等）读译文字段，`None` path 保
+`t.get("zh", "")` 硬编码
+453. `translators/retranslator.py::retranslate_file` 加 `lang_config`
+kwarg（default None）+ 透传给 `build_retranslate_system_prompt` + 响应
+读取点用 `resolve_translation_field`；`run_retranslate_pipeline` 透传
+`args.lang_config`
+454. `main.py` 去掉 r35 的 multi-lang guard block（之前 `tl_mode` /
+`retranslate` + `len(target_langs) > 1` 触发 exit=1）替换为解释块指向
+r39 修复；`--target-lang` argparse help 更新说明
+455. `tests/test_multilang_run.py` +2 regression：`test_tl_system_
+prompt_per_language_branch`（zh → 中文模板 byte-identical；ja / ko →
+generic 英文模板 + 正确 lang_config 字段替换）+ `test_retranslate_
+system_prompt_per_language_branch`（同契约，`>>>` 标记语法跨路径保留）
+
+**Commit 3：M2 phase-2 — 3 处 user-facing JSON loader**
+
+r37 M2 覆盖 4 处；r38 M2 扩到 4 处；r39 再扩 3 处（r38 HANDOFF 识别的
+~10 处用户面 loader 中 priority 最高的 3 处）。每处加 module-level
+`_MAX_*_SIZE = 50 * 1024 * 1024` + 读前 `path.stat().st_size` 检查：
+
+456. `tools/review_generator.py::generate_review_html`（operator 供
+translation_db.json → HTML 报告）：oversize → warning + return 0 →
+caller `main()` 层打印 "no entries"
+457. `tools/analyze_writeback_failures.py::analyze`（operator 供
+translation_db.json → failure 分析 dict）：oversize → warning + return
+`{total: 0, by_type: {}, samples: {}}` → CLI summary well-formed
+458. `pipeline/gate.py` glossary 加载块（读输出 tree 的 auto-detected
+glossary.json）：oversize → raise `OSError` → 落到既有 try/except 的
+malformed-glossary 降级分支（r26 H-4 契约：WARNING + locked-term /
+no-translate 检查禁用，其他 gate 继续）
+459. `tests/test_runtime_hook_filter.py` +3 regression 测试（文件 scope
+已在 r36 / r37 扩成 "safety / filter overflow suite"，house 项目 size-
+cap 测试天然）。全用 51 MB sparse file。Gate 测试直接断言常量 +
+sparse-file size check（evaluate_gate 全流程 roundtrip 需要真实 translated
+tree + DB，属集成测试范畴）
+
+**Commit 4：Docs sync**
+
+460. 本文件（CHANGELOG_RECENT.md）：round 36 详细压缩进"演进摘要"
+一行；37/38/39 保留详细
+461. CLAUDE.md 项目身份段追加 r39 note + 测试数 391 → 396；`.cursorrules`
+同步（字节相同）
+462. HANDOFF.md 重写为 39 → 40 交接；r39 四项修从"r39 候选"挪到"✅ r39
+已修"；保留 pre-existing 4 大文件拆 + 剩余 ~7 处 JSON loader（内部 /
+低风险）+ A-H-3 Medium/Deep 等作 r40 候选
+
+**结果**：
+- 19 测试套件 + `tl_parser` 75 + `screen` 51 = **522 断言点**；测试
+  **391 → 396**（+5：C1 prep 拆分 +0 / C2 per-lang prompt +2 / C3
+  M2 phase-2 +3）
+- 所有改动向后兼容：
+  - 测试拆：零行为变化，只是两个文件替代一个
+  - per-lang prompt：`lang_config=None` / `zh` / `zh-tw` 保中文模板
+    byte-identical；`None` default 在所有 caller 当 legacy 路径
+    安全
+  - M2 phase-2：合法 < 50 MB 文件完全不受影响
+- 新增文件 1 个：`tests/test_override_categories.py`（218 行）
+- 修改文件 6 代码 + 2 测试 + 4 文档：
+  - `tests/test_translation_state.py` 850 → 681（移出 4 测试）
+  - `core/prompts.py` 530 → ~695（+2 新 template + `build_*` 重构）
+  - `core/translation_utils.py` 547 → 549（+TranslationContext
+    `lang_config` 字段）
+  - `translators/tl_mode.py` + `translators/retranslator.py` 透传
+    lang_config
+  - `main.py` 去 r35 guard + argparse help 更新
+  - `tests/test_multilang_run.py` 89 → ~155（+2 r39 prompt 测试）
+  - `tools/review_generator.py` / `tools/analyze_writeback_failures.py`
+    / `pipeline/gate.py`（+M2 phase-2 caps）
+  - `tests/test_runtime_hook_filter.py` 217 → ~295（+3 M2 phase-2 测试）
+  - CHANGELOG / CLAUDE / .cursorrules / HANDOFF
+- 文件大小检查：
+  - `tests/test_translation_state.py` 681（r38 850 → 681，回到软限内）
+  - 其他全部 < 800
+
+**本轮未做**（留给第 40+ 轮）：
+- Pre-existing 4 个源文件 > 800 行（`rpyc_decompiler.py` 974 /
+  `api_client.py` 965 / `tests/test_engines.py` 962 / `gui.py` 815）—
+  r17 / r29 / r32 / r33 / r38 / r39 拆分 precedent 已很充分
+- 剩余 ~7 处内部 / 低风险 JSON loader size cap（`engines/generic_
+  pipeline.py:151` / `core/translation_utils.py:138` / `translators/
+  _screen_patch.py:311` / `tools/rpyc_decompiler.py:437` /
+  `engines/rpgmaker_engine.py:85,396` / `pipeline/stages.py:212,378` /
+  `gui.py:718`）
+- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- CI Windows runner + docs/constants / quality_chain / roadmap 复查
+  （连续 10 轮欠账）
 
 ## 已回滚
 
