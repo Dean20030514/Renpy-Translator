@@ -168,7 +168,7 @@ r40 把风险低的 3 个拆完，`gui.py` 需要单独处理。单一大 `class
 | 路径信任边界 | ✅ r37 M4 `_apply_v2_edits` CWD 白名单 | round 37 |
 | 潜伏 bug | ✅ 清零（r36 H1/H2 + r37 M1） | round 37 |
 | **模块分层** | ✅ **r40 tier 分离：`_rpyc_shared`（leaf 常量）↓ `_rpyc_tier2`（safe-unpickle）/ `rpyc_decompiler`（Tier 1 + public API + CLI）；`api_plugin`（plugin loader + sandbox）↑ `api_client`（provider dispatch + APIClient 核心）。Re-export 保向后兼容。** | round 40 |
-| 测试覆盖 | ✅ **396 自动化**（r40 纯 refactor 保持）+ tl_parser 75 + screen 51 = **522 断言点**；**20 测试套件** | round 40 |
+| 测试覆盖 | ✅ **396 自动化**（r40 纯 refactor 保持）+ tl_parser 75 + screen 51 = **522 断言点**；**21 测试文件**（20 独立 suite + 1 `test_all.py` meta-runner） | round 40 |
 | UI 自适应 | ✅ r38 side-by-side `@media (max-width: 800px)` | round 38 |
 | 文档同步 | ✅ CLAUDE / .cursorrules / HANDOFF / CHANGELOG / TEST_PLAN / dataflow_pipeline / README / engine_guide 均现行 | round 40 |
 
@@ -350,8 +350,9 @@ commits），然后尾部 3 个小 commit 做 3 项审计修复 + 1 docs sync。
   常量 by 老名）+ `test_custom_engine.py`（20 测试 import 2 个 plugin
   符号）+ `tools/renpy_lint_fixer.py`（import `_find_renpy_python`）
   完全不用改
-- **测试覆盖**：✅ **396 保持**（r40 纯 refactor）；20 测试套件 → 21（r40
-  新 `test_engines_rpgmaker`）
+- **测试覆盖**：✅ **396 保持**（r40 纯 refactor）；r39 末 20 测试文件
+  → r40 末 21（r40 新 `test_engines_rpgmaker`）。统一口径：测试文件数
+  = 独立 suite 数 + 1（`test_all.py` meta-runner 聚合 6 个聚焦 suite）
 - **文档同步**：✅ CLAUDE / .cursorrules / HANDOFF / CHANGELOG 均现行
 
 **R31-40 十轮累积**：2 个 H-level bug + 8 个 M-level 加固 + 2 个"收尾
