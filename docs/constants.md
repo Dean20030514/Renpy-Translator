@@ -41,3 +41,58 @@
 | `MIN_UNTRANSLATED_TEXT_LENGTH` | translators/renpy_text_utils.py | 20 | 漏翻检测最小文本长度 |
 | `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED` | translators/renpy_text_utils.py | 12 | 漏翻检测最小英文字符数 |
 | `_MODEL_PRICING` | core/api_client.py | ~20 个模型 | 精确定价表 |
+
+## 内存 OOM 防护 — 50 MB 文件大小上限
+
+Round 37-r44 累积添加的 `stat().st_size` gate，为所有用户面 + 内部
+JSON/text loader 提供内存 OOM 防护。每个 loader 在 `json.loads`
+(或 `read_text()`) 前检查文件大小，超限则 warning + fallback
+（skip / return empty / raise to outer handler）。合法文件（< 50 MB）
+行为完全不受影响；attacker-crafted 或 misconfigured 的超大文件
+（如误指 `--config` 到一个 1 GB 数据库 dump）被 bounded。
+
+**阈值选择 rationale**：
+- 50 MB 远超任何 legitimate 场景（典型 `translation_db.json` 几百
+  KB；游戏 RPG Maker `Map001.json` 低 MB；glossary 几十 KB）
+- 50 MB 也是 `urllib` / HTTP 响应读取的合理内存上限（匹配
+  `core/api_client.py::MAX_API_RESPONSE_BYTES = 32 MB` 的同量级）
+- 每个 loader 各自定义独立的 `_MAX_*_SIZE` 常量而非共享 helper —
+  保持 r27 A-H-2 layering 规则（`file_processor` 不 import `core`），
+  同时每个 module 可独立调阈值
+
+### User-facing loaders（operator-supplied path）
+
+| 常量 | 位置 | 轮次 | 说明 |
+|------|------|------|------|
+| `_MAX_FONT_CONFIG_SIZE` | core/font_patch.py | r37 M2 | `load_font_config` |
+| `_MAX_TRANSLATION_DB_SIZE` | core/translation_db.py | r37 M2 | `TranslationDB.load` (schema v2 envelope 入口) |
+| `_MAX_V2_ENVELOPE_SIZE` | tools/merge_translations_v2.py | r37 M2 | `_load_v2_envelope` |
+| `_MAX_V2_APPLY_SIZE` (→ `_MAX_EDITOR_INPUT_SIZE`) | tools/translation_editor.py | r37 M2 / r38 C2 rename | `_apply_v2_edits` + r38 扩 `_extract_from_db` + `import_edits` |
+| `_MAX_CONFIG_FILE_SIZE` | core/config.py | r38 C2 | `_load_config_file` |
+| `_MAX_GLOSSARY_JSON_SIZE` | core/glossary.py | r38 C2 | 4 JSON loader 共享 helper `_json_file_too_large` |
+| `_MAX_REVIEW_DB_SIZE` | tools/review_generator.py | r39 M2 phase-2 | `generate_review_html` |
+| `_MAX_ANALYZE_DB_SIZE` | tools/analyze_writeback_failures.py | r39 M2 phase-2 | `analyze` |
+| `_MAX_GATE_GLOSSARY_SIZE` | pipeline/gate.py | r39 M2 phase-2 | gate glossary 加载（落 malformed-glossary 降级分支） |
+| `_MAX_RPGM_JSON_SIZE` | engines/rpgmaker_engine.py | r42 M2 phase-3 | `extract_texts` + writeback（2 sites，user game_dir） |
+| `_MAX_CSV_JSON_SIZE` | engines/csv_engine.py | r44 audit-tail | `_extract_jsonl` + `_extract_json_or_jsonl`（2 sites） |
+| `_MAX_GUI_CONFIG_SIZE` | gui_dialogs.py | r44 audit-tail | `_load_config` dialog-picked JSON |
+| `_MAX_UI_WHITELIST_SIZE` | file_processor/checker.py | r44 audit-tail | `load_ui_button_whitelist` (inline in function body) |
+
+### Internal loaders（pipeline-generated / progress file）
+
+| 常量 | 位置 | 轮次 | 说明 |
+|------|------|------|------|
+| `_MAX_PROGRESS_JSON_SIZE` | engines/generic_pipeline.py | r42 M2 phase-3 | `_load_progress` (generic_pipeline 进度) |
+| `_MAX_PROGRESS_JSON_SIZE` | core/translation_utils.py | r42 M2 phase-3 | `ProgressTracker._load` |
+| `_MAX_PROGRESS_JSON_SIZE` | translators/_screen_patch.py | r42 M2 phase-3 | `_load_progress` (screen 翻译进度) |
+| `_MAX_REPORT_JSON_SIZE` | pipeline/stages.py | r42 M2 phase-3 | `tl_mode_report.json` + `report.json`（2 sites） |
+
+## 其他内存 / 资源上限
+
+| 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `MAX_API_RESPONSE_BYTES` | core/api_client.py | 32 MB | r22 HTTPS 响应体上限（`read_bounded` 共享工具） |
+| `_MAX_PLUGIN_RESPONSE_CHARS` | core/api_plugin.py | 50M chars | r43 / r44 plugin subprocess stdout per-line cap（**chars 不是 bytes** — Popen text mode；CJK 响应最坏字节 ~150 MB） |
+| `_MAX_PLUGIN_RESPONSE_BYTES` (deprecated alias) | core/api_plugin.py | = `_MAX_PLUGIN_RESPONSE_CHARS` | r43 原 name，r44 保留作 backward-compat alias |
+| plugin stderr `read(10_000)` | core/api_plugin.py | 10 KB chars | r30 crash-diag cap（取尾 600 字符显示） |
+| `MAX_LOG_LINES` / `TRIM_TO` | gui_pipeline.py | 5000 / 3000 | r41 GUI 日志 Text widget 行数上限 / 裁剪目标 |
