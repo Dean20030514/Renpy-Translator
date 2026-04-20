@@ -45,13 +45,22 @@ from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-# Round 37 M2: reject v2 envelope files referenced by ``v2_path`` above
-# this cap.  The :func:`_apply_v2_edits` reader follows an operator-
-# supplied path (resolved against CWD per M4 whitelist); this cap bounds
-# memory even for legitimate CWD-rooted files that happen to be malformed
-# or huge.  50 MB matches the cap in ``tools/merge_translations_v2.py``
-# / ``core/translation_db.py`` / ``core/font_patch.py`` for consistency.
-_MAX_V2_APPLY_SIZE = 50 * 1024 * 1024
+# Round 37 M2 + Round 38: 50 MB cap applied to every user-supplied JSON
+# path that enters the editor.  Originally added in round 37 as
+# ``_MAX_V2_APPLY_SIZE`` (gated ``_apply_v2_edits`` only); round 38
+# generalises the cap to cover the other two entry points that also
+# read operator-supplied paths — ``_extract_from_db`` (v1 / v2 DB
+# input) and ``import_edits`` (the ``translation_edits.json`` payload).
+# Legitimate artefacts for all three sites sit well under the cap; the
+# gate bounds memory against attacker-crafted or accidentally-huge
+# input.  Matches the cap in ``tools/merge_translations_v2.py`` /
+# ``core/translation_db.py`` / ``core/font_patch.py`` for cross-module
+# consistency.
+_MAX_EDITOR_INPUT_SIZE = 50 * 1024 * 1024
+# Backward-compat alias: round 37 M2 introduced this name for the
+# ``_apply_v2_edits`` site.  Kept as an alias so external readers /
+# tests referencing the old name keep working.
+_MAX_V2_APPLY_SIZE = _MAX_EDITOR_INPUT_SIZE
 
 
 # ============================================================
@@ -115,7 +124,23 @@ def _extract_from_db(
             ``translation`` field with (and therefore which bucket edits
             will write back to).  Defaults to the envelope's
             ``default_lang``.  Ignored for v1 inputs.
+
+    Round 38 M2: rejects oversized inputs above ``_MAX_EDITOR_INPUT_SIZE``
+    (50 MB) via an empty-entries return so downstream ``main()`` surfaces
+    "No entries found to export" to the operator instead of OOMing on
+    the full read.
     """
+    # Round 38 M2: size-cap before read.
+    try:
+        file_size = db_path.stat().st_size
+    except OSError:
+        file_size = 0
+    if file_size > _MAX_EDITOR_INPUT_SIZE:
+        logger.warning(
+            "[DB-EXPORT] %s too large (%d bytes > %d-byte cap), "
+            "refusing to load", db_path, file_size, _MAX_EDITOR_INPUT_SIZE,
+        )
+        return []
     data = json.loads(db_path.read_text(encoding="utf-8"))
     if isinstance(data, dict) and data.get("_schema_version") == 2:
         return _extract_from_v2_envelope(data, db_path, lang=v2_lang)
@@ -293,7 +318,22 @@ def import_edits(
 
     Returns:
         ``{"applied": N, "skipped": N, "files_modified": N}``
+
+    Round 38 M2: oversized edits.json above ``_MAX_EDITOR_INPUT_SIZE``
+    (50 MB) returns the empty-result shape with a warning so the CLI's
+    "Import complete: 0 applied, 0 skipped" output is still well-formed.
     """
+    # Round 38 M2: size-cap before read.
+    try:
+        file_size = edits_path.stat().st_size
+    except OSError:
+        file_size = 0
+    if file_size > _MAX_EDITOR_INPUT_SIZE:
+        logger.warning(
+            "[IMPORT] %s too large (%d bytes > %d-byte cap), "
+            "refusing to load", edits_path, file_size, _MAX_EDITOR_INPUT_SIZE,
+        )
+        return {"applied": 0, "skipped": 0, "files_modified": 0}
     edits = json.loads(edits_path.read_text(encoding="utf-8"))
     if not edits:
         return {"applied": 0, "skipped": 0, "files_modified": 0}

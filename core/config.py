@@ -23,6 +23,15 @@ from typing import Any
 
 logger = logging.getLogger("renpy_translator")
 
+# Round 38: reject renpy_translate.json config files above 50 MB to bound
+# memory before ``json.loads`` reads the file.  Legitimate config files
+# are a few hundred bytes to a few KB (a dict of CLI flag defaults); a
+# 50 MB-plus file is almost certainly a malformed or attacker-crafted
+# artefact that shouldn't blow up the process heap before parsing.  Cap
+# matches the value used in ``core/font_patch.py`` / ``core/translation_
+# db.py`` / ``tools/merge_translations_v2.py`` for consistency.
+_MAX_CONFIG_FILE_SIZE = 50 * 1024 * 1024
+
 # 所有可配置参数的默认值
 DEFAULTS: dict[str, Any] = {
     "provider": "xai",
@@ -101,6 +110,18 @@ class Config:
 
         for p in search_paths:
             if p.exists():
+                # Round 38: size-cap before read to bound memory.  Skip + warn
+                # oversized files the same way we handle parse errors.
+                try:
+                    file_size = p.stat().st_size
+                except OSError:
+                    file_size = 0
+                if file_size > _MAX_CONFIG_FILE_SIZE:
+                    logger.warning(
+                        f"[CONFIG] 配置文件过大（{file_size} 字节 > "
+                        f"{_MAX_CONFIG_FILE_SIZE} 字节上限），跳过: {p}"
+                    )
+                    continue
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
                     if isinstance(data, dict):

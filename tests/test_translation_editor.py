@@ -331,6 +331,46 @@ def test_escape_for_rpy():
 
 
 # ============================================================
+# Round 38 M2 — 50 MB size-cap on editor JSON inputs
+# ============================================================
+
+def test_extract_from_db_rejects_oversized_file():
+    """Round 38 M2: ``_extract_from_db`` skips db files above the 50 MB
+    cap before reading.  Returns an empty list so ``main()`` surfaces
+    "No entries found to export" instead of the process OOMing on a
+    huge input (attacker-crafted or accidentally-passed).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        big_path = Path(td) / "big_db.json"
+        with open(big_path, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        entries = _extract_from_db(big_path)
+        assert entries == [], (
+            "M2: oversized db file must return empty entries"
+        )
+    print("[OK] test_extract_from_db_rejects_oversized_file")
+
+
+def test_import_edits_rejects_oversized_file():
+    """Round 38 M2: ``import_edits`` rejects oversized
+    ``translation_edits.json`` payloads via the 50 MB cap, returning the
+    empty-result shape so the CLI's summary print stays well-formed
+    (``0 applied, 0 skipped, 0 files_modified``).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        big_path = Path(td) / "big_edits.json"
+        with open(big_path, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        result = import_edits(big_path, create_backup=False)
+        assert result == {"applied": 0, "skipped": 0, "files_modified": 0}, (
+            "M2: oversized edits file must return empty-result shape"
+        )
+    print("[OK] test_import_edits_rejects_oversized_file")
+
+
+# ============================================================
 # Runner
 # ============================================================
 
@@ -348,6 +388,9 @@ ALL_TESTS = [
     test_import_missing_file,
     test_import_empty_new_translation,
     test_escape_for_rpy,
+    # Round 38 M2 — 50 MB size-cap on editor JSON inputs
+    test_extract_from_db_rejects_oversized_file,
+    test_import_edits_rejects_oversized_file,
     # Round 33-37 v2 envelope / side-by-side / M4 / M5 tests moved to
     # ``tests/test_translation_editor_v2.py`` in round 38 to keep this
     # file under the CLAUDE.md 800-line soft limit.  Run both files

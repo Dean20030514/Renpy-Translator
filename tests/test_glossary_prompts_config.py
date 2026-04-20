@@ -484,6 +484,67 @@ def test_config_validation():
 
 
 
+def test_config_file_rejects_oversized():
+    """Round 38 M2: ``Config._load_config_file`` skips config.json files
+    above the 50 MB cap (via ``stat().st_size`` check before ``json.loads``)
+    and falls through to the next search path or defaults.  Bounds memory
+    when an operator accidentally points ``--config`` at a huge non-config
+    file, or when an attacker-crafted repo ships a bloated config.json.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.config import Config
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        big_path = td_path / "renpy_translate.json"
+        # 51 MB sparse file — stat() reports 51 MB, actual disk use ~0
+        # on NTFS / ext4.  The size gate fires before the read.
+        with open(big_path, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        # CLI explicit path points at the oversized file → skip + defaults.
+        cfg = Config(game_dir=td_path, config_path=str(big_path))
+        # On oversized + no fallback config, file_config stays empty and the
+        # resolver returns DEFAULTS for any queried key.
+        assert cfg._file_config == {}, (
+            "M2: oversized config file must be skipped (file_config empty)"
+        )
+    print("[OK] test_config_file_rejects_oversized")
+
+
+def test_glossary_load_rejects_oversized():
+    """Round 38 M2: ``Glossary.load`` skips oversized glossary JSON files
+    above the 50 MB cap (via the module-level ``_json_file_too_large``
+    helper).  Legitimate glossaries are a few KB to a few hundred KB even
+    at tens of thousands of (en, zh) pairs; 50 MB+ is almost certainly
+    malformed or attacker-crafted.  The helper gates all four JSON readers
+    in ``core.glossary`` so one load() test exercises the shared path.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.glossary import Glossary
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        big_path = td_path / "big_glossary.json"
+        with open(big_path, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        g = Glossary()
+        # Sanity — starts empty.
+        assert g.terms == {}
+        g.load(str(big_path))
+        # Oversized path → skip.  Glossary still empty (no raise, no parse).
+        assert g.terms == {}, (
+            "M2: oversized glossary must leave terms empty"
+        )
+        assert g.characters == {}
+    print("[OK] test_glossary_load_rejects_oversized")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -511,6 +572,9 @@ def run_all() -> int:
         test_lang_config_lookup,
         test_resolve_translation_field,
         test_config_validation,
+        # Round 38 M2: 50 MB size-cap gates on user-supplied JSON paths
+        test_config_file_rejects_oversized,
+        test_glossary_load_rejects_oversized,
     ]
     for t in tests:
         t()

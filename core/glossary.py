@@ -18,6 +18,36 @@ logger = logging.getLogger(__name__)
 
 MAX_MEMORY_ENTRIES = 10000  # 翻译记忆最大条目数
 
+# Round 38: reject oversized glossary / RPG Maker data JSON inputs above
+# 50 MB before ``json.loads``.  Applies to all four JSON readers in this
+# module (Actors.json / System.json for RPGM auto-detect, the
+# project-level UI terms table, and the main glossary file).  Legitimate
+# glossary artefacts are typically a few KB to a few hundred KB (tens
+# of thousands of (en, zh) pairs still fit easily); a 50 MB JSON is
+# almost certainly malformed / attacker-crafted and worth rejecting
+# before the full read.  Cap matches ``core/font_patch.py`` /
+# ``core/translation_db.py`` / ``tools/merge_translations_v2.py``.
+_MAX_GLOSSARY_JSON_SIZE = 50 * 1024 * 1024
+
+
+def _json_file_too_large(path: Path) -> bool:
+    """Round 38 M2 helper: return True if ``path`` exists but is above
+    the ``_MAX_GLOSSARY_JSON_SIZE`` cap.  Logs a warning at the call site
+    when True so callers can ``return``/``continue`` with context; the
+    helper itself stays side-effect-free apart from that log line.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size > _MAX_GLOSSARY_JSON_SIZE:
+        logger.warning(
+            "[GLOSSARY] JSON file too large (%d bytes > %d-byte cap), "
+            "skipping: %s", size, _MAX_GLOSSARY_JSON_SIZE, path,
+        )
+        return True
+    return False
+
 
 class Glossary:
     """术语表：从游戏文件中自动提取 + 手动维护"""
@@ -114,7 +144,7 @@ class Glossary:
 
         # Actors.json → characters
         actors_path = data_dir / "Actors.json"
-        if actors_path.is_file():
+        if actors_path.is_file() and not _json_file_too_large(actors_path):
             try:
                 actors = _json.loads(actors_path.read_text(encoding="utf-8"))
                 if isinstance(actors, list):
@@ -134,7 +164,7 @@ class Glossary:
 
         # System.json → terms
         system_path = data_dir / "System.json"
-        if system_path.is_file():
+        if system_path.is_file() and not _json_file_too_large(system_path):
             try:
                 system = _json.loads(system_path.read_text(encoding="utf-8"))
                 terms = system.get("terms") or {}
@@ -206,6 +236,9 @@ class Glossary:
         path = Path(filepath)
         if not path.exists():
             return
+        # Round 38 M2: size-cap before read.
+        if _json_file_too_large(path):
+            return
 
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
@@ -227,6 +260,9 @@ class Glossary:
         """加载术语表（JSON 格式）"""
         path = Path(filepath)
         if not path.exists():
+            return
+        # Round 38 M2: size-cap before read.
+        if _json_file_too_large(path):
             return
         data = json.loads(path.read_text(encoding='utf-8'))
         self.characters.update(data.get('characters', {}))
