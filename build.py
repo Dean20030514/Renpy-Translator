@@ -3,7 +3,9 @@
 """PyInstaller 打包脚本：将 GUI 入口打包为单个 .exe。
 
 用法:
-    python build.py
+    python build.py              # 打包
+    python build.py --clean-only # 只清理构建产物，不打包
+    python build.py --clean      # 清理后再打包（PyInstaller --clean 语义）
 
 产出:
     dist/多引擎游戏汉化工具.exe
@@ -12,10 +14,12 @@
     - 需要先安装 PyInstaller: pip install pyinstaller
     - 打包后的 .exe 包含所有 Python 文件，用户无需安装 Python
     - resources/fonts/ 下的字体文件会一并打包
+    - --clean-only 仅删 dist/ + build/ + *.spec（开发者体验；r45 新增）
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +27,58 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-def main() -> int:
+def clean_build_artifacts() -> int:
+    """Round 45 Commit 4: delete PyInstaller build outputs.
+
+    Removes:
+      - dist/ (final .exe lives here)
+      - build/ (PyInstaller intermediates)
+      - *.spec (PyInstaller config cache)
+
+    Returns exit code 0 on success.  Prints per-item status.  Safe to
+    re-run (missing paths silently no-op via ignore_errors).
+    """
+    targets_dirs = [
+        PROJECT_ROOT / "dist",
+        PROJECT_ROOT / "build",
+    ]
+    spec_files = list(PROJECT_ROOT.glob("*.spec"))
+
+    print("=" * 60)
+    print("清理 PyInstaller 构建产物")
+    print("=" * 60)
+
+    for d in targets_dirs:
+        if d.exists():
+            try:
+                shutil.rmtree(d, ignore_errors=False)
+                print(f"  [已删除] {d.relative_to(PROJECT_ROOT)}/")
+            except OSError as e:
+                print(f"  [警告]   {d.relative_to(PROJECT_ROOT)}/: {e}")
+        else:
+            print(f"  [跳过]   {d.relative_to(PROJECT_ROOT)}/ (不存在)")
+
+    for spec in spec_files:
+        try:
+            spec.unlink()
+            print(f"  [已删除] {spec.name}")
+        except OSError as e:
+            print(f"  [警告]   {spec.name}: {e}")
+
+    if not spec_files and not any(d.exists() for d in targets_dirs):
+        print("  [信息]   无构建产物可清理")
+
+    print("=" * 60)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    # Round 45 Commit 4: --clean-only subcommand
+    if "--clean-only" in argv:
+        return clean_build_artifacts()
+
     # 收集所有需要打包的 Python 模块（非测试、非工具）
     hidden_imports = [
         # core infrastructure
