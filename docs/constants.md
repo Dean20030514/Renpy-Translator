@@ -96,3 +96,53 @@ JSON/text loader 提供内存 OOM 防护。每个 loader 在 `json.loads`
 | `_MAX_PLUGIN_RESPONSE_BYTES` (deprecated alias) | core/api_plugin.py | = `_MAX_PLUGIN_RESPONSE_CHARS` | r43 原 name，r44 保留作 backward-compat alias |
 | plugin stderr `read(10_000)` | core/api_plugin.py | 10 KB chars | r30 crash-diag cap（取尾 600 字符显示） |
 | `MAX_LOG_LINES` / `TRIM_TO` | gui_pipeline.py | 5000 / 3000 | r41 GUI 日志 Text widget 行数上限 / 裁剪目标 |
+
+## API 调用默认参数（`core/api_client.py::APIConfig`）
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `rpm` | 0 | 每分钟请求数；0 = 不限（由用户通过 `--rpm` 覆盖） |
+| `rps` | 0 | 每秒请求数；0 = 不限 |
+| `timeout` | 180.0 秒 | 整文件翻译需要较长超时；推理模型（grok-reasoning / gpt-o3 / claude thinking）自动提升到 ≥ 300.0 秒 |
+| `temperature` | 0.1 | 低温保证翻译一致性；某些推理模型不接受，需手工调 |
+| `max_retries` | 5 | 429/5xx 自动重试次数上限 |
+| `max_response_tokens` | 32768 | response 的最大 token 数（供 API 的 max_tokens 参数） |
+| `sandbox_plugin` | False | r28 S-H-4 opt-in；True 时自定义引擎 plugin 走 JSONL subprocess sandbox |
+| `use_connection_pool` | True | r21 HTTPS 连接池（节省典型 600 次调用 ~90 秒握手） |
+
+## 速率限制 + 退避重试
+
+| 常量 / 行为 | 位置 | 说明 |
+|------|------|------|
+| RPM / RPS 双重限制 | `core/api_client.py::RateLimiter` | 线程安全；`_second_counts` 批量清理策略（r21 PF-H-1：r21 → N 次获取清一次 vs 每次都清） |
+| 429 / 5xx 自动重试 | `core/api_client.py::translate` | 指数退避 + jitter；优先 `Retry-After` 响应头；退避上限 60 秒 |
+| 断路器 (circuit breaker) | — | 未实现；依赖 provider 侧限流 + 本地 `max_retries` |
+
+## 模型定价表 `_MODEL_PRICING`
+
+位置：`core/api_client.py:30`。精确匹配优先、按 model name 前缀 fallback、最终 `(input, output, False)` unknown 降级。涵盖 xAI (grok) / OpenAI (gpt-*) / DeepSeek (deepseek-chat) / Claude (claude-sonnet / haiku / opus) / Gemini (gemini-2.5-flash / pro)。reasoning models 的 thinking tokens 按 3-5× 计费。
+
+## Chunk / Pipeline 默认参数
+
+| 字段 / 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--workers` (chunk 级并发) | `main.py` argparse | 3 | 同一文件内 chunk 并发翻译数 |
+| `--file-workers` (文件级并发) | `main.py` argparse | 1 | 同时翻译的文件数；r21 ProgressTracker 双锁解串行让其可 > 1 |
+| `max_chunk_tokens` | `main.py` argparse | 4000 | chunk 切分上限；超过则 `_force_split` |
+| `min_dialogue_density` | `main.py` argparse | 0.20 | 低于此密度的文件降级为 `targeted` 模式（r12） |
+| `--pilot-count` (四阶段流水线) | `main.py` argparse | 20 | 试跑文件数 |
+| `--gate-max-untranslated-ratio` | `main.py` argparse | 0.08 | 闸门最大漏翻比阈值 |
+| `CHECKER_DROP_RATIO_THRESHOLD` | core/translation_utils.py | 0.3 | chunk 丢弃率超过此触发重试 |
+| `MIN_DROPPED_FOR_WARNING` | core/translation_utils.py | 3 | 最小丢弃数触发警告（防小 chunk 丢 1 条就报警） |
+| `SAVE_INTERVAL` | core/translation_utils.py | 10 | ProgressTracker 批量写入间隔（每 N 次 mark 写磁盘） |
+
+## 语言配置（`core/lang_config.py::LANGUAGE_CONFIGS`）
+
+| 语言 code | `field_aliases` | `min_target_ratio` | `native_name` |
+|----------|----------------|------------------|---------------|
+| `zh` | `["zh", "chinese", "cn"]` | 0.05 | 简体中文 |
+| `zh-tw` | `["zh-tw", "zh_tw", "traditional_chinese"]` | 0.05 | 繁體中文（**刻意不含 bare "zh"**，防 Simplified vs Traditional 混淆 — r43/r44 tests pinned） |
+| `ja` | `["ja", "japanese", "jp"]` | 0.05 | 日本語 |
+| `ko` | `["ko", "korean", "kr"]` | 0.05 | 한국어 |
+
+`resolve_translation_field(item, lang_config)` 按 `field_aliases` 顺序查找；都不匹配时 fallback 到 generic `["translation", "target", "trans"]`。r42 checker per-language 化后被 `check_response_item(lang_config=)` 和 `_filter_checked_translations(lang_config=)` 调用。
