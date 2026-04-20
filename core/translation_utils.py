@@ -19,6 +19,15 @@ from typing import Optional
 
 logger = logging.getLogger("renpy_translator")
 
+# Round 42 M2 phase-3: 50 MB cap on the ProgressTracker JSON reader.
+# Legitimate progress.json files scale linearly with file count and
+# chunk count (one entry per completed chunk); a typical game maxes out
+# at ~hundreds of KB.  Anything approaching 50 MB is either corrupt or
+# accidentally pointed at a non-progress file — reset is safer than
+# letting json.loads consume unbounded memory.  Matches the 50 MB cap
+# used by r37-r41 user-facing JSON loaders for cross-module consistency.
+_MAX_PROGRESS_JSON_SIZE = 50 * 1024 * 1024
+
 # Round 27 A-H-2: ``_filter_checked_translations`` /
 # ``_restore_placeholders_in_translations`` /
 # ``_restore_locked_terms_in_translations`` were moved to
@@ -142,10 +151,21 @@ class ProgressTracker:
     def _load(self) -> None:
         if self.path.exists():
             try:
-                self.data = json.loads(self.path.read_text(encoding='utf-8'))
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"[PROGRESS] 进度文件损坏，已重置: {e}")
+                size = self.path.stat().st_size
+            except OSError:
+                size = 0
+            if size > _MAX_PROGRESS_JSON_SIZE:
+                logger.warning(
+                    f"[PROGRESS] 进度文件 {self.path} 过大 "
+                    f"({size} > {_MAX_PROGRESS_JSON_SIZE})，视为损坏重置"
+                )
                 self.data = {}
+            else:
+                try:
+                    self.data = json.loads(self.path.read_text(encoding='utf-8'))
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"[PROGRESS] 进度文件损坏，已重置: {e}")
+                    self.data = {}
         # 确保必需 key 存在（防损坏文件缺 key 导致 KeyError）
         self.data.setdefault("completed_files", [])
         self.data.setdefault("completed_chunks", {})

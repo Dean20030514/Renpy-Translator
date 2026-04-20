@@ -19,6 +19,13 @@ from typing import Any
 
 logger = logging.getLogger("renpy_translator")
 
+# Round 42 M2 phase-3: 50 MB cap on the progress.json reader.  Typical
+# legitimate progress files are a few KB to a few hundred KB (one entry
+# per completed chunk); anything approaching 50 MB is either corrupt or
+# a non-progress file accidentally pointed at by ``--resume-file``.
+# Matches the cap used by r37-r41 user-facing JSON loaders.
+_MAX_PROGRESS_JSON_SIZE = 50 * 1024 * 1024
+
 
 # ============================================================
 # GenericChunk 数据类
@@ -146,6 +153,16 @@ def _match_translations_to_units(
 def _load_progress(progress_path: Path) -> set[int]:
     """加载已完成的 chunk_id 集合。"""
     if not progress_path.exists():
+        return set()
+    try:
+        size = progress_path.stat().st_size
+    except OSError:
+        size = 0
+    if size > _MAX_PROGRESS_JSON_SIZE:
+        logger.warning(
+            f"[PIPELINE] 进度文件 {progress_path} 过大 "
+            f"({size} > {_MAX_PROGRESS_JSON_SIZE})，视为损坏重置"
+        )
         return set()
     try:
         data = json.loads(progress_path.read_text(encoding="utf-8"))

@@ -635,6 +635,37 @@ def test_review_generator_html():
         os.rmdir(tmpdir)
 
 
+def test_progress_tracker_rejects_oversized_file():
+    """Round 42 M2 phase-3: ``ProgressTracker._load`` skips a
+    ``progress.json`` above ``_MAX_PROGRESS_JSON_SIZE`` (50 MB) and
+    resets to empty rather than letting ``json.loads`` OOM on corrupt
+    or attacker-crafted input.  Legitimate progress files are a few KB
+    to a few hundred KB; anything near 50 MB is almost certainly not a
+    valid progress file.  Matches the cap used across r37-r41
+    user-facing JSON loaders for cross-module consistency.
+    """
+    import tempfile
+    from core.translation_utils import ProgressTracker
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "progress.json"
+        # 51 MB sparse file — stat() reports 51 MB, actual disk ~0.
+        with open(p, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        pt = ProgressTracker(p)
+        # Oversize file → treated as corrupt → data reset to defaults.
+        assert pt.data.get("completed_files") == [], (
+            f"oversize progress file must reset completed_files, got: "
+            f"{pt.data!r}"
+        )
+        assert pt.data.get("completed_chunks") == {}, (
+            f"oversize progress file must reset completed_chunks, got: "
+            f"{pt.data!r}"
+        )
+    print("[OK] test_progress_tracker_rejects_oversized_file")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count.
 
@@ -662,6 +693,8 @@ def run_all() -> int:
         test_translation_db_save_atomic,
         test_translation_db_accepts_line_zero,
         test_review_generator_html,
+        # Round 42 M2 phase-3: 50 MB cap on ProgressTracker JSON
+        test_progress_tracker_rejects_oversized_file,
         # Round 34-38 override-dispatch-table tests (sanitise unknown
         # category / extensibility regex guards / config emit incl.
         # r38 bool / gui still-rejects-bool) moved to

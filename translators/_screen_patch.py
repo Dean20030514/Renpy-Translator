@@ -19,6 +19,14 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+# Round 42 M2 phase-3: 50 MB cap on the screen-translator resume JSON.
+# Legitimate screen-translator progress files sit in the KB-low-MB range
+# (one entry per translated screen string); anything approaching 50 MB
+# is either corrupt or a non-progress file accidentally passed in.
+# Matches the cap used by r37-r41 user-facing JSON loaders.
+_MAX_PROGRESS_JSON_SIZE = 50 * 1024 * 1024
+
+
 from translators._screen_extract import (
     ScreenTextEntry,
     _RE_TEXT,
@@ -307,6 +315,16 @@ def _replace_screen_strings_in_file(
 def _load_progress(progress_path: Path) -> dict:
     """Load the screen-translator resume file, tolerating corruption."""
     if progress_path.is_file():
+        try:
+            size = progress_path.stat().st_size
+        except OSError:
+            size = 0
+        if size > _MAX_PROGRESS_JSON_SIZE:
+            logger.warning(
+                f"[SCREEN] 进度文件 {progress_path} 过大 "
+                f"({size} > {_MAX_PROGRESS_JSON_SIZE})，视为损坏重置"
+            )
+            return {"completed_texts": {}, "completed_chunks": [], "stats": {}}
         try:
             data = json.loads(progress_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
