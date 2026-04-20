@@ -36,6 +36,15 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 
 
+# Round 44 audit-tail: 50 MB cap on the config.json picked by the GUI
+# load dialog.  Missed by r37-r43 M2 phases (the GUI was added in r41
+# after those rounds, and the mixin split moved this loader to a new
+# file without the size-gate idiom being carried over).  Operator
+# freely picks any JSON via filedialog, so size bounding matches the
+# r37-r43 user-facing loader contract.
+_MAX_GUI_CONFIG_SIZE = 50 * 1024 * 1024
+
+
 class AppDialogsMixin:
     """filedialog / messagebox / config I/O mixed into :class:`gui.App`."""
 
@@ -84,7 +93,20 @@ class AppDialogsMixin:
                 return
             self.var_config_path.set(path)
         try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            # Round 44 audit-tail: 50 MB cap before read (see module-level
+            # docstring for rationale).
+            path_obj = Path(path)
+            try:
+                fsize = path_obj.stat().st_size
+            except OSError:
+                fsize = 0
+            if fsize > _MAX_GUI_CONFIG_SIZE:
+                messagebox.showerror(
+                    "加载失败",
+                    f"配置文件 {fsize} 字节超过 {_MAX_GUI_CONFIG_SIZE} 字节上限，拒绝加载",
+                )
+                return
+            data = json.loads(path_obj.read_text(encoding="utf-8"))
             mapping = {
                 "provider": self.var_provider, "model": self.var_model,
                 "genre": self.var_genre, "rpm": self.var_rpm, "rps": self.var_rps,

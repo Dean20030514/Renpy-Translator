@@ -19,6 +19,15 @@ from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, CSV
 
 logger = logging.getLogger("renpy_translator")
 
+# Round 44 audit-tail: 50 MB cap on operator-supplied CSV/JSONL/JSON
+# files.  Missed by r37-r43 M2 phases which focused on `.json` loaders;
+# the CSV engine's text-mode readers (`_extract_jsonl` /
+# `_extract_json_or_jsonl`) consume the whole file into memory before
+# parse, so a 1 GB misconfigured or adversarial input would OOM the
+# host before the dispatcher even decides which format to try.  Matches
+# the 50 MB cap used across r37-r43 user-facing loaders.
+_MAX_CSV_JSON_SIZE = 50 * 1024 * 1024
+
 # ============================================================
 # 列名别名集合（大小写不敏感匹配）
 # ============================================================
@@ -199,6 +208,20 @@ class CSVEngine(EngineBase):
         """读 JSONL 文件，每行一个 JSON 对象。"""
         units: list[TranslatableUnit] = []
         rel = filepath.name
+        # Round 44 audit-tail: cap operator-controlled JSONL files at 50 MB.
+        # Missed by the r37-r43 M2 phases which focused on .json loaders.
+        # Legitimate translation source files sit in KB-low-MB range;
+        # 50 MB+ is almost certainly adversarial or misconfigured input.
+        try:
+            fsize = filepath.stat().st_size
+        except OSError:
+            fsize = 0
+        if fsize > _MAX_CSV_JSON_SIZE:
+            logger.warning(
+                f"[JSONL] 跳过 {rel}: 文件 {fsize} 字节 "
+                f"超过 {_MAX_CSV_JSON_SIZE} 字节上限"
+            )
+            return units
         text = filepath.read_text(encoding="utf-8-sig")
 
         for idx, line in enumerate(text.splitlines(), 1):
@@ -220,6 +243,20 @@ class CSVEngine(EngineBase):
     def _extract_json_or_jsonl(self, filepath: Path) -> list[TranslatableUnit]:
         """.json 文件：先尝试 JSON 数组，再尝试 JSONL 格式。"""
         rel = filepath.name
+        # Round 44 audit-tail: same 50 MB cap as _extract_jsonl above.
+        # The .json path is the first dispatch target for ambiguous
+        # ``.json`` files (could be either array or JSONL); either shape
+        # is operator-controlled and merits the gate.
+        try:
+            fsize = filepath.stat().st_size
+        except OSError:
+            fsize = 0
+        if fsize > _MAX_CSV_JSON_SIZE:
+            logger.warning(
+                f"[JSON] 跳过 {rel}: 文件 {fsize} 字节 "
+                f"超过 {_MAX_CSV_JSON_SIZE} 字节上限"
+            )
+            return []
         text = filepath.read_text(encoding="utf-8-sig")
 
         # 尝试 JSON 数组

@@ -535,6 +535,11 @@ def load_ui_button_whitelist(paths: Iterable[Union[str, Path]]) -> int:
     """
     import json as _json
 
+    # Round 44 audit-tail: 50 MB cap on operator-supplied UI whitelist
+    # files.  Missed by r32 when the --ui-button-whitelist flag was
+    # added.  Matches the cap used across r37-r43 user-facing loaders.
+    _MAX_UI_WHITELIST_SIZE = 50 * 1024 * 1024
+
     total_added = 0
     for raw_path in paths:
         if not raw_path:
@@ -542,6 +547,16 @@ def load_ui_button_whitelist(paths: Iterable[Union[str, Path]]) -> int:
         p = Path(str(raw_path))
         if not p.is_file():
             logger.warning("[UI-WHITELIST] 文件不存在或不可读，跳过: %s", p)
+            continue
+        try:
+            fsize = p.stat().st_size
+        except OSError:
+            fsize = 0
+        if fsize > _MAX_UI_WHITELIST_SIZE:
+            logger.warning(
+                "[UI-WHITELIST] 跳过 %s: 文件 %d 字节超过 %d 字节上限",
+                p, fsize, _MAX_UI_WHITELIST_SIZE,
+            )
             continue
         try:
             text = p.read_text(encoding="utf-8-sig")

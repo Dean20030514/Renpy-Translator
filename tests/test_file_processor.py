@@ -730,6 +730,44 @@ def test_ui_button_whitelist_rebinds_frozenset():
     print("[OK] ui_button_whitelist_rebinds_frozenset")
 
 
+def test_load_ui_button_whitelist_rejects_oversized_file():
+    """Round 44 audit-tail: load_ui_button_whitelist skips
+    operator-supplied UI whitelist files above the 50 MB cap with a
+    warning rather than loading the whole file into memory.  Missed by
+    the r37-r43 M2 phases because r32's whitelist loader pre-dated the
+    size-gate idiom.  Uses a 51 MB sparse file to exercise the cap
+    without consuming disk."""
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+
+    with tempfile.TemporaryDirectory() as td:
+        # Oversized .json whitelist — should be skipped entirely.
+        big_path = Path(td) / "huge_whitelist.json"
+        with open(big_path, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        added = load_ui_button_whitelist([str(big_path)])
+        assert added == 0, (
+            f"oversized whitelist file must be skipped (no entries added), "
+            f"got added={added}"
+        )
+        # Extensions snapshot should remain empty (no new entries).
+        assert get_ui_button_whitelist_extensions() == frozenset(), (
+            "oversized whitelist must not populate extensions"
+        )
+
+    clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_rejects_oversized_file")
+
+
 def run_all() -> int:
     """Run every test in this module; return test count."""
     tests = [
@@ -776,6 +814,8 @@ def run_all() -> int:
         test_ui_button_whitelist_builtin_untouched,
         test_clear_ui_button_whitelist_restores_baseline,
         test_ui_button_whitelist_rebinds_frozenset,
+        # Round 44 audit-tail: 50 MB cap on UI whitelist files
+        test_load_ui_button_whitelist_rejects_oversized_file,
     ]
     for t in tests:
         t()
