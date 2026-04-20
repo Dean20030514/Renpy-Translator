@@ -296,6 +296,105 @@ def test_check_response_item_lang_config_falls_back_to_generic_field():
     print("[OK] test_check_response_item_lang_config_falls_back_to_generic_field")
 
 
+def test_check_response_item_zh_tw_rejects_generic_zh_field():
+    """Round 43 audit-tail: zh-tw ``field_aliases`` is
+    ``["zh-tw", "zh_tw", "traditional_chinese"]`` — deliberately NOT
+    including bare ``"zh"`` to avoid conflating Simplified and Traditional
+    responses.  An entry that only populates ``"zh"`` under a zh-tw
+    config must therefore be rejected (falls through alias chain →
+    falls through generic ``translation`` / ``target`` / ``trans`` →
+    returns None → empty).
+
+    Verifies the intentional zh vs zh-tw separation in
+    :data:`core.lang_config.LANGUAGE_CONFIGS` is actually enforced by
+    :func:`file_processor.check_response_item` under r42 per-language
+    dispatch.  Without this guard, a model that habitually emits
+    ``"zh"`` would quietly land its output into a zh-tw translation
+    bucket without anyone noticing the script-family mismatch.
+    """
+    from file_processor import check_response_item
+    from core.lang_config import get_language_config
+
+    zh_tw = get_language_config("zh-tw")
+    assert "zh" not in zh_tw.field_aliases, (
+        "invariant: zh-tw aliases must not include bare 'zh' — this "
+        "test's contract depends on the separation being preserved"
+    )
+
+    # Only zh field populated — should be rejected under zh-tw config.
+    warns = check_response_item(
+        {"line": 1, "original": "Hello", "zh": "你好"},
+        lang_config=zh_tw,
+    )
+    assert any("译文为空" in w for w in warns), (
+        f"zh-tw must reject generic 'zh'-only response (avoid "
+        f"Simplified-vs-Traditional confusion); got: {warns}"
+    )
+
+    # Proper zh-tw alias — pass.
+    assert check_response_item(
+        {"line": 2, "original": "Hello", "zh-tw": "你好"},
+        lang_config=zh_tw,
+    ) == []
+
+    # traditional_chinese alias — pass.
+    assert check_response_item(
+        {"line": 3, "original": "World", "traditional_chinese": "世界"},
+        lang_config=zh_tw,
+    ) == []
+    print("[OK] test_check_response_item_zh_tw_rejects_generic_zh_field")
+
+
+def test_check_response_item_mixed_language_fields_picks_correct_alias():
+    """Round 43 audit-tail: when a response item has multiple language
+    fields populated (``{"ja": "...", "ko": "..."}`` — typically a model
+    that speculatively emits both), the checker under a ja lang_config
+    must read the ja field and ignore the ko field.
+
+    ``resolve_translation_field`` iterates ``field_aliases`` in order,
+    so the first alias in ja's chain (``["ja", "japanese", "jp"]``)
+    that matches the item wins.  This test documents the resolution
+    order contract and guards against accidental regression to
+    ``first-match-wins`` on arbitrary item keys.
+    """
+    from file_processor import check_response_item
+    from core.lang_config import get_language_config
+
+    ja = get_language_config("ja")
+    ko = get_language_config("ko")
+
+    # Both ja and ko populated — under ja config, only the ja field
+    # counts for validation.
+    mixed_item = {
+        "line": 1, "original": "Hello",
+        "ja": "こんにちは",
+        "ko": "안녕하세요",
+    }
+    assert check_response_item(mixed_item, lang_config=ja) == [], (
+        "ja config must accept when ja field is populated, even if ko "
+        "is also populated (ko is out of ja's alias chain)"
+    )
+    # Symmetric: ko config on the same item should also accept.
+    assert check_response_item(mixed_item, lang_config=ko) == [], (
+        "ko config must accept when ko field is populated, even with "
+        "ja alongside"
+    )
+
+    # ja empty but ko populated — under ja config, must reject (ko is
+    # not in ja's alias chain, so the response is seen as ja-empty).
+    ja_empty_item = {
+        "line": 2, "original": "Hello",
+        "ja": "",
+        "ko": "안녕하세요",
+    }
+    warns = check_response_item(ja_empty_item, lang_config=ja)
+    assert any("译文为空" in w for w in warns), (
+        f"ja config must reject when ja field is empty, regardless of "
+        f"ko being populated; got: {warns}"
+    )
+    print("[OK] test_check_response_item_mixed_language_fields_picks_correct_alias")
+
+
 def test_filter_checked_translations_forwards_lang_config():
     """Round 42 M2 phase-4: ``_filter_checked_translations`` forwards the
     ``lang_config`` kwarg to ``check_response_item``.  Mixed batch of
@@ -345,6 +444,9 @@ def run_all() -> int:
         test_check_response_item_lang_config_ja_accepts_japanese_alias,
         test_check_response_item_lang_config_ko_accepts_korean_alias,
         test_check_response_item_lang_config_falls_back_to_generic_field,
+        # Round 43 audit-tail — additional checker per-language gaps
+        test_check_response_item_zh_tw_rejects_generic_zh_field,
+        test_check_response_item_mixed_language_fields_picks_correct_alias,
         test_filter_checked_translations_forwards_lang_config,
     ]
     for t in tests:

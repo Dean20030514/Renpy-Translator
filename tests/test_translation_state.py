@@ -635,6 +635,55 @@ def test_review_generator_html():
         os.rmdir(tmpdir)
 
 
+def test_progress_tracker_handles_stat_failure_gracefully():
+    """Round 43 audit-tail: r42 M2 phase-3 added a ``stat().st_size``
+    gate before the ``json.loads`` call inside ``ProgressTracker._load``.
+    If ``stat()`` itself raises ``OSError`` (antivirus lock, transient
+    permission race, NFS hiccup, etc.), the code falls back to
+    ``size = 0``, which passes the size check and proceeds to read the
+    file.  The subsequent ``read_text`` / ``json.loads`` is guarded by
+    its own try/except, so a second failure still lands in the empty-
+    reset branch.
+
+    This test verifies the two-step degradation: a legitimate small
+    progress file whose ``stat()`` happens to fail should still load
+    normally once ``read_text`` succeeds — the fallback path is not
+    unconditionally destructive.
+    """
+    import json as _json
+    import tempfile
+    from unittest import mock
+    from core.translation_utils import ProgressTracker
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "progress.json"
+        p.write_text(
+            _json.dumps({"completed_files": ["script.rpy"],
+                         "completed_chunks": {}, "stats": {}}),
+            encoding="utf-8",
+        )
+
+        # Patch Path.stat to raise OSError only for this specific path.
+        original_stat = Path.stat
+
+        def _selective_stat_raise(self, *args, **kwargs):
+            if self == p:
+                raise OSError("mocked stat failure")
+            return original_stat(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", _selective_stat_raise):
+            pt = ProgressTracker(p)
+            # With stat() failing but read_text() succeeding, the loader
+            # should still produce the real progress data (not reset).
+            # This proves the r42 fallback does not unconditionally
+            # destroy legitimate state on transient stat() failures.
+            assert pt.data.get("completed_files") == ["script.rpy"], (
+                f"stat() OSError fallback must still allow successful "
+                f"read_text; got data: {pt.data!r}"
+            )
+    print("[OK] test_progress_tracker_handles_stat_failure_gracefully")
+
+
 def test_progress_tracker_rejects_oversized_file():
     """Round 42 M2 phase-3: ``ProgressTracker._load`` skips a
     ``progress.json`` above ``_MAX_PROGRESS_JSON_SIZE`` (50 MB) and
@@ -695,6 +744,8 @@ def run_all() -> int:
         test_review_generator_html,
         # Round 42 M2 phase-3: 50 MB cap on ProgressTracker JSON
         test_progress_tracker_rejects_oversized_file,
+        # Round 43 audit-tail: stat() failure fallback path
+        test_progress_tracker_handles_stat_failure_gracefully,
         # Round 34-38 override-dispatch-table tests (sanitise unknown
         # category / extensibility regex guards / config emit incl.
         # r38 bool / gui still-rejects-bool) moved to
