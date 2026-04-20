@@ -106,6 +106,16 @@ class NoRenpyRuntime(RPYCError):
     """Ren'Py runtime not found — cannot use Tier 1."""
 
 
+_MAX_RPYC_RESULT_SIZE = 50 * 1024 * 1024
+"""Round 45 audit-tail: 50 MB cap on the JSON result file produced by
+the Tier 1 game-python subprocess (``_decompile_helper.py``'s
+``_results.json``).  The subprocess is controlled code (we generate it
+from :func:`_render_decompile_helper`), but its output scales with the
+number + size of .rpyc files in the target game.  Matches the
+50 MB cap used across r37-r44 user-facing + internal JSON loaders for
+cross-module consistency."""
+
+
 class DecompileError(RPYCError):
     """Decompilation failed."""
 
@@ -411,6 +421,21 @@ def _run_decompile_with_game_python(
             stderr = proc.stderr[:500] if proc.stderr else "(无错误输出)"
             raise DecompileError(
                 f"反编译辅助脚本未产生输出。stderr: {stderr}"
+            )
+
+        # Round 45 audit-tail: 50 MB cap on the subprocess-produced
+        # result JSON.  Prevents a runaway helper (e.g. a game with
+        # thousands of MB-scale .rpyc files) from OOMing the host when
+        # we json.loads the whole file at once.  See r44 security audit.
+        try:
+            result_size = result_path.stat().st_size
+        except OSError:
+            result_size = 0
+        if result_size > _MAX_RPYC_RESULT_SIZE:
+            raise DecompileError(
+                f"反编译辅助脚本输出过大 ({result_size} 字节 > "
+                f"{_MAX_RPYC_RESULT_SIZE} 字节上限)。游戏可能异常，"
+                f"或 helper 脚本产生了意外输出。"
             )
 
         results_raw = json.loads(result_path.read_text(encoding="utf-8"))
