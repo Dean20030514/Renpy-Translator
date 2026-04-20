@@ -395,6 +395,55 @@ def test_check_response_item_mixed_language_fields_picks_correct_alias():
     print("[OK] test_check_response_item_mixed_language_fields_picks_correct_alias")
 
 
+def test_check_response_item_zh_tw_accepts_generic_translation_fallback():
+    """Round 44 audit-tail: the r43 ``zh-tw rejects generic zh`` test
+    documents one half of the zh-tw contract — bare ``"zh"`` is NOT in
+    ``zh-tw.field_aliases`` so it is rejected.  This test documents the
+    OTHER half: the generic fallback chain (``translation`` / ``target``
+    / ``trans``) in :func:`resolve_translation_field` still applies.
+
+    If a model emits ``{"translation": "繁體值"}`` without any lang-
+    specific alias, the checker should accept it — the generic keys
+    are a schema-convention intentional escape hatch for models that
+    don't speak the project's alias vocabulary.  This is a soft
+    contract (no script-family validation), so the companion r43 test
+    should be read alongside this one when judging zh / zh-tw isolation
+    completeness.
+    """
+    from file_processor import check_response_item
+    from core.lang_config import get_language_config
+
+    zh_tw = get_language_config("zh-tw")
+
+    # Generic "translation" field populated — should pass.
+    assert check_response_item(
+        {"line": 1, "original": "Hello", "translation": "你好"},
+        lang_config=zh_tw,
+    ) == []
+
+    # Generic "target" field populated — should pass.
+    assert check_response_item(
+        {"line": 2, "original": "World", "target": "世界"},
+        lang_config=zh_tw,
+    ) == []
+
+    # Generic "trans" field populated — should pass.
+    assert check_response_item(
+        {"line": 3, "original": "Foo", "trans": "甲"},
+        lang_config=zh_tw,
+    ) == []
+
+    # No aliases AND no generic fields — should reject (empty).
+    warns = check_response_item(
+        {"line": 4, "original": "Hi", "other_key": "不应被读"},
+        lang_config=zh_tw,
+    )
+    assert any("译文为空" in w for w in warns), (
+        f"no matching alias/generic key must be rejected; got: {warns}"
+    )
+    print("[OK] test_check_response_item_zh_tw_accepts_generic_translation_fallback")
+
+
 def test_filter_checked_translations_forwards_lang_config():
     """Round 42 M2 phase-4: ``_filter_checked_translations`` forwards the
     ``lang_config`` kwarg to ``check_response_item``.  Mixed batch of
@@ -447,6 +496,8 @@ def run_all() -> int:
         # Round 43 audit-tail — additional checker per-language gaps
         test_check_response_item_zh_tw_rejects_generic_zh_field,
         test_check_response_item_mixed_language_fields_picks_correct_alias,
+        # Round 44 audit-tail — zh-tw generic fallback contract
+        test_check_response_item_zh_tw_accepts_generic_translation_fallback,
         test_filter_checked_translations_forwards_lang_config,
     ]
     for t in tests:
