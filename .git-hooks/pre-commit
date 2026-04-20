@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Round 45 Commit 5: pre-commit hook for the Ren'Py 汉化 project.
+#
+# Runs fast sanity checks before letting a commit proceed:
+#   1. py_compile smoke on every staged .py file (catches syntax errors)
+#   2. meta-runner tests (tests/test_all.py — ~150 tests, ~5s)
+#
+# Expected wall time: 5-10 seconds.  Does NOT run the full 23-file
+# independent-suite sweep (~30-60s) — that is reserved for CI.
+#
+# Install with:
+#     scripts/install_hooks.sh
+# or manually:
+#     git config core.hooksPath .git-hooks
+#
+# Bypass for emergencies:
+#     git commit --no-verify
+
+set -e
+
+# Find repo root (in case hook runs from a subdir).
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "[pre-commit] py_compile sanity check..."
+# Only check staged .py files so unrelated work-in-progress does not
+# block commits.  Using --diff-filter=ACMR (Added/Copied/Modified/
+# Renamed) skips deletions.
+staged_py=$(git diff --cached --name-only --diff-filter=ACMR | grep '\.py$' || true)
+
+if [ -z "$staged_py" ]; then
+    echo "[pre-commit] no staged .py files — skipping py_compile."
+else
+    # py_compile each staged .py file individually; collect errors.
+    errors=0
+    while IFS= read -r f; do
+        if [ -f "$f" ]; then
+            if ! python -m py_compile "$f" 2>&1; then
+                echo "[pre-commit] SYNTAX ERROR in $f" >&2
+                errors=$((errors + 1))
+            fi
+        fi
+    done <<< "$staged_py"
+    if [ $errors -gt 0 ]; then
+        echo "[pre-commit] $errors file(s) failed py_compile. Commit blocked." >&2
+        echo "[pre-commit] Fix syntax errors, or bypass with 'git commit --no-verify'." >&2
+        exit 1
+    fi
+    echo "[pre-commit] py_compile OK ($(echo "$staged_py" | wc -l) files)."
+fi
+
+echo "[pre-commit] running meta-runner (tests/test_all.py)..."
+if ! python tests/test_all.py > /tmp/pre-commit-tests.log 2>&1; then
+    echo "[pre-commit] meta-runner FAILED. Commit blocked." >&2
+    echo "[pre-commit] Tail of test log:" >&2
+    tail -20 /tmp/pre-commit-tests.log >&2
+    echo "[pre-commit] Full log: /tmp/pre-commit-tests.log" >&2
+    echo "[pre-commit] Fix tests, or bypass with 'git commit --no-verify'." >&2
+    exit 1
+fi
+echo "[pre-commit] meta-runner OK."
+echo "[pre-commit] all checks passed — proceeding with commit."
