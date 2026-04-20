@@ -717,10 +717,14 @@ def test_override_categories_table_is_extensible():
 
 
 def test_config_overrides_emits_assignments():
-    """Round 35 C4: a ``config_overrides`` sub-dict with safe int/float
-    values emits ``config.X = V`` assignments in the aux rpy's init 999
-    block, sharing the file with ``gui_overrides`` (one combined block
-    per run).
+    """Round 35 C4 + Round 38 C3: a ``config_overrides`` sub-dict emits
+    ``config.X = V`` assignments in the aux rpy's init 999 block.  Round 38
+    C3 widens the accepted value types for config_overrides specifically
+    to include ``bool`` (Ren'Py's ``config.*`` namespace has first-class
+    boolean switches — ``config.autosave``, ``config.developer``,
+    ``config.rollback_enabled`` etc.).  ``gui.*`` categories still reject
+    bool (see ``test_gui_overrides_still_rejects_bool``).  Flat-namespace
+    regex rejection (``config.sub.nested``) is unchanged.
     """
     import tempfile
     from pathlib import Path
@@ -731,9 +735,10 @@ def test_config_overrides_emits_assignments():
     cfg = {
         "config_overrides": {
             "config.thoughtbubble_width": 400,
-            "config.thoughtbubble_offset": 12.5,  # float OK
-            "config.autosave": True,  # bool — rejected per int/float-only rule
-            "config.sub.nested": 1,   # rejected by flat-namespace regex
+            "config.thoughtbubble_offset": 12.5,   # float OK
+            "config.autosave": True,               # r38 C3: bool now ACCEPTED
+            "config.developer": False,             # r38 C3: bool False also OK
+            "config.sub.nested": 1,                # rejected by flat-namespace regex
         },
         # Gui entry coexists in the same file.
         "gui_overrides": {"gui.text_size": 22},
@@ -747,10 +752,54 @@ def test_config_overrides_emits_assignments():
         assert "config.thoughtbubble_width = 400" in content
         assert "config.thoughtbubble_offset = 12.5" in content
         assert "gui.text_size = 22" in content
-        # Rejected values / keys absent.
-        assert "config.autosave" not in content
+        # Round 38 C3: bool values emitted as Python literals (repr(True)
+        # / repr(False) — valid Ren'Py Python).
+        assert "config.autosave = True" in content
+        assert "config.developer = False" in content
+        # Flat-namespace regex still rejects dotted config keys.
         assert "config.sub.nested" not in content
     print("[OK] config_overrides_emits_assignments")
+
+
+def test_gui_overrides_still_rejects_bool():
+    """Round 38 C3: the bool policy is per-category.  ``gui_overrides``
+    keeps its round-33 rejection of boolean values because no supported
+    Ren'Py ``gui.*`` attribute legitimately expects a boolean (font
+    sizes, layout measurements, color constants are all numeric /
+    string).  Regression guard so the r38 config bool widening doesn't
+    silently leak into gui and mask operator typos.
+    """
+    import tempfile
+    from pathlib import Path
+    from core.runtime_hook_emitter import emit_runtime_hook
+
+    entries = [{"file": "a.rpy", "line": 1, "original": "Hello",
+                "translation": "你好", "status": "ok"}]
+    cfg = {
+        "gui_overrides": {
+            "gui.text_size": 22,            # OK — int
+            "gui.bad_flag": True,           # r38 C3: still REJECTED for gui
+            "gui.another_flag": False,      # r38 C3: still REJECTED for gui
+        },
+        # Control: same bool values land under config_overrides.
+        "config_overrides": {
+            "config.autosave": True,
+        },
+    }
+    with tempfile.TemporaryDirectory() as td:
+        out_game = Path(td) / "game"
+        emit_runtime_hook(out_game, entries, font_config=cfg)
+        content = (out_game / "zz_tl_inject_gui.rpy").read_text(encoding="utf-8")
+        # gui int OK, gui bools rejected.
+        assert "gui.text_size = 22" in content
+        assert "gui.bad_flag" not in content, (
+            "r38 C3: gui_overrides must still reject bool values"
+        )
+        assert "gui.another_flag" not in content
+        # Control: config_overrides DOES accept bool (proves policy is
+        # per-category, not global).
+        assert "config.autosave = True" in content
+    print("[OK] gui_overrides_still_rejects_bool")
 
 
 def run_all() -> int:
@@ -785,6 +834,8 @@ def run_all() -> int:
         test_override_categories_table_is_extensible,
         # Round 35 Commit 4 (config_overrides registration)
         test_config_overrides_emits_assignments,
+        # Round 38 C3 (bool per-category — gui still rejects)
+        test_gui_overrides_still_rejects_bool,
     ]
     for t in tests:
         t()

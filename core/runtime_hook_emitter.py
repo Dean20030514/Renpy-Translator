@@ -77,6 +77,21 @@ _OVERRIDE_CATEGORIES: "dict[str, re.Pattern[str]]" = {
 }
 
 
+# Round 38 C3: per-category bool policy.  ``gui.*`` attributes
+# (font sizes, layout measurements, color constants) never legitimately
+# take a boolean today, so a ``gui.text_size = True`` assignment is
+# almost certainly a typo and stays rejected.  ``config.*`` attributes
+# by contrast include first-class Ren'Py bool switches —
+# ``config.autosave = True``, ``config.developer = False``,
+# ``config.rollback_enabled = True`` etc. — so those must pass through
+# the sanitiser with their bool values intact.  Other future categories
+# should pick a policy explicitly when registered.
+_OVERRIDE_ALLOW_BOOL: "dict[str, bool]" = {
+    "gui_overrides": False,
+    "config_overrides": True,
+}
+
+
 def _iter_translation_pairs(
     entries: Iterable[Mapping[str, object]],
     *,
@@ -226,22 +241,30 @@ def _sanitise_overrides(
     overrides: Mapping[str, object],
     key_regex: "re.Pattern[str]",
     category_name: str = "gui",
+    *,
+    allow_bool: bool = False,
 ) -> dict[str, object]:
-    """Filter ``overrides`` to safe ``<ns>.xxx = int|float`` pairs only.
+    """Filter ``overrides`` to safe ``<ns>.xxx = int|float[|bool]`` pairs.
 
     Round 33 Subtask 2 + Round 34 Commit 4 (generalised): the generated
     ``zz_tl_inject_gui.rpy`` embeds each key/value as raw Python source,
     so we must reject anything that could escape the attribute-assignment
     shape — including keys with suffixes, operators, or whitespace, and
-    any value that isn't a plain numeric type.  Booleans are rejected
-    even though ``isinstance(True, int)`` is True, because no Ren'Py
-    attribute accepted by this emitter expects a boolean here and
-    accepting them could mask a config typo.
+    any value that isn't a plain numeric (or, for some categories,
+    bool) type.
 
-    ``category_name`` is just the warning-message label ("gui", "style",
+    ``category_name`` is just the warning-message label ("gui", "config",
     etc.) so the emitted log tells the operator which sub-dict got
     rejected without leaking the full regex.  Each drop logs at
     ``warning`` level.
+
+    Round 38 C3: ``allow_bool`` is the per-category bool-policy gate.
+    Defaults to ``False`` (backwards-compatible — ``gui.X = True`` is
+    still rejected because no supported gui attribute legitimately
+    expects a boolean).  Set to ``True`` for categories whose Ren'Py
+    attributes include first-class booleans — e.g. ``config.autosave``,
+    ``config.developer``, ``config.rollback_enabled``.  Callers use
+    :data:`_OVERRIDE_ALLOW_BOOL` to resolve the right value per category.
     """
     clean: dict[str, object] = {}
     for raw_key, raw_val in overrides.items():
@@ -251,7 +274,19 @@ def _sanitise_overrides(
                 category_name, raw_key,
             )
             continue
-        if isinstance(raw_val, bool) or not isinstance(raw_val, (int, float)):
+        # Round 38 C3: bool is a subtype of int in Python.  Check it
+        # explicitly BEFORE the generic int/float check so a ``True`` /
+        # ``False`` value only slips through when ``allow_bool=True``.
+        if isinstance(raw_val, bool):
+            if not allow_bool:
+                logger.warning(
+                    "[TL-INJECT] skipping bool %s value for %s: %r "
+                    "(bool not allowed in this category)",
+                    category_name, raw_key, raw_val,
+                )
+                continue
+            # allow_bool=True: fall through to accept the bool.
+        elif not isinstance(raw_val, (int, float)):
             logger.warning(
                 "[TL-INJECT] skipping non-numeric %s value for %s: %r",
                 category_name, raw_key, raw_val,
@@ -329,7 +364,13 @@ def _emit_overrides_rpy(
         # Strip the "_overrides" suffix for a cleaner warning namespace
         # label, e.g. "gui_overrides" → "gui".
         label = cat_name[:-len("_overrides")] if cat_name.endswith("_overrides") else cat_name
-        cleaned = _sanitise_overrides(bucket, key_regex, category_name=label)
+        # Round 38 C3: resolve per-category bool policy via the
+        # _OVERRIDE_ALLOW_BOOL map.  Missing categories default to
+        # False (safest fallback — matches r33-r37 behaviour).
+        allow_bool = _OVERRIDE_ALLOW_BOOL.get(cat_name, False)
+        cleaned = _sanitise_overrides(
+            bucket, key_regex, category_name=label, allow_bool=allow_bool,
+        )
         combined.update(cleaned)
 
     if not combined:
