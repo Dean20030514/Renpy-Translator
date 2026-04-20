@@ -644,6 +644,64 @@ A-H-3 Medium/Deep / S-H-4 Breaking / archive / plugin commands 作 r46
 - r45 audit 发现的 4 项 optional MEDIUM（`.tsv` cap / UI mixed dir /
   multibyte ja+ko / alias priority）
 
+### 第四十五轮 · 审计尾声（r41-r45 五轮累计深度审计 + 2 audit-tail commits）
+
+**起因**：用户在 r45 末尾要求"深度检查第 41-45 轮，确保没有任何问题"。启动 3 个并行 Explore
+audit agent（correctness / test coverage / security 三维度） + 我独立 grep 核查 "22/22 JSON loader
+全覆盖" 和 "413 tests" claim。
+
+**审计结果**：
+
+- **Correctness agent**：0 CRITICAL / 0 HIGH / 6 MEDIUM（5 个 acceptable 或 OOS + 1 措辞歧义）/ 4 LOW / 8 FP
+- **Test coverage agent**：**1 CRITICAL** = r45 Commit 1 拆 `test_ui_whitelist.py` 但 CI workflow
+  未更新包含它 + `run_all()` 函数缺失（pattern 偏离其他 22 suites）；7 tests 在 CI 是 **ghost tests**
+- **Security agent**（独立 grep 核查）：0 CRITICAL / 0 HIGH；确认 **22/22 JSON loader 真实全覆盖**
+  （25 A-sites + 0 B-sites after r45 rpyc fix）；3 MEDIUM defense-in-depth improvements
+
+**r45 audit-tail 合流修复**（2 commits）：
+
+**Commit audit-tail 1（`3ce823f`）**：CRITICAL fix — CI workflow 漏 test_ui_whitelist + add run_all()
+
+550. `.github/workflows/test.yml` 新增 `- name: Run UI whitelist tests` 步骤（在 override_categories
+后）。CI total steps 27 → 28；run steps 25 → 26。现在 22 独立 suite **全部** 在 CI 运行
+551. `tests/test_ui_whitelist.py` 加 `run_all() -> int` 函数 — 返回 `len(ALL_TESTS)`。对齐其他
+22 个独立 suite 的标准模式；`__main__` block 调 `run_all()` 输出保持相同
+
+**Commit audit-tail 2（`bd9d6e1`）**：3 MEDIUM defense-in-depth fixes
+
+552. `build.py::clean_build_artifacts()` 加 `d.is_symlink()` check 在 `shutil.rmtree` 前。Python
+3.8+ rmtree 默认不跨 symlink，但显式 check 让 audit-trail intent 可见 + 意外场景（用户 `ln -s
+dist/ ~/Documents/`）零成本防御
+553. `scripts/verify_workflow.py` docstring 加 "Note" 澄清 PyYAML 是 **dev-only tool 依赖**，
+不 ship with 任何 runtime module（core/ / translators/ / engines/ / tools/ / pipeline/ /
+file_processor/ / gui*.py 严格 stdlib-only，符合 CLAUDE.md 零依赖原则）
+554. `docs/quality_chain.md` 加 "插件安全模式建议 secure-by-default" section 在 "三通道防护" 前 —
+文档化 `--sandbox-plugin`（r28 S-H-4）为推荐默认：subprocess 隔离阻止 plugin monkey-patch host
+`core.lang_config.resolve_translation_field`（r42 checker deferred import 的潜在 supply-chain
+面）或任何 host 模块；legacy `importlib` 模式仅用于完全受信的 first-party plugin
+
+**审计连续性**（连续 6 轮 3 维度审计）：
+
+| 轮次 | CRITICAL | HIGH | MEDIUM（已修） | 特点 |
+|------|---------|------|-----|------|
+| r35 末 | 0 | 0 | 2 → r36 | 首次 3 维度 |
+| r40 末 | 0 | 0 | 2 → r41 | — |
+| r43 | 0 | 0 | 3 + 1 defensive → r43 | — |
+| r44 | 0 | 0 | 3 audit + 1 test gap → r44 | +"21/21" claim |
+| r45 | 0 | 2 → r45 同轮 fix | 4 optional | +"22/22" 验证 |
+| **r41-r45 累计** | **1 → 同次 fix** | **0** | **3 → 同次 fix** | **首次发现 CI 覆盖 regression** |
+
+**关键洞察**：第 6 次审计首次发现 CI 覆盖 regression（r45 Commit 8 CI verify script 写了但没同步
+r45 Commit 1 新 suite）— 独立 grep + 跨 commit 审计依然找到真实 issue。
+
+**r46 起点摘要**：
+- 代码 / 测试 / 文档 / CI / 工具链状态：r45 末 + audit-tail 2 commits（413 tests × 23 测试文件
+  全绿；**CI 现全 22 独立 suite 覆盖**；PyInstaller build 已验证；所有 docs 现行；defense-in-depth
+  symlink + PyYAML disclosure + sandbox recommendation 三项添加）
+- r46 建议：**真实桌面 GUI user-click smoke**（human 15 分钟 / 或 computer-use 代点击）；
+  清零后选 r45 optional MEDIUM 4 项 / 非 zh 端到端 / r46 回溯审计之一
+- 本地 main 领先 origin/main **12 commits**（r45 Commit 1-10 + 2 audit-tail）
+
 ## 已回滚
 
 - prompt 强制覆盖指令（CRITICAL RULE）— 降低 AI 返回率 5pp，已撤回
