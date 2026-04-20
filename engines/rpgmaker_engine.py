@@ -18,6 +18,16 @@ from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, RPG
 
 logger = logging.getLogger("renpy_translator")
 
+# Round 42 M2 phase-3: 50 MB cap on every RPG Maker data JSON read.
+# Game-supplied JSON files (Map###.json / System.json / CommonEvents.json
+# / Troops.json / the _DB_FIELDS set) are operator-controlled input — a
+# pathologically huge or attacker-crafted file would OOM the extraction
+# loop.  Legitimate RPG Maker MV/MZ data files are in the KB-low-MB
+# range; 50 MB matches the cap chosen across the other user-facing JSON
+# loaders (font_patch / translation_db / merge_v2 / translation_editor
+# / config / glossary / review_generator / analyze_writeback / gate).
+_MAX_RPGM_JSON_SIZE = 50 * 1024 * 1024
+
 # ============================================================
 # 数据库字段配置表
 # ============================================================
@@ -80,6 +90,17 @@ class RPGMakerMVEngine(EngineBase):
         for json_path in sorted(data_dir.glob("*.json")):
             filename = json_path.name
             rel = str(json_path.relative_to(game_dir))
+
+            try:
+                json_size = json_path.stat().st_size
+            except OSError:
+                json_size = 0
+            if json_size > _MAX_RPGM_JSON_SIZE:
+                logger.warning(
+                    f"[RPGM] 跳过 {filename}: 文件 {json_size} 字节 "
+                    f"超过 {_MAX_RPGM_JSON_SIZE} 字节上限"
+                )
+                continue
 
             try:
                 data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -390,6 +411,17 @@ class RPGMakerMVEngine(EngineBase):
             src_path = game_dir / rel_path
             if not src_path.is_file():
                 logger.warning(f"[RPGM] 源文件不存在: {src_path}")
+                continue
+
+            try:
+                src_size = src_path.stat().st_size
+            except OSError:
+                src_size = 0
+            if src_size > _MAX_RPGM_JSON_SIZE:
+                logger.warning(
+                    f"[RPGM] 回写跳过 {rel_path}: 文件 {src_size} 字节 "
+                    f"超过 {_MAX_RPGM_JSON_SIZE} 字节上限"
+                )
                 continue
 
             try:

@@ -288,6 +288,42 @@ def test_glossary_scan_rpgmaker():
     print("[OK] glossary_scan_rpgmaker")
 
 
+def test_rpgm_extract_rejects_oversized_json():
+    """Round 42 M2 phase-3: ``RPGMakerMVEngine.extract_texts`` skips any
+    ``*.json`` file above ``_MAX_RPGM_JSON_SIZE`` (50 MB) with a warning
+    rather than letting ``json.loads`` OOM the process.  Legitimate RPG
+    Maker MV/MZ data files are in the KB-low-MB range; 50 MB+ is almost
+    certainly malformed or adversarial.  Uses a 51 MB sparse file so the
+    test runs instantly without consuming disk.
+    """
+    from engines.rpgmaker_engine import RPGMakerMVEngine
+
+    with tempfile.TemporaryDirectory() as td:
+        data = Path(td) / "www" / "data"
+        data.mkdir(parents=True)
+        # Legitimate small System.json so ``_find_data_dir`` succeeds.
+        (data / "System.json").write_text(
+            '{"gameTitle":"X"}', encoding="utf-8"
+        )
+        # 51 MB sparse Map001.json — oversized, must be skipped.
+        big_map = data / "Map001.json"
+        with open(big_map, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        engine = RPGMakerMVEngine()
+        units = engine.extract_texts(Path(td))
+        # Key invariant: extract_texts returns without raising and no
+        # unit originates from the oversized Map001.json (it was skipped
+        # before parse).
+        for u in units:
+            assert "Map001" not in u.file_path, (
+                f"M2 phase-3: oversized Map001.json must be skipped, "
+                f"found unit from it: {u}"
+            )
+    print("[OK] test_rpgm_extract_rejects_oversized_json")
+
+
 # ============================================================
 # Runner
 # ============================================================
@@ -308,8 +344,10 @@ if __name__ == "__main__":
     test_rpgm_patch_by_json_path()
     test_rpgm_navigate_to_node()
     test_glossary_scan_rpgmaker()
+    # Round 42 — M2 phase-3 oversize cap
+    test_rpgm_extract_rejects_oversized_json()
 
     print()
     print("=" * 40)
-    print("ALL 15 RPG MAKER ENGINE TESTS PASSED")
+    print("ALL 16 RPG MAKER ENGINE TESTS PASSED")
     print("=" * 40)
