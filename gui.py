@@ -22,6 +22,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+from gui_handlers import AppHandlersMixin
+
 # DPI 适配（Windows）
 try:
     import ctypes
@@ -52,7 +54,7 @@ MAX_LOG_LINES = 5000
 TRIM_TO = 3000
 
 
-class App:
+class App(AppHandlersMixin):
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("多引擎游戏汉化工具")
@@ -242,38 +244,6 @@ class App:
         ttk.Label(self.panel_csv, text="CSV/JSONL 通用格式引擎").pack(anchor="w", pady=3)
         ttk.Label(self.panel_csv, text="支持 CSV、TSV、JSONL、JSON 数组。\n列名自动匹配（original/source/text/en 等）。",
                   foreground="gray").pack(anchor="w", pady=3)
-
-    def _on_engine_change(self) -> None:
-        engine = self.var_engine.get()
-        self.lbl_engine_hint.config(text=f"当前引擎: {engine}")
-        # 隐藏所有面板
-        for p in (self.panel_renpy, self.panel_rpgmaker, self.panel_csv):
-            p.pack_forget()
-        # 显示对应面板
-        if engine in ("auto", "renpy"):
-            self.panel_renpy.pack(fill=tk.BOTH, expand=True)
-            self._on_renpy_mode_change()
-        elif engine == "rpgmaker":
-            self.panel_rpgmaker.pack(fill=tk.BOTH, expand=True)
-        elif engine in ("csv", "jsonl"):
-            self.panel_csv.pack(fill=tk.BOTH, expand=True)
-        self._update_preview()
-
-    def _on_renpy_mode_change(self) -> None:
-        mode = self.var_renpy_mode.get()
-        is_tl = mode in ("tl", "pipeline")
-        self.entry_tl_lang.config(state="normal" if is_tl else "disabled")
-        if mode == "pipeline":
-            self.frame_pipeline.grid()
-        else:
-            self.frame_pipeline.grid_remove()
-        self._update_preview()
-
-    def _on_provider_change(self) -> None:
-        provider = self.var_provider.get()
-        default_model = _PROVIDER_DEFAULTS.get(provider, "")
-        self.var_model.set(default_model)
-        self._update_preview()
 
     # ── Tab 3: 高级设置 ──
 
