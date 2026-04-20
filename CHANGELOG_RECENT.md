@@ -45,135 +45,9 @@
 - 第三十七轮：HANDOFF round 36→37 预规划的 M 级防御加固包（M1-M5）— M1 `TranslationDB.load()` 去 `version < SCHEMA_VERSION` gate 让 partial v2 文件缺 `language` 字段的 entry 也 backfill + M2 4 处用户面 JSON loader 加 50 MB size cap（`font_patch.load_font_config` / `translation_db.load` / `merge_translations_v2._load_v2_envelope` / `translation_editor._apply_v2_edits`）+ M3 `main.py` 外层 multi-lang 循环 try/finally restore `args.target_lang` / `lang_config` + M4 `_apply_v2_edits` 加 `Path.cwd().resolve()` path whitelist 防钓鱼 edits.json + M5 空串 cell = SKIP 语义文档化 + side-by-side label 加 tooltip；5 fix + 1 docs commits，+7 regression 测试；测试 378→385
 - 第三十八轮："收尾包"一轮清 — 拆 `tests/test_translation_editor.py` 847→376 + 新 `tests/test_translation_editor_v2.py` 553（11 v2 测试 byte-identical 迁移）+ M2 扩 4 处 user-facing JSON loader（`core/config.py::_load_config_file` + `core/glossary.py` 4 loader 共享 `_json_file_too_large` helper + `tools/translation_editor.py::_extract_from_db` + `import_edits`）+ `config_overrides` 扩 bool（新 `_OVERRIDE_ALLOW_BOOL` per-category map；gui 仍拒 bool / config 接受 `config.autosave=True` 等 Ren'Py bool switches；`_sanitise_overrides` 加 `allow_bool` kwarg，bool 检查先于 int/float 防 `isinstance(True,int)==True` 偷渡）+ editor side-by-side `@media (max-width: 800px)` mobile 自适应（table `overflow-x: auto` / `.col-trans-multi` `min-width: 120px` / iOS Safari momentum）；测试 385→391
 - 第三十九轮："收尾包 Part 2" — 拆 `tests/test_translation_state.py` 850→681 + 新 `tests/test_override_categories.py` 218（r34/r35/r38 的 4 override-dispatch tests 迁移）+ **tl-mode / retranslate per-language prompt**（r35 挂 4 轮的最后绿色小项）— `core/prompts.py` 新 `_GENERIC_TLMODE_SYSTEM_PROMPT` + `_GENERIC_RETRANSLATE_SYSTEM_PROMPT` 英文模板 + `build_*` 加 `lang_config` kwarg 分路（zh / zh-tw 保中文模板 byte-identical；非 zh → generic 英文），`TranslationContext` 加 `lang_config` 字段，`tl_mode._translate_chunk` / `retranslator.retranslate_file` 用 `resolve_translation_field` 按 alias 链读响应，`main.py` 去 r35 multi-lang guard — `--tl-mode` / `--retranslate` 端到端支持非 zh + M2 phase-2 扩 3 处 user-facing JSON loader（`tools/review_generator.py` + `tools/analyze_writeback_failures.py` + `pipeline/gate.py` glossary）；测试 391→396
+- 第四十轮：pre-existing 大文件拆分（3/4，`gui.py` 挂 r41）— `tests/test_engines.py` 962→694 + 新 `test_engines_rpgmaker.py` 315（15 rpgmaker 测试 byte-identical 迁移）+ `tools/rpyc_decompiler.py` 974→725（新 `_rpyc_shared.py` 47 leaf 常量 + `_rpyc_tier2.py` 274 safe-unpickle 链，re-export 保 test + `renpy_lint_fixer` import 无感）+ `core/api_client.py` 965→642（新 `core/api_plugin.py` 378 — `_load_custom_engine` + `_SubprocessPluginClient` sandbox，re-export 保 `test_custom_engine` 20 测试无感）；`gui.py` 815 挂 r41（PyInstaller 打包耦合 + UI 手动测试需独立一轮）；全部 byte-identical 纯 refactor，测试 396 保持不变
 
 ## 详细记录
-
-### 第四十轮：pre-existing 大文件拆分（3/4，gui.py 挂 r41）
-
-HANDOFF round 39→40 主推方向：拆分 4 个 pre-existing > 800 行源文件
-（r31-39 均未触碰，最老可追溯到 r10 前）。`gui.py` (815 行) 因
-PyInstaller 打包耦合 + 单 class 内部边界不清 + UI 代码手动测试要求，
-风险显著高于其他三个——本轮优先做风险低的 3 个，`gui.py` 挂 r41
-独立一轮专门做（含 `build.py` 打包回归）。4 commits，每 bisect-safe，
-全部是纯结构 refactor（byte-identical extraction + re-export 保
-向后兼容），零行为变化 / 零新测试。
-
-**Commit 1（prep）：拆 `tests/test_engines.py` RPG Maker 块**
-
-r10 前就形成的 962 行测试文件。RPG Maker MV/MZ 是自包含的 engine
-slice（独立导入 `engines.rpgmaker_engine` + `core.glossary`，自带
-2 个 tempdir 辅助函数 `_make_rpgm_mv_dir` / `_make_rpgm_mz_dir`）—
-clean cut point。
-
-463. 新建 `tests/test_engines_rpgmaker.py`（315 行，15 测试 + 2
-helper + main runner）：`test_rpgm_detect_mv` / `_mz` / `_false` /
-`_find_data_dir` / 4 event-command extraction 测试（401 merge / 102
-choices / 405 scroll / 320 name change）/ `_extract_database` /
-`_extract_system` / 2 writeback 测试 / `_patch_by_json_path` /
-`_navigate_to_node` / `test_glossary_scan_rpgmaker`
-464. `tests/test_engines.py` 瘦身到 694 行（962 → 694），剩 47 测试
-（EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine /
-EngineBase / CSV Engine / generic_pipeline / patcher-checker / prompts
-addon）
-465. 两文件均 `< 800` ✓；test 总数 62 保持（47 + 15）；meta-runner
-`test_all.py` 不受影响（test_engines 作独立 suite）
-
-**Commit 2：拆 `tools/rpyc_decompiler.py` 974 → 725（-249）**
-
-HANDOFF 建议"Tier1 + Tier2 两条反编译链可拆"。实际拆分采用 3-module
-布局避免循环 import（主 re-exports from Tier 2 requires Tier 2 import
-first but Tier 2 imports shared constants → shared must be a leaf）：
-
-466. 新建 `tools/_rpyc_shared.py`（47 行）：`RPYC2_HEADER` /
-`_AST_SLOT` 格式常量 + `_SHARED_WHITELIST` / `_WHITELIST_TIER1_PY2_
-EXTRAS` pickle 白名单（r26 H-4 "no drift" 契约的源头数据）
-467. 新建 `tools/_rpyc_tier2.py`（274 行）：`_DummyClass` stub +
-`_RestrictedUnpickler` 白名单 unpickler + `_read_rpyc_data` slot
-reader + `_safe_unpickle` + `_extract_text_from_node` AST walker +
-`extract_strings_from_rpyc` 公共入口；从 `_rpyc_shared` 导入常量
-（leaf-only，无循环）
-468. `tools/rpyc_decompiler.py` 974 → 725 行：保留 Tier 1（game-python
-helper template + `_render_decompile_helper` + `_run_decompile_with_
-game_python`）/ Errors / 平台+版本检测 / 公共 API（`decompile_game`
-/ `extract_strings_standalone`）/ CLI；末尾 re-export Tier 2 的 6
-个符号 + `_rpyc_shared` 的 4 个常量让 `tests/test_rpyc_decompiler.py`
-（18 测试 import 6 个 Tier 2 符号 + `_SHARED_WHITELIST` by 老名）+
-`tools/renpy_lint_fixer.py`（import `_find_renpy_python`）完全不用
-改
-469. 零行为变化；18 rpyc 测试 + renpy_lint_fixer 依赖全保
-
-**Commit 3：拆 `core/api_client.py` 965 → 642（-323）**
-
-提取 custom plugin loader surface（`_load_custom_engine` legacy
-importlib mode + `_SubprocessPluginClient` round-28 S-H-4 JSONL
-subprocess sandbox）到新模块。剩下 APIClient 主类 + 5 provider
-dispatch（xAI / OpenAI / DeepSeek / Claude / Gemini）+ APIConfig /
-UsageStats / RateLimiter 继续留在主文件。
-
-470. 新建 `core/api_plugin.py`（378 行）：`_CUSTOM_ENGINES_DIR`
-常量 + `_load_custom_engine` 函数（签名 + 文件名 security check +
-interface contract validation）+ `_SubprocessPluginClient` 完整类
-（包括 r28 初始化 + r30 `atexit` 异常兜底 + stderr 10 KB 上限 +
-`_SHUTDOWN_REQUEST_ID` + `close()` + `__del__` finaliser）
-471. `core/api_client.py` 965 → 642 行：原 "Custom engine plugin
-loader" section 替换为一行 import + 4-行 re-export block
-（`_load_custom_engine`, `_SubprocessPluginClient`）让
-`tests/test_custom_engine.py`（20 测试 import 2 符号 by 老名）
-完全不用改
-472. 零行为变化；20 custom-engine 测试全绿；APIClient.__init__
-的 duck-typed plugin dispatch（`config.sandbox_plugin` 分支）
-通过 re-export 名 lookup 保工作
-
-**Commit 4：Docs sync**
-
-473. 本文件（CHANGELOG_RECENT.md）：round 37 详细压缩进"演进摘要"
-一行；38/39/40 保留详细
-474. CLAUDE.md 项目身份段追加 r40 note + 测试数 396 保持（纯
-refactor）；`.cursorrules` 同步
-475. HANDOFF.md 重写为 40 → 41 交接；r40 三项拆分从"r40 候选"挪到
-"✅ r40 已修"；保留 `gui.py` 815 行 + 其余 ~7 处内部 JSON loader +
-A-H-3 Medium/Deep 等作 r41 候选；架构健康度表"大文件"维度更新为"全
-源码 < 800 except gui.py 815（PyInstaller 打包耦合，r41 独立一轮）"
-
-**结果**：
-- 21 测试文件（20 独立 suite + `test_all.py` meta）+ `tl_parser` 75 +
-  `screen` 51 = **522 断言点**；测试 **396 保持**（纯 refactor，
-  byte-identical 拆分）
-- 所有改动向后兼容：
-  - rpyc_decompiler.py re-export Tier 2 符号 + shared 常量 → 老调用
-    无感
-  - api_client.py re-export `_load_custom_engine` +
-    `_SubprocessPluginClient` → 老调用无感
-  - test_engines.py 拆 rpgmaker → 新 suite 独立跑，总 test 数不变
-- 新增文件 4 个：
-  - `tools/_rpyc_shared.py`（47 行，leaf constants）
-  - `tools/_rpyc_tier2.py`（274 行，safe-unpickle chain）
-  - `core/api_plugin.py`（378 行，custom plugin loader + sandbox）
-  - `tests/test_engines_rpgmaker.py`（315 行，15 rpgmaker 测试）
-- 修改文件 3 代码 + 4 文档：
-  - `tools/rpyc_decompiler.py` 974 → 725（-249）
-  - `core/api_client.py` 965 → 642（-323）
-  - `tests/test_engines.py` 962 → 694（-268）
-  - CHANGELOG / CLAUDE / .cursorrules / HANDOFF
-- 文件大小检查：源码 3/4 从 >800 降到 <800；`gui.py` 815 仍保持
-  （r41 候选）。所有测试文件继续 < 800（r39 拆 test_translation_state
-  的遗产）
-
-**本轮未做**（留给第 41+ 轮）：
-- **`gui.py` 815 行**（PyInstaller 打包耦合 + 单 `class App` 内部
-  难以清晰分边界 + UI 代码自动化测试覆盖不到 → 建议 r41 独立一轮，
-  配合 `build.py` 回归手动验证）
-- 剩余 ~7 处内部 / 低风险 JSON loader size cap（`engines/generic_
-  pipeline.py:151` / `core/translation_utils.py:138` / `translators/
-  _screen_patch.py:311` / `tools/rpyc_decompiler.py:437` /
-  `engines/rpgmaker_engine.py:85,396` / `pipeline/stages.py:212,378`
-  / `gui.py:718`）
-- 非中文目标语言的端到端验证（r39 per-language prompt 落地，需真实
-  API + 真实游戏跑）
-- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
-- RPG Maker Plugin Commands / 加密 RPA / RGSS
-- CI Windows runner + docs/constants / quality_chain / roadmap 复查
-  （连续 11 轮欠账）
 
 ### 第四十一轮：gui.py 拆分（4/4）+ 3 项审计小尾巴合流
 
@@ -512,6 +386,142 @@ size cap 覆盖率：11 / 16 (r37-r39) → 18 / 18（r42 收尾）
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - CI Windows runner + docs/constants / quality_chain / roadmap 复查
   （连续 13 轮欠账）
+
+### 第四十三轮：r36-r42 累计专项审计 + 3 个 test 补 + 1 个插件子进程 stdout 封顶
+
+r42 HANDOFF 预告 r43 最高优先应是 PyInstaller smoke test（r41 拆分的
+生产验证）+ GUI manual smoke test。两项都需外部资源：PyInstaller 本地
+未装且不自行 `pip install`（按全局 CLAUDE.md 的网络命令须知会规则），
+GUI manual smoke 需人工点击——agent 环境下都不可达。按 r42 HANDOFF 的
+第二优先 "Round 42/41 专项审计" 方向，启动**三维度 r36-r42 累计审计**
+（correctness / test coverage / security），对真实有效的发现做 fix。
+3 commits，每 bisect-safe。
+
+**审计结果概览**：
+
+- **Correctness agent**：23 个审计点全 pass，0 CRITICAL / 0 HIGH（r36-r42
+  改动 code-level 正确性 clean，包括 r42 JSON cap 7 处 fallback / r41
+  mixin `self._project_root` init 顺序 / r42 checker deferred import 保
+  r27 A-H-2 layering / TOCTOU windows / signature consistency 等）
+- **Test coverage agent**：3 项 valid gap + 3 项 false-positive（被
+  overly-detailed boundary testing / 已被现有 test 隐含覆盖的 path / 标
+  准 try/finally 已足够的 isolation）
+- **Security agent**：1 项 valid defensive improvement + 5 项
+  theoretical-only / false-positive（post-parse size check 无法用
+  `sys.getsizeof` 实现，monkey-patch 威胁已属 "attacker has RCE" 范畴，
+  env var leakage on Windows 权限隔离足够，等等）
+
+3 项 valid 发现合流到 r43：
+
+**Commit 1：Test coverage 补齐（3 个 new test）**
+
+491. `tests/test_multilang_run.py::test_check_response_item_zh_tw_rejects_
+generic_zh_field` — 钉住 `LANGUAGE_CONFIGS["zh-tw"].field_aliases =
+["zh-tw", "zh_tw", "traditional_chinese"]` **刻意不含 bare "zh"** 的设
+计决策。否则 model 习惯性 emit `"zh"` 会悄悄落进 zh-tw bucket 而
+Simplified / Traditional 的脚本家族混淆没人察觉。正向 case 也测：
+"zh-tw" / "traditional_chinese" alias 被接受
+492. `tests/test_multilang_run.py::test_check_response_item_mixed_
+language_fields_picks_correct_alias` — 文档化 `resolve_translation_
+field` 的 alias 优先级契约：item 同时含 `"ja"` + `"ko"` 时，ja config
+读 ja 字段，ko config 读 ko 字段；ja-empty 但 ko-populated 在 ja
+config 下被拒（ko 不在 ja 别名链）
+493. `tests/test_translation_state.py::test_progress_tracker_handles_
+stat_failure_gracefully` — 覆盖 r42 M2 phase-3 的"stat() OSError →
+size=0 → 继续 read"两步降级路径。用 `mock.patch.object(Path, "stat",
+_selective_raise)` 让目标 progress.json stat() 抛 OSError，验证
+`read_text()` 仍成功时 data **不会被错误重置**。填补了 "stat fails
+but read works" 的路径覆盖缺口（原先只测 "文件太大"）
+
+测试 **405 → 408**（test_multilang_run 14→16 / test_translation_state
+18→19 / meta-runner 149→150）
+
+**Commit 2：插件子进程 response line 50 MB 封顶（defensive）**
+
+r30 已为 `_SubprocessPluginClient` stderr 加 10 KB cap 防 crash 日志
+OOM host。但 **stdout response 通道无 cap** —— 若 plugin 恶意（或故障）
+emit unbounded 单行 JSON，`readline()` 无 size 会一直累积到 OOM，早
+于任何 JSON decoder 介入。r43 audit surfaced 为 valid defensive
+improvement。
+
+494. `core/api_plugin.py` 新增 `_MAX_PLUGIN_RESPONSE_BYTES = 50 * 1024
+* 1024` 模块常量（与 r37-r42 JSON loader cap 跨模块一致）。legitimate
+batch response typically < 1 MB，50 MB 留足冗余
+495. `_read_response_line` 的内部 `_reader()` 改为 `readline(
+_MAX_PLUGIN_RESPONSE_BYTES)`。Python `readline(N)` 返回至多 N bytes
+**或**到 `\n` 为止，谁先到谁先返回 — 若 plugin 在 N bytes 前没发
+newline，被视为 malformed oversized 响应 raise RuntimeError（与既有
+"plugin stuck" / "EOFError" 路径同风格 wrap）
+496. `tests/test_custom_engine.py::test_sandbox_rejects_oversize_
+response_line` — stub `_proc.stdout` + `mock.patch.object` 把 cap 缩到
+1 KB 验证语义（避免实际 alloc 50 MB）。与 r30 的 `test_sandbox_
+stderr_read_bounded` 成对，共同 bound plugin 的 stdin/stdout/stderr
+三通道
+
+测试 test_custom_engine 20→21（独立 suite）；total **408 → 409**
+
+**Commit 3：Docs sync**
+
+497. 本文件（CHANGELOG_RECENT.md）：round 40 详细压缩进"演进摘要"一行；
+41/42/43 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
+498. CLAUDE.md 项目身份段追加 r43 note + 测试数 405 → 409；`.cursorrules`
+同步（字节相同）
+499. HANDOFF.md 重写为 43 → 44 交接；r43 三项修从"r43 候选"挪到"✅ r43
+已修"；保留 PyInstaller smoke test + GUI manual smoke test（三轮积压）
++ 非 zh 端到端验证 + A-H-3 / S-H-4 / CI / docs 复查作 r44 候选。
+架构健康度表更新：**插件子进程三通道封顶完整**（stdin via
+`_SHUTDOWN_REQUEST_ID` + stdout via r43 50 MB cap + stderr via r30
+10 KB cap）
+
+**结果**：
+
+- **22 测试文件**（21 独立 suite + `test_all.py` meta；r43 无新 .py）
+  + `tl_parser` 75 + `screen` 51 = **535 断言点**；测试 **405 → 409**
+  （+4：zh-tw rejects +1 / mixed-lang +1 / stat fallback +1 / oversize
+  response line +1）
+- 所有改动向后兼容：
+  - Test 补齐：纯新增 assertion，零现有 test 受影响
+  - Plugin stdout cap：合法 response 行（< 50 MB）完全不受影响；只有
+    malformed / 恶意 oversized 情况才触发 RuntimeError，走已有
+    error-wrapping path
+- **新增文件 0 个**
+- **修改文件 1 代码 + 3 测试 + 4 文档**：
+  - `core/api_plugin.py` +cap 常量 + `_read_response_line` size-bounded
+    readline
+  - `tests/test_multilang_run.py` +2 tests
+  - `tests/test_translation_state.py` +1 test
+  - `tests/test_custom_engine.py` +1 test
+  - CHANGELOG / CLAUDE / `.cursorrules` / HANDOFF
+- **文件大小检查**：所有源码 / 测试 < 800 保持
+
+**审计连续性统计**（连续 3 次 3 维度 审计）：
+
+| 审计轮 | CRITICAL | HIGH | MEDIUM (已修) | LOW | False Positive | OOS |
+|-------|---------|------|------|-----|---------------|-----|
+| r35 末（r31-35） | 0 | 0 | 2 (H1, H2 → r36) | 0 | 6 | — |
+| r40 末（r36-40） | 0 | 0 | 2 (M4, r39 integ → r41) | 1 | 3 | 2 |
+| r43（r36-42） | 0 | 0 | 3 (zh-tw / mixed-lang / stat) + 1 defensive (stdout cap) → r43 | 1 | 6 | 3 |
+
+**趋势**：连续 3 次审计均无 CRITICAL/HIGH；每次找到的 MEDIUM/LOW 都在
+对应的下一轮合流修复；False-positive 和 OOS 比例稳定在 ~30-40%（正常
+量级，说明 agent 报告质量稳定）。
+
+**本轮未做**（留给第 44+ 轮）：
+
+- **PyInstaller 打包 smoke test**（r41/r42/r43 **三轮积压**）—
+  HANDOFF 最高优先，需 `pip install pyinstaller`（用户 approve） +
+  跑 `python build.py` + `dist/多引擎游戏汉化工具.exe` 启动 smoke；
+  若 fail 回退加 `gui_handlers`/`gui_pipeline`/`gui_dialogs` 到
+  `build.py::hidden_imports`
+- **GUI 手动 smoke test 全面清单**（r41/r42/r43 **三轮积压**）— 需
+  人工点击 Tab / 按钮 / 菜单 / 工具菜单 / 配置保存加载 验证 Tkinter
+  callback 真实运行时正确 dispatch + mixin MRO 工作
+- 非中文目标语言端到端验证（r39 prompt + r41 alias read + r42 checker
+  三层锁死 code-level contract，需真实 API + 真实游戏跑 ja / ko / zh-tw）
+- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- CI Windows runner + docs/constants / quality_chain / roadmap 复查
+  （连续 14 轮欠账）
 
 ## 已回滚
 
