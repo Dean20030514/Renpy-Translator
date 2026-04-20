@@ -50,17 +50,34 @@ logger = logging.getLogger(__name__)
 
 _CUSTOM_ENGINES_DIR = "custom_engines"
 
-# Round 43 audit-tail: 50 MB cap on a single subprocess response line.
+# Round 43 audit-tail: per-line cap on the subprocess stdout response.
 # ``_SubprocessPluginClient`` reads plugin stdout one line at a time
 # via ``readline()``; without a bound, a misbehaving or adversarial
 # plugin can emit an unbounded single-line payload and OOM the host
 # before the JSON decoder even runs.  r30 already added a 10 KB stderr
 # cap for crash diagnostics; this matches it on the main response
-# channel.  50 MB is vastly more headroom than any legitimate batch
-# response needs (a full chunk worth of translations is typically
-# < 1 MB of JSON), but matches the cap used by the r37-r42 JSON
-# loaders for cross-module consistency.
-_MAX_PLUGIN_RESPONSE_BYTES = 50 * 1024 * 1024
+# channel.
+#
+# Round 44 audit-tail: the unit here is **characters, not bytes**.
+# :meth:`subprocess.Popen` is started with ``text=True, encoding="utf-8"``
+# (r28 S-H-4), so ``self._proc.stdout`` is a text stream and
+# ``readline(N)`` counts ``N`` CHARS (decoded codepoints), not bytes.
+# On a pure-ASCII payload the cap is effectively 50 MB of bytes, but on
+# a response dominated by CJK text each char is 3 UTF-8 bytes, so the
+# worst-case byte footprint is ~150 MB before we reject.  This is
+# acceptable defensive coverage for the OOM DoS threat the cap was
+# added to address (host has GB-range RAM; 150 MB is manageable), but
+# the variable name previously claimed BYTES and was therefore
+# misleading.  :data:`_MAX_PLUGIN_RESPONSE_CHARS` is the canonical
+# name; :data:`_MAX_PLUGIN_RESPONSE_BYTES` is retained as a deprecated
+# alias so r43's existing test doesn't break.  Legitimate batch
+# responses are typically < 1 MB of JSON either way.
+_MAX_PLUGIN_RESPONSE_CHARS = 50 * 1024 * 1024
+
+# Deprecated alias kept for backward compatibility with round-43 test
+# that patches this name via ``mock.patch.object``.  New code should
+# use ``_MAX_PLUGIN_RESPONSE_CHARS`` above.
+_MAX_PLUGIN_RESPONSE_BYTES = _MAX_PLUGIN_RESPONSE_CHARS
 
 
 def _load_custom_engine(module_name: str) -> Any:
@@ -312,22 +329,26 @@ class _SubprocessPluginClient:
 
         def _reader() -> None:
             try:
-                # Round 43 audit-tail: bound the read so a misbehaving
-                # plugin cannot OOM the host with an unbounded single
-                # response line.  ``readline(N)`` returns up to N bytes
-                # OR up-to-and-including the next newline, whichever
-                # comes first — so if the plugin hits the cap without
-                # emitting a newline we detect the malformed response
-                # and raise instead of accepting a truncated line.
-                line = self._proc.stdout.readline(_MAX_PLUGIN_RESPONSE_BYTES)
+                # Round 43 / Round 44 audit-tail: bound the read so a
+                # misbehaving plugin cannot OOM the host with an
+                # unbounded single response line.  ``readline(N)`` on
+                # the text-mode subprocess.stdout returns up to N CHARS
+                # (decoded codepoints) OR up-to-and-including the next
+                # newline, whichever comes first — so if the plugin
+                # hits the char cap without emitting a newline we
+                # detect the malformed response and raise instead of
+                # accepting a truncated line.  See the
+                # ``_MAX_PLUGIN_RESPONSE_CHARS`` docstring for the
+                # byte-vs-char distinction.
+                line = self._proc.stdout.readline(_MAX_PLUGIN_RESPONSE_CHARS)
                 if line == "":
                     error.append(EOFError("plugin stdout closed before response"))
                     return
-                if (len(line) >= _MAX_PLUGIN_RESPONSE_BYTES
+                if (len(line) >= _MAX_PLUGIN_RESPONSE_CHARS
                         and not line.endswith("\n")):
                     error.append(RuntimeError(
                         f"plugin response line exceeded "
-                        f"{_MAX_PLUGIN_RESPONSE_BYTES} bytes without "
+                        f"{_MAX_PLUGIN_RESPONSE_CHARS} chars without "
                         f"newline — treating as malformed oversized "
                         f"response (request_id={req_id})"
                     ))

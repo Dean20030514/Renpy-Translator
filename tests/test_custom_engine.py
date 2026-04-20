@@ -465,7 +465,10 @@ def test_sandbox_rejects_oversize_response_line():
             pass
 
     # Patch the cap to 1 KB so the test only needs 1 KB of payload.
-    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_BYTES", 1024):
+    # Round 44: canonical name is ``_MAX_PLUGIN_RESPONSE_CHARS``;
+    # the old ``_MAX_PLUGIN_RESPONSE_BYTES`` alias still exists but
+    # only ``_CHARS`` is read by ``_read_response_line``.
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
         client._proc = _FakeProc("X" * 2048)  # more than the cap, no newline
         raised = False
         try:
@@ -482,6 +485,87 @@ def test_sandbox_rejects_oversize_response_line():
             "a RuntimeError; no RuntimeError observed"
         )
     print("[OK] test_sandbox_rejects_oversize_response_line")
+
+
+def test_sandbox_oversize_response_line_char_semantics_multibyte():
+    """Round 44 audit-tail: ``_MAX_PLUGIN_RESPONSE_CHARS`` counts chars,
+    not bytes (Popen text=True + readline(N) → N chars).  This test
+    feeds a multibyte-dominant payload to prove the cap triggers at the
+    same char count regardless of per-char byte width — a CJK response
+    and an ASCII response both cap at the same number of characters.
+
+    Documents the r43 audit-tail correction: r43 commit introduced the
+    cap as ``_MAX_PLUGIN_RESPONSE_BYTES`` (misleading), r44 renamed to
+    ``_MAX_PLUGIN_RESPONSE_CHARS`` and kept the old name as a deprecated
+    alias.  The original r43 test exercises the cap with ASCII payload;
+    this test covers the multibyte case to close the audit gap.
+    """
+    from unittest import mock
+
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+
+        def readline(self, size: int = -1) -> str:
+            # Text-mode readline counts CHARS, not bytes.  Return exactly
+            # ``size`` chars of the payload so the caller sees the cap.
+            if size > 0:
+                return self._payload[:size]
+            return self._payload
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+    # Patch the cap to 1024 chars so the test only needs 1024-2048 chars
+    # of payload, not 50 MB.  Use CJK chars to prove char-semantics:
+    # each "你" is 3 bytes in UTF-8, so 2048 chars = 6144 bytes — but
+    # the cap still triggers at 1024 **chars**, not bytes.
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        client._proc = _FakeProc("你" * 2048)  # 2048 chars, 6144 bytes
+        raised = False
+        msg = ""
+        try:
+            client._read_response_line(req_id=99)
+        except RuntimeError as e:
+            msg = str(e)
+            raised = "chars" in msg.lower() or "exceeded" in msg.lower()
+        assert raised, (
+            f"multibyte (CJK) payload > cap chars without newline must "
+            f"raise RuntimeError mentioning 'chars' or 'exceeded'; "
+            f"got msg={msg!r}"
+        )
+
+    # Symmetric: same char count, same trigger regardless of byte width.
+    # Patch cap to 1024 chars again; test with ASCII.  Same cap fires at
+    # same char count.  (r43's original test covered this already, but
+    # re-exercising here documents the byte-agnostic contract.)
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        client._proc = _FakeProc("X" * 2048)  # 2048 chars, 2048 bytes
+        raised_ascii = False
+        try:
+            client._read_response_line(req_id=100)
+        except RuntimeError:
+            raised_ascii = True
+        assert raised_ascii, (
+            "ASCII payload > cap chars without newline must also raise"
+        )
+    print("[OK] test_sandbox_oversize_response_line_char_semantics_multibyte")
 
 
 def test_sandbox_close_idempotent():
@@ -533,6 +617,8 @@ ALL_TESTS = [
     test_sandbox_close_idempotent,
     # Round 43 audit-tail: per-response-line size cap (matches r30 stderr cap)
     test_sandbox_rejects_oversize_response_line,
+    # Round 44 audit-tail: cap is CHARS not BYTES — multibyte payload
+    test_sandbox_oversize_response_line_char_semantics_multibyte,
 ]
 
 
