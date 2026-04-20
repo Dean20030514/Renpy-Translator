@@ -202,6 +202,131 @@ def test_tl_chunk_reads_alias_field_from_mocked_response():
     print("[OK] test_tl_chunk_reads_alias_field_from_mocked_response")
 
 
+def test_check_response_item_lang_config_none_backward_compat():
+    """Round 42 M2 phase-4: default ``lang_config=None`` preserves the
+    r41 byte-identical behaviour — translation field is read from the
+    hard-coded ``"zh"`` key.  Validates the no-regression guarantee for
+    the ~6 existing callers that have not yet been updated.
+    """
+    from file_processor import check_response_item
+
+    # zh happy path with no lang_config → pass
+    assert check_response_item(
+        {"line": 1, "original": "Hello", "zh": "你好"},
+    ) == []
+
+    # Empty zh with no lang_config → "译文为空" warning
+    warns = check_response_item(
+        {"line": 2, "original": "Hello", "zh": ""},
+    )
+    assert any("译文为空" in w for w in warns), (
+        f"empty zh must be flagged, got: {warns}"
+    )
+    print("[OK] test_check_response_item_lang_config_none_backward_compat")
+
+
+def test_check_response_item_lang_config_ja_accepts_japanese_alias():
+    """Round 42 M2 phase-4: when ``lang_config=get_language_config("ja")``
+    is supplied, the checker resolves the translation field through the
+    ``field_aliases`` chain (``["ja", "japanese", "jp"]``).  An entry that
+    populates ``"ja"`` passes; an entry that only populates ``"zh"`` is
+    flagged as empty because ``"zh"`` is not in the ja alias chain.
+    """
+    from file_processor import check_response_item
+    from core.lang_config import get_language_config
+
+    ja = get_language_config("ja")
+
+    # Primary ja alias — pass
+    assert check_response_item(
+        {"line": 1, "original": "Hello", "ja": "こんにちは"},
+        lang_config=ja,
+    ) == []
+
+    # Secondary jp alias — pass
+    assert check_response_item(
+        {"line": 2, "original": "World", "jp": "世界"},
+        lang_config=ja,
+    ) == []
+
+    # Only zh populated — should be rejected (zh not in ja aliases)
+    warns = check_response_item(
+        {"line": 3, "original": "Hi", "zh": "你好"},
+        lang_config=ja,
+    )
+    assert any("译文为空" in w for w in warns), (
+        f"ja lang_config must not accept a zh-only response (checker "
+        f"previously hard-coded 'zh' and let this through); got: {warns}"
+    )
+    print("[OK] test_check_response_item_lang_config_ja_accepts_japanese_alias")
+
+
+def test_check_response_item_lang_config_ko_accepts_korean_alias():
+    """Round 42 M2 phase-4: Korean (ko / korean / kr) alias chain."""
+    from file_processor import check_response_item
+    from core.lang_config import get_language_config
+
+    ko = get_language_config("ko")
+    assert check_response_item(
+        {"line": 1, "original": "Hello", "ko": "안녕하세요"},
+        lang_config=ko,
+    ) == []
+    assert check_response_item(
+        {"line": 2, "original": "World", "korean": "세계"},
+        lang_config=ko,
+    ) == []
+    print("[OK] test_check_response_item_lang_config_ko_accepts_korean_alias")
+
+
+def test_check_response_item_lang_config_falls_back_to_generic_field():
+    """Round 42 M2 phase-4: when an entry has no match in the
+    language-specific aliases, ``resolve_translation_field`` falls back
+    to the generic keys ``["translation", "target", "trans"]`` — so a
+    model that returns ``"translation": "..."`` still validates.
+    """
+    from file_processor import check_response_item
+    from core.lang_config import get_language_config
+
+    ja = get_language_config("ja")
+    # Neither ja/jp/japanese present, but generic "translation" key is
+    assert check_response_item(
+        {"line": 1, "original": "Hi", "translation": "こんにちは"},
+        lang_config=ja,
+    ) == []
+    print("[OK] test_check_response_item_lang_config_falls_back_to_generic_field")
+
+
+def test_filter_checked_translations_forwards_lang_config():
+    """Round 42 M2 phase-4: ``_filter_checked_translations`` forwards the
+    ``lang_config`` kwarg to ``check_response_item``.  Mixed batch of
+    ja-populated (kept) + zh-only (dropped) proves the forwarding works
+    — if the kwarg weren't threaded through, the zh-only entry would be
+    wrongly kept (the r41 hard-coded path).
+    """
+    from file_processor import _filter_checked_translations
+    from core.lang_config import get_language_config
+
+    ja = get_language_config("ja")
+    translations = [
+        {"line": 1, "original": "Hello", "ja": "こんにちは"},    # ja-populated → keep
+        {"line": 2, "original": "World", "zh": "世界"},           # zh-only → drop under ja
+        {"line": 3, "original": "Foo", "japanese": "フー"},       # japanese alias → keep
+    ]
+    kept, dropped_count, dropped_items, warns = _filter_checked_translations(
+        translations, lang_config=ja,
+    )
+    assert len(kept) == 2, f"expected 2 kept, got {len(kept)}: {kept}"
+    assert dropped_count == 1, (
+        f"expected 1 dropped under ja lang_config, got {dropped_count}; "
+        f"warnings: {warns}"
+    )
+    # The kept entries are the ja + japanese ones; the zh-only entry
+    # was correctly routed to dropped.
+    kept_lines = sorted(k.get("line") for k in kept)
+    assert kept_lines == [1, 3], f"wrong lines kept: {kept_lines}"
+    print("[OK] test_filter_checked_translations_forwards_lang_config")
+
+
 def run_all() -> int:
     tests = [
         test_parse_target_langs_single_language,
@@ -215,6 +340,12 @@ def run_all() -> int:
         test_retranslate_system_prompt_per_language_branch,
         # Round 41 audit tail — response-side integration for r39 dispatch
         test_tl_chunk_reads_alias_field_from_mocked_response,
+        # Round 42 M2 phase-4 — checker per-language field resolution
+        test_check_response_item_lang_config_none_backward_compat,
+        test_check_response_item_lang_config_ja_accepts_japanese_alias,
+        test_check_response_item_lang_config_ko_accepts_korean_alias,
+        test_check_response_item_lang_config_falls_back_to_generic_field,
+        test_filter_checked_translations_forwards_lang_config,
     ]
     for t in tests:
         t()

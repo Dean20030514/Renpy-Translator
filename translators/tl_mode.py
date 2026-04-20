@@ -82,13 +82,16 @@ def _translate_one_tl_chunk(
     kept_items: dict[str, str] = {}
     dropped = 0
     warnings: list[str] = []
-    # Round 39: resolve target-language translation field via
-    # ``lang_config.field_aliases`` when a non-default lang_config is
-    # present on ctx.  Falls back to the literal ``"zh"`` field for
-    # backward compat when lang_config is None or the target is zh/zh-tw.
+    # Round 39 / r42 M2 phase-4: resolve the target-language translation
+    # field via ``lang_config.field_aliases`` when a non-default
+    # lang_config is present on ctx.  r42 also pushed this awareness into
+    # ``check_response_item`` itself (``lang_config=`` kwarg) so the
+    # per-item validator no longer hard-codes the ``"zh"`` read.  Falls
+    # back to the literal ``"zh"`` field for backward compat when
+    # lang_config is None or the target is zh/zh-tw.
     from core.lang_config import resolve_translation_field as _resolve_field
     for t in translations:
-        item_w = check_response_item(t)
+        item_w = check_response_item(t, lang_config=ctx.lang_config)
         if item_w:
             dropped += 1
             warnings.extend(f"[CHECK-DROPPED] {w}" for w in item_w)

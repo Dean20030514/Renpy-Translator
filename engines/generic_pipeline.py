@@ -350,10 +350,13 @@ def run_generic_pipeline(engine, args) -> None:
                         if val and isinstance(val, str):
                             t[key] = restore_placeholders(val, ph_mapping)
 
-            # 逐条校验
+            # 逐条校验（Round 42: pass lang_config so non-zh targets
+            # are validated against the correct alias field)
             valid = []
             for t in translations:
-                warns = check_response_item(t, placeholder_re=ph_re)
+                warns = check_response_item(
+                    t, placeholder_re=ph_re, lang_config=lang_config,
+                )
                 if not warns:
                     valid.append(t)
 
