@@ -151,6 +151,8 @@ jobs:
         run: python tests/test_multilang_run.py
       - name: Run override categories tests
         run: python tests/test_override_categories.py
+      - name: Run UI whitelist tests
+        run: python tests/test_ui_whitelist.py
 
       # Internal self-tests (embedded in the module)
       - name: Run tl_parser self-tests (75 assertions)

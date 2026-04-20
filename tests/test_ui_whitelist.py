@@ -306,10 +306,21 @@ ALL_TESTS = [
 ]
 
 
-if __name__ == "__main__":
+def run_all() -> int:
+    """Run every test in this module; return test count.
+
+    Added in round 46 audit fix: aligns this suite with the pattern
+    used by all 22 other independent test suites so integrators can
+    treat them uniformly.  Runtime is unchanged.
+    """
     for t in ALL_TESTS:
         t()
+    return len(ALL_TESTS)
+
+
+if __name__ == "__main__":
+    n = run_all()
     print()
     print("=" * 40)
-    print(f"ALL {len(ALL_TESTS)} UI WHITELIST TESTS PASSED")
+    print(f"ALL {n} UI WHITELIST TESTS PASSED")
     print("=" * 40)
