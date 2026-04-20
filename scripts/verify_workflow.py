@@ -16,6 +16,14 @@ Usage:
     python scripts/verify_workflow.py
 
 Dependency: PyYAML (install with `pip install pyyaml --break-system-packages`).
+
+Note: this is the project's ONLY third-party dependency, and it is
+intentionally confined to this developer-only tool — it does NOT ship
+with any runtime module (core/ / translators/ / engines/ / tools/ /
+pipeline/ / file_processor/ / gui*.py are strictly stdlib-only, see
+CLAUDE.md 'zero third-party dependencies' principle).  PyYAML is used
+only for local CI-workflow drift detection before push; production
+code and CI itself parse YAML via GitHub Actions' built-in runtime.
 """
 
 from __future__ import annotations

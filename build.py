@@ -50,6 +50,19 @@ def clean_build_artifacts() -> int:
 
     for d in targets_dirs:
         if d.exists():
+            # Round 46 audit-tail: defense-in-depth against accidental
+            # symlink traversal.  shutil.rmtree on Python 3.8+ already
+            # refuses to follow symlinks into directories, but an
+            # explicit is_symlink() check stops the operation earlier
+            # and makes the intent visible in the audit trail.  Low
+            # probability (user would need to `ln -s dist/ ~/Documents/`
+            # themselves), but the cost of the check is zero.
+            if d.is_symlink():
+                print(
+                    f"  [跳过]   {d.relative_to(PROJECT_ROOT)}/ "
+                    f"是 symlink，拒绝跨 symlink 删除（指向 {d.resolve()}）"
+                )
+                continue
             try:
                 shutil.rmtree(d, ignore_errors=False)
                 print(f"  [已删除] {d.relative_to(PROJECT_ROOT)}/")
