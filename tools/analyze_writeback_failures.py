@@ -14,9 +14,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from collections import Counter
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Round 39 M2 phase-2: reject translation_db.json inputs above 50 MB
+# before ``json.loads``.  Matches the cap used in
+# ``core/translation_db.py`` and ``tools/review_generator.py``.
+_MAX_ANALYSIS_DB_SIZE = 50 * 1024 * 1024
 
 
 FAILURE_TYPES = {
@@ -32,7 +40,21 @@ FAILURE_TYPES = {
 
 
 def analyze(db_path: Path) -> dict:
-    """分析 translation_db.json 中的回写失败条目。"""
+    """分析 translation_db.json 中的回写失败条目。
+
+    Round 39 M2: 拒绝 > 50 MB 的输入文件（warning + 返回空结果）。
+    """
+    # Round 39 M2: size-cap before read.
+    try:
+        file_size = db_path.stat().st_size
+    except OSError:
+        file_size = 0
+    if file_size > _MAX_ANALYSIS_DB_SIZE:
+        logger.warning(
+            "[ANALYSIS] %s too large (%d bytes > %d-byte cap), "
+            "refusing to load", db_path, file_size, _MAX_ANALYSIS_DB_SIZE,
+        )
+        return {"total": 0, "by_type": {}, "samples": {}}
     data = json.loads(db_path.read_text(encoding="utf-8"))
     entries = data.get("entries", []) if isinstance(data, dict) else []
 

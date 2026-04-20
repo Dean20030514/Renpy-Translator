@@ -11,9 +11,19 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Round 39 M2 phase-2: reject translation_db.json inputs above 50 MB
+# before ``json.loads`` reads them.  Legitimate DBs fit in single-digit
+# MB even at tens of thousands of entries; 50 MB+ is almost certainly
+# malformed or attacker-crafted.  Matches the cap used in
+# ``core/translation_db.py`` and the r37 M2 family for consistency.
+_MAX_REVIEW_DB_SIZE = 50 * 1024 * 1024
 
 
 def generate_review_html(
@@ -30,8 +40,19 @@ def generate_review_html(
         show_only_issues: True 则仅显示有 error/warning 的条目
 
     Returns:
-        报告中的条目数
+        报告中的条目数（0 表示 DB 超过 50 MB 软上限或无条目）
     """
+    # Round 39 M2: size-cap before read.
+    try:
+        file_size = db_path.stat().st_size
+    except OSError:
+        file_size = 0
+    if file_size > _MAX_REVIEW_DB_SIZE:
+        logger.warning(
+            "[REVIEW] %s too large (%d bytes > %d-byte cap), "
+            "refusing to load", db_path, file_size, _MAX_REVIEW_DB_SIZE,
+        )
+        return 0
     data = json.loads(db_path.read_text(encoding="utf-8"))
     entries = data.get("entries", []) if isinstance(data, dict) else []
 

@@ -20,6 +20,14 @@ from pipeline.helpers import list_rpy_files, _normalize_ws
 
 logger = logging.getLogger(__name__)
 
+# Round 39 M2 phase-2: reject glossary.json files above 50 MB before
+# ``json.loads`` reads them.  Matches the cap used in
+# ``core/glossary.py`` / ``core/translation_db.py`` for consistency.
+# Exceeding the cap degrades gate checks the same way a malformed
+# glossary does (locked-term / no-translate checks disabled +
+# WARNING in the pipeline log per the r26 H-4 contract).
+_MAX_GATE_GLOSSARY_SIZE = 50 * 1024 * 1024
+
 
 def attribute_untranslated(
     translated_root: Path,
@@ -113,6 +121,19 @@ def evaluate_gate(original_root: Path, translated_root: Path) -> dict:
             base_dir = translated_root.parent
         glossary_path = base_dir / "glossary.json"
         if glossary_path.exists():
+            # Round 39 M2: size-cap before read.  Oversized glossary
+            # triggers the same degradation path as a malformed one
+            # (disables locked-term / no-translate checks with a
+            # WARNING; rest of the gate keeps running).
+            try:
+                glossary_size = glossary_path.stat().st_size
+            except OSError:
+                glossary_size = 0
+            if glossary_size > _MAX_GATE_GLOSSARY_SIZE:
+                raise OSError(
+                    f"glossary.json too large "
+                    f"({glossary_size} bytes > {_MAX_GATE_GLOSSARY_SIZE} cap)"
+                )
             data = json.loads(glossary_path.read_text(encoding="utf-8"))
             glossary_terms = data.get("terms", {}) or None
             locked_list = data.get("locked_terms", [])
