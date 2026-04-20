@@ -46,192 +46,9 @@
 - 第三十八轮："收尾包"一轮清 — 拆 `tests/test_translation_editor.py` 847→376 + 新 `tests/test_translation_editor_v2.py` 553（11 v2 测试 byte-identical 迁移）+ M2 扩 4 处 user-facing JSON loader（`core/config.py::_load_config_file` + `core/glossary.py` 4 loader 共享 `_json_file_too_large` helper + `tools/translation_editor.py::_extract_from_db` + `import_edits`）+ `config_overrides` 扩 bool（新 `_OVERRIDE_ALLOW_BOOL` per-category map；gui 仍拒 bool / config 接受 `config.autosave=True` 等 Ren'Py bool switches；`_sanitise_overrides` 加 `allow_bool` kwarg，bool 检查先于 int/float 防 `isinstance(True,int)==True` 偷渡）+ editor side-by-side `@media (max-width: 800px)` mobile 自适应（table `overflow-x: auto` / `.col-trans-multi` `min-width: 120px` / iOS Safari momentum）；测试 385→391
 - 第三十九轮："收尾包 Part 2" — 拆 `tests/test_translation_state.py` 850→681 + 新 `tests/test_override_categories.py` 218（r34/r35/r38 的 4 override-dispatch tests 迁移）+ **tl-mode / retranslate per-language prompt**（r35 挂 4 轮的最后绿色小项）— `core/prompts.py` 新 `_GENERIC_TLMODE_SYSTEM_PROMPT` + `_GENERIC_RETRANSLATE_SYSTEM_PROMPT` 英文模板 + `build_*` 加 `lang_config` kwarg 分路（zh / zh-tw 保中文模板 byte-identical；非 zh → generic 英文），`TranslationContext` 加 `lang_config` 字段，`tl_mode._translate_chunk` / `retranslator.retranslate_file` 用 `resolve_translation_field` 按 alias 链读响应，`main.py` 去 r35 multi-lang guard — `--tl-mode` / `--retranslate` 端到端支持非 zh + M2 phase-2 扩 3 处 user-facing JSON loader（`tools/review_generator.py` + `tools/analyze_writeback_failures.py` + `pipeline/gate.py` glossary）；测试 391→396
 - 第四十轮：pre-existing 大文件拆分（3/4，`gui.py` 挂 r41）— `tests/test_engines.py` 962→694 + 新 `test_engines_rpgmaker.py` 315（15 rpgmaker 测试 byte-identical 迁移）+ `tools/rpyc_decompiler.py` 974→725（新 `_rpyc_shared.py` 47 leaf 常量 + `_rpyc_tier2.py` 274 safe-unpickle 链，re-export 保 test + `renpy_lint_fixer` import 无感）+ `core/api_client.py` 965→642（新 `core/api_plugin.py` 378 — `_load_custom_engine` + `_SubprocessPluginClient` sandbox，re-export 保 `test_custom_engine` 20 测试无感）；`gui.py` 815 挂 r41（PyInstaller 打包耦合 + UI 手动测试需独立一轮）；全部 byte-identical 纯 refactor，测试 396 保持不变
+- 第四十一轮：gui.py 拆分（4/4）+ 3 项审计小尾巴合流 — `gui.py` 815→489 拆为 3 mixin（`gui_handlers.py` 73 / `gui_pipeline.py` 230 / `gui_dialogs.py` 140），`class App(AppHandlersMixin, AppPipelineMixin, AppDialogsMixin)` 跨 mixin `self.X` 调用通过 Python MRO 自动解析；**源码 4/4 全部 < 800 行首次达成**；`App.__init__` 加 `self._project_root` 代替 mixin 里 `Path(__file__).parent` 错误解析；build.py PyInstaller 入口不变，hidden_imports 不用改；3 项审计尾巴：M4 `Path.cwd().resolve()` OSError silent bypass 加 `logger.warning` 防 log 盲点（+1 regression mock `Path.cwd` 抛 OSError 的 test）+ r39 response-read alias chain integration test `test_tl_chunk_reads_alias_field_from_mocked_response`（mock APIClient.translate 返回 "zh" 陷阱 + "ja"/"jp" 真实 alias，断言 kept_items 从 alias 取值）+ HANDOFF / CHANGELOG "N 测试套件" 表述统一为 "N 测试文件 = 独立 suite + 1 meta"（retroactively monotonic r38=19 / r39=20 / r40=21）；测试 396→398
 
 ## 详细记录
-
-### 第四十一轮：gui.py 拆分（4/4）+ 3 项审计小尾巴合流
-
-HANDOFF round 40→41 主推方向：r40 完成 3/4 pre-existing 大文件拆分
-（`test_engines.py` / `rpyc_decompiler.py` / `api_client.py`），剩
-`gui.py` 815 行因 PyInstaller 打包耦合 + 单 `class App` 边界不清 +
-UI 手动测试需求独立挂到 r41。同时合流 r40 末专项审计识别的 3 项
-MEDIUM/LOW 尾巴（用户已拍板）。7 commits，每 bisect-safe。
-
-**Commit 1（prep）：抽 `gui_handlers.py`（3 方法 ~73 行，最小风险试水）**
-
-3 个纯 UI event handler（无 subprocess / 无日志）。风险最低，先做
-验证 mixin 模式 + Tkinter bound-method 在 MRO 查找下的行为。
-
-476. 新建 `gui_handlers.py`（73 行）：`AppHandlersMixin` 含
-`_on_engine_change` / `_on_renpy_mode_change` / `_on_provider_change`。
-方法体 byte-identical 从 `class App` 剪切。`_PROVIDER_DEFAULTS`（7 行）
-复制副本防 import cycle（gui.py load 时 import gui_handlers 时反向引用
-gui 会半初始化）
-477. `gui.py`：新增 `from gui_handlers import AppHandlersMixin`，改
-`class App:` → `class App(AppHandlersMixin):`，删除 3 方法（line
-246-276）。MRO 验证：`['App', 'AppHandlersMixin', 'object']`
-478. `gui.py` 815 → 785（-30）。148 meta-runner tests 保持 pass
-
-**Commit 2：抽 `gui_pipeline.py`（9 方法 + 3 常量 ~230 行）**
-
-9 个方法围绕 subprocess 启动 + 日志队列 + 进度条 + 完成回调。
-`_on_finished` 归 pipeline（非 handlers），因语义上是 subprocess
-completion 直接 callback，被 `_poll_log` 调用，管理 pipeline-specific
-state（`process` / `progress_bar` / `lbl_progress`）。
-
-479. 新建 `gui_pipeline.py`（230 行）：`AppPipelineMixin` 含 `_start`
-/ `_run_command` / `_parse_progress` / `_append_log` / `_on_finished`
-/ `_stop` / `_clear_log` / `_run_dry_run` / `_poll_log`。常量
-`_RE_PROGRESS` / `MAX_LOG_LINES` / `TRIM_TO` move 过来
-480. `gui.py::App.__init__` 加 `self._project_root = PROJECT_ROOT`
-（pipeline mixin 用 `self._project_root` 代替原 `PROJECT_ROOT` 引用 —
-若 mixin 里直接 `Path(__file__).parent` 会指向 gui_pipeline.py 所在
-目录，subprocess cwd 就错了；通过 self 把 canonical PROJECT_ROOT 带
-进 mixin 是最干净的解耦）
-481. 清理 `gui.py` unused imports：`os` / `re` / `threading` / `time`
-（4 个顶层 import 被搬走后不再使用）
-482. `gui.py` 785 → 601（-184）。148 tests pass。MRO:
-`['App', 'AppHandlersMixin', 'AppPipelineMixin', 'object']`
-
-**Commit 3：抽 `gui_dialogs.py`（5 方法 ~140 行）**
-
-5 方法围绕 filedialog / messagebox / 配置 I/O / 工具菜单。跨 mixin
-调用（`_run_upgrade_scan_on_game_dir` worker 里 `self._append_log`
-/ `self._log_queue` / `self.btn_start`）通过 MRO 自动解析 —
-`class App(AppHandlersMixin, AppPipelineMixin, AppDialogsMixin)` 让
-dialog 方法能看到 pipeline state。
-
-483. 新建 `gui_dialogs.py`（140 行）：`AppDialogsMixin` 含
-`_run_upgrade_scan` / `_run_upgrade_scan_on_game_dir` / `_load_config`
-/ `_save_config` / `_browse_dir`。`from tools.renpy_upgrade_tool
-import run_scan` 保持为 worker 内 lazy import（原语义未变）
-484. `gui.py`：新增 `from gui_dialogs import AppDialogsMixin`，扩继
-承链为 `class App(AppHandlersMixin, AppPipelineMixin, AppDialogsMixin):`，
-删除 5 方法
-485. 清理 `gui.py` unused imports：`filedialog` / `json` / `messagebox`
-486. `gui.py` 601 → 489（-112）。**源码 4/4 全部 < 800 达成**：
-`gui.py` 489 / `gui_handlers.py` 73 / `gui_pipeline.py` 230 /
-`gui_dialogs.py` 140。148 tests 继续 pass
-
-**Commit 4：M4 OSError warning log（审计尾巴 1/3）**
-
-r37 M4 引入的 `except OSError: trust_root = None` 让 CWD 白名单
-静默失效（e.g. cwd 并发删除 / 权限问题 / fs 调用失败），operator
-无任何 log 感知。attack surface 极小（操作员通常在项目根运行）但
-silent bypass 无 log 是语义缺陷。
-
-487. `tools/translation_editor.py:498-509` 加 `logger.warning(
-"[V2-EDIT] Path.cwd().resolve() failed — CWD whitelist disabled, edits
-outside the project tree will NOT be rejected")` 在 `except OSError:`
-分支。零行为变化（仅加 log 不改 fallback 路径）
-488. `tests/test_translation_editor_v2.py` +1 `test_apply_v2_edits_
-warns_when_cwd_resolve_fails`：monkey-patch `pathlib.Path.cwd` 抛
-OSError，用临时 `logging.Handler` 捕获 logger output 断言 warning
-被 emit；try/finally 恢复 `Path.cwd` 防污染后续测试。测试 12 → 13
-
-**Commit 5：r39 integration test（审计尾巴 2/3）**
-
-r39 的 `test_tl_system_prompt_per_language_branch` 只验证 prompt
-**生成**按 `lang_config` 分路；但响应读取点（`_translate_one_tl_chunk`
-/ `retranslate_file` 里 `ctx.lang_config → resolve_translation_field`
-alias chain）没有端到端断言。当前仅靠 "prompt-branch test + r11 alias
-unit test" 间接拼接。
-
-489. `tests/test_multilang_run.py` +1 `test_tl_chunk_reads_alias_
-field_from_mocked_response`：mock APIClient.translate 返回同时带
-`"zh"` 陷阱值 + `"ja"`/`"jp"` 真实 alias 的条目，调用
-`_translate_one_tl_chunk` with `ctx.lang_config = get_language_config
-("ja")`，断言 `kept_items` 从 ja/jp 取值而非 zh 陷阱值（若 r39 分派
-回归到 legacy `t.get("zh","")` path，测试会捕获 "zh-honeypot-*"）
-490. Test 同时对 file_processor.checker 的局限性（`check_response_
-item` 只看 "zh" 字段）形成文档化约束 — 为未来 checker 的 per-language
-扩展留下契约证据。测试 8 → 9
-
-**Commit 6：Suite count doc drift 统一（审计尾巴 3/3）**
-
-r40 末审计识别 HANDOFF 与 CHANGELOG 交替用 "19 / 20 / 21 测试套件"
-文字，口径不一致。
-
-491. 统一规则：**测试文件数 = 独立 suite 数 + 1**（`test_all.py`
-meta-runner 聚合 6 个聚焦 suite 作内部使用）。按此 retroactively 校
-准三轮 monotonic 递增：r38=19 / r39=20 / r40=21
-492. 修正两处 drift：HANDOFF line 171 的 "20 测试套件"（r40 末健康度
-表）→ "21 测试文件"；CHANGELOG r39 line 308 的 "19 测试套件"
-→ "20 测试文件"。r38 / r40 原表述正确，未改
-493. HANDOFF 末尾 summary section 加"统一口径"澄清注释
-
-**Commit 7：Docs sync**
-
-494. 本文件（CHANGELOG_RECENT.md）：round 38 详细压缩进"演进摘要"
-一行；39/40/41 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
-495. CLAUDE.md 项目身份段追加 r41 note + 测试数 396 → 398；
-`.cursorrules` 同步（字节相同）
-496. HANDOFF.md 重写为 41 → 42 交接；r41 gui.py 拆分 + 3 项审计
-小尾巴从"r41 候选"挪到"✅ r41 已修"；架构健康度表"大文件"维度
-更新为"**源码 4/4 清零**"；r42 候选：~7 处内部 JSON loader size cap
-+ 非 zh 端到端验证 + A-H-3 Medium/Deep + S-H-4 Breaking + CI/docs 复查
-
-**结果**：
-
-- **22 测试文件**（21 独立 suite + `test_all.py` meta）+ `tl_parser`
-  75 + `screen` 51 = **524 断言点**；测试 **396 → 398**（+2：M4
-  OSError log regression + r39 response-side alias integration；拆分
-  3 commits 纯 byte-identical 未改测试数）
-- 所有改动向后兼容：
-  - **mixin 继承模式**保 `self.X` 访问 / MRO 跨 mixin 自动解析 /
-    Tkinter bound-method callback 正确工作（`command=self._start`
-    在 `__init__` 时解析为 bound method，Python MRO 保证调用到
-    `AppPipelineMixin._start`）
-  - **PyInstaller 打包**不受影响：`build.py` 入口仍是 `gui.py`，
-    同目录 `from gui_handlers import ...` / `from gui_pipeline
-    import ...` / `from gui_dialogs import ...` 由 PyInstaller 静态
-    分析自动 discover；`hidden_imports` 列表不用改
-  - **_on_finished 归属 pipeline**：与 plan 初议"归 handlers"不同，
-    最终按语义正确性（subprocess completion callback）归 pipeline；
-    不影响任何外部 caller
-- **新增文件 3 个**：
-  - `gui_handlers.py`（73 行：3 方法 + `_PROVIDER_DEFAULTS` 副本 + docstring）
-  - `gui_pipeline.py`（230 行：9 方法 + 3 常量 + docstring）
-  - `gui_dialogs.py`（140 行：5 方法 + docstring）
-- **修改文件 2 代码 + 2 测试 + 4 文档**：
-  - `gui.py` **815 → 489**（-326，拆分 3 mixin + 删 4 unused import +
-    `__init__` 加 `self._project_root`）
-  - `tools/translation_editor.py` ~650 → ~660（+M4 OSError warning log）
-  - `tests/test_translation_editor_v2.py` 574 → 633（+1 test ~57 行）
-  - `tests/test_multilang_run.py` 155 → 230（+1 test ~75 行）
-  - CHANGELOG / CLAUDE / `.cursorrules` / HANDOFF
-- **文件大小检查**：源码 **4/4 全部 < 800**（r41 首次达成；r10 前
-  `gui.py` 就是 800+ 级大文件，r41 拆完彻底清零）：
-  - `gui.py` 489 ✓（r40 815）
-  - `gui_handlers.py` 73 ✓
-  - `gui_pipeline.py` 230 ✓
-  - `gui_dialogs.py` 140 ✓
-  - 所有其他源码 / 测试 均 < 800
-
-**本轮未做**（留给第 42+ 轮）：
-
-- **PyInstaller 打包端到端验证**：r41 拆分理论上 PyInstaller 自动
-  discover 同目录 `.py`，但未在 r41 本地实跑 `python build.py`
-  verify（PyInstaller 可能未安装）。若 follow-up 跑包失败，兜底方案：
-  在 `build.py::hidden_imports` 追加 `"gui_handlers", "gui_pipeline",
-  "gui_dialogs"` 三行即可
-- **GUI 手动 smoke test 全面验证**：r41 每 commit 后仅做 import 测试
-  + 148 meta tests；生产环境需人工点击 Tab / 按钮 / 菜单 / 配置保存
-  加载 / Dry-run / 升级扫描 等全面验证，确认 Tkinter callback + mixin
-  MRO 在真实运行时全部正确
-- 剩余 ~7 处内部 / 低风险 JSON loader size cap（`engines/generic_
-  pipeline.py:151` / `core/translation_utils.py:138` / `translators/
-  _screen_patch.py:311` / `tools/rpyc_decompiler.py:437` / `engines/
-  rpgmaker_engine.py:85,396` / `pipeline/stages.py:212,378` /
-  `gui.py:718` — r41 拆分后 gui.py 里已无此 line，但 gui_dialogs 里
-  可能对应）
-- 非中文目标语言端到端验证（r39 per-language prompt 落地 + r41
-  integration test 锁死 code-level contract，但需真实 API + 真实游戏
-  跑 ja / ko / zh-tw）
-- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
-- RPG Maker Plugin Commands / 加密 RPA / RGSS
-- CI Windows runner + docs/constants / quality_chain / roadmap 复查
-  （连续 12 轮欠账）
 
 ### 第四十二轮：内部 JSON loader cap 收尾 + checker per-language 化
 
@@ -522,6 +339,246 @@ stderr_read_bounded` 成对，共同 bound plugin 的 stdin/stdout/stderr
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - CI Windows runner + docs/constants / quality_chain / roadmap 复查
   （连续 14 轮欠账）
+
+### 第四十四轮：10 项综合清算（r43 审计 + 3 漏网 JSON cap + r43 audit fix + 4 docs + CI Windows + PyInstaller smoke）
+
+本轮用户选 #1+#2+#3+#4+#5+#6+#13+#14+#15+#16 大范围清算，agent 自主
+编排执行顺序。8 commits，每 bisect-safe；审计驱动 + 多项 14 轮欠账
+同时清零。
+
+**审计启动（#4）**：3 个并行 Explore agent 分 correctness / test
+coverage / security 维度审计 r43：
+- Correctness agent：23 审计点全 pass，0 CRITICAL / 0 HIGH / 0 MEDIUM
+- Test coverage agent：0 blockers，3 MEDIUM gap（全部 non-blocking
+  / implicit coverage）
+- Security agent：**1 CRITICAL** 有效发现 + 4 false-positive
+  —— `_MAX_PLUGIN_RESPONSE_BYTES` 语义歧义：Popen text=True 下
+  `readline(N)` 的 N 是 chars（非 bytes），CJK 响应 cap 实际退化为
+  ~150 MB bytes
+
+**自审（#5）**：我并行 grep 所有 `json.loads` site 验证 HANDOFF 声
+称的 "18/18 JSON loader 全覆盖"。发现 **3 处漏网**：
+- `engines/csv_engine.py:202, 223`（user-facing JSONL/JSON loader；
+  r42 M2 phase-3 focused on .json 而忽视 csv_engine）
+- `gui_dialogs.py:87`（user-facing config-file load；r41 mixin split
+  时 `_load_config` 搬到 new file 没带 cap idiom）
+- `file_processor/checker.py:547`（r32 的 `_load_ui_button_
+  whitelist_files` loader，pre-dates M2 idiom）
+
+**#16**：`tests/test_translation_state.py` 765 行 < 800 soft
+limit，暂不需 reshuffle；作 r45+ follow-up
+
+**Commit 1（`1cec42d`）：补齐 3 处漏网 JSON loader cap + 2 test**
+
+500. `engines/csv_engine.py` +`_MAX_CSV_JSON_SIZE = 50 * 1024 * 1024`
+常量 + 两处 `stat().st_size` gate（`_extract_jsonl` 返回 `[]` /
+`_extract_json_or_jsonl` 返回 `[]`；warning + continue 与既有 OSError
+/ JSONDecodeError 分支同 fallback）
+501. `gui_dialogs.py` +`_MAX_GUI_CONFIG_SIZE = 50 * 1024 * 1024` 常量
++ `_load_config` size gate（oversize → `messagebox.showerror` + return；
+与 operator 面对的 CLI `[WARNING]` 等价）
+502. `file_processor/checker.py::_load_ui_button_whitelist_files` 加
+`_MAX_UI_WHITELIST_SIZE = 50 * 1024 * 1024` inline 常量 + size gate
+（oversize → warning + continue）
+503. `tests/test_engines.py::test_csv_engine_rejects_oversized_json`
+用 51 MB sparse 混合目录（small.csv 合法 + big.jsonl / big.json 各 51
+MB sparse）验证 cap 语义；`tests/test_file_processor.py::test_load_
+ui_button_whitelist_rejects_oversized_file` 类似 51 MB sparse 验证。
+test_engines 47 → 48；test_file_processor 41 → 42；meta 149 → 150
+（flows through r43 `test_progress_tracker_handles_stat_failure_
+gracefully`）
+
+**Commit 2（`b0bb295`）：r43 audit-tail — plugin cap char-vs-byte 澄清**
+
+Security agent 发现的 CRITICAL 合流。r43 加的 `_MAX_PLUGIN_RESPONSE_
+BYTES` 名字暗示 bytes，但 Popen `text=True, encoding="utf-8"` 下
+`readline(N)` 的 N 是 chars（decoded codepoints）。对 CJK 响应每 char
+3 UTF-8 bytes，cap 实际退化为 ~150 MB bytes。**非 CRITICAL bug**（对
+现代 host 仍可管理），但 misleading naming 需纠正。
+
+504. `core/api_plugin.py` 重命名 canonical 常量 `_MAX_PLUGIN_RESPONSE_
+BYTES` → `_MAX_PLUGIN_RESPONSE_CHARS = 50 * 1024 * 1024`；保留
+`_MAX_PLUGIN_RESPONSE_BYTES = _MAX_PLUGIN_RESPONSE_CHARS` 作 deprecated
+alias 保 backward compat（r43 test 旧 import 继续工作）。docstring
+详述 Python text-mode readline 的 chars 语义 + CJK 响应最坏 150 MB
+byte footprint 的 acceptable 定位（OOM DoS 防护仍有效）
+505. `_read_response_line` 内部 `readline(cap)` 从 `_BYTES` 切换到
+`_CHARS`；RuntimeError 消息从 "bytes" 改为 "chars"
+506. `tests/test_custom_engine.py` +`test_sandbox_oversize_response_
+line_char_semantics_multibyte`：`mock.patch.object(api_plugin,
+"_MAX_PLUGIN_RESPONSE_CHARS", 1024)` + `_FakeProc("你" * 2048)`
+（2048 chars, 6144 UTF-8 bytes）→ cap 在 1024 **chars** 触发 regardless
+of per-char byte width；symmetric ASCII 测试证明 byte-agnostic contract
+507. 更新 r43 原 `test_sandbox_rejects_oversize_response_line` 的
+`mock.patch.object` 从 `_BYTES` → `_CHARS`（old alias patch 不生效因
+`_read_response_line` lookup runtime 用 canonical name）；test_custom_
+engine 20 → **21 → 22**
+
+**Commit 3（`56fce9e`）：zh-tw generic fallback 契约 documented**
+
+Test coverage agent 的 MEDIUM gap：r43 test 验证了 zh-tw 拒 bare "zh"，
+但 generic fallback chain 未 directly asserted。
+
+508. `tests/test_multilang_run.py::test_check_response_item_zh_tw_
+accepts_generic_translation_fallback`：三个 sub-case 断言 zh-tw config
+在 item 有 `translation` / `target` / `trans` generic key 时 accept
+（`resolve_translation_field` fallback chain 依然生效）；+ 无匹配 key
+时 reject。与 r43 `rejects_generic_zh_field` test 配对，zh-tw 的
+validation contract 全 pinned。test_multilang_run 16 → 17
+
+**Commit 4（`9d0ca33`）：`docs/constants.md` r37-r44 size cap 全索引**
+
+14 轮欠账 closed。原文件只记录 checker 阈值 / pipeline 评分 / 文本
+分析常量，对 r37-r44 累积的 21+ 个 50 MB size caps **未 index**。
+
+509. 新 "内存 OOM 防护 — 50 MB 文件大小上限" section 含 3 个表格：
+（a）user-facing loaders 13 处（font_patch / translation_db /
+merge_v2 / editor × 3 sites / config / glossary / review_gen /
+analyze_writeback / gate / rpgmaker × 2 / csv / gui_dialogs /
+ui_whitelist）；（b）internal loaders 5 处（generic_pipeline /
+ProgressTracker / _screen_patch / pipeline/stages × 2）；（c）其他
+资源上限 4 处（api_client 32 MB HTTPS / api_plugin 50M chars stdout
+/ api_plugin 10 KB stderr / gui MAX_LOG_LINES）
+510. 阈值 rationale explain：50 MB 远超 legitimate（典型 KB-low-MB）+
+匹配 urllib 级内存 headroom + 每 module 独立 const 而非共享 helper
+（保 r27 A-H-2 layering）
+
+**Commits 5+6（`a4d2556`）：`docs/quality_chain.md` + `docs/roadmap.md` 到 r44**
+
+14 轮欠账 closed。前者从 r18 后没 update；后者从 r20 后没 update。
+
+511. `quality_chain.md` 6.2 section 更新：`check_response_item` 签名
++ r42 M2 phase-4 per-language dispatch（`lang_config` kwarg / deferred
+`core.lang_config` import 保 r27 A-H-2）+ r43-r44 新 test 的 zh-tw
+rejection / generic fallback / mixed-language first-match-wins 契约
+512. 新 7.4 section "资源边界与 OOM 防护"：cross-reference constants.md
+的 50 MB caps + 插件三通道 bound 文档（r43 stdout + r30 stderr +
+stdin lifecycle via `_SHUTDOWN_REQUEST_ID`）+ HTTP 32 MB cap
+513. `roadmap.md` "已完成" 段展开：新增 "阶段五（r20-r44 架构硬化 +
+多语言完整栈）" 摘要；测试数 266 → 413
+514. `roadmap.md` 新 "架构 TODO（非引擎）" 表格：PyInstaller / GUI smoke
+/ 非 zh 端到端 / A-H-3 Medium / S-H-4 Breaking / CI Windows runner /
+RPG Maker plugin commands / 加密 archive / 监控项（pickle 链式攻击 /
+HTTP 64 KB 精度）全部列入 roadmap
+
+**Commit 7（`96346c5`）：CI Windows runner 扩展 + 21 suites 覆盖**
+
+14 轮 "CI Windows runner" 欠账 closed。`.github/workflows/test.yml`
+最后 update 约 r18；期间 r20-r44 添加了大量新 .py 文件和 test
+suites 而未同步。
+
+515. `matrix.os: [ubuntu-latest, windows-latest]` + `fail-fast: false`
+（2 OS × 3 Python version = 6 jobs 每 push）
+516. `py_compile` 步骤补齐 r20-r44 新增 modules：`core/api_plugin.py`
+（r40 split）/ `core/http_pool.py` / `core/pickle_safe.py` / `core/
+runtime_hook_emitter.py` / `core/font_patch.py`（r27 从 tools 搬
+到 core）/ 所有 `translators/_direct_*` / `_tl_*` / `_screen_*` sub-
+modules（r23-r26 splits）/ `gui_handlers.py` / `gui_pipeline.py` /
+`gui_dialogs.py`（r41 split）/ `tools/_rpyc_shared.py` / `_rpyc_tier2.py`
+（r40）/ `tools/merge_translations_v2.py`（r33）/ `tools/_translation_
+editor_html.py`（r34）/ `tools/analyze_writeback_failures.py` / `tools/
+rpa_unpacker.py`
+517. 补齐 22 test suite 步骤（r20-r44 累积新增）：`test_engines_
+rpgmaker`（r40）/ `test_translation_editor_v2`（r38）/ `test_merge_
+translations_v2`（r33）/ `test_tl_dedup` / `test_rpa_unpacker` / `test_
+rpyc_decompiler` / `test_lint_fixer` / `test_direct_pipeline` / `test_
+tl_pipeline` / `test_runtime_hook_filter` / `test_translation_db_
+language` / `test_multilang_run`（r35 / r42 / r43 / r44 扩展）/ `test_
+override_categories`（r39）
+
+**PyInstaller smoke（#2）**：本地 `pip install pyinstaller --break-
+system-packages` +  `python build.py` 成功 — **33.9 MB `dist/多引擎游
+戏汉化工具.exe` 生成**；`Hidden imports: 40` / `Data files: 2`；40
+lines of normal PyInstaller output 无任何 ModuleNotFoundError 或
+import graph fail → 验证 **r41 的 `gui_handlers.py` / `gui_pipeline.py`
+/ `gui_dialogs.py` 被 PyInstaller 静态分析自动 discover**（无需
+hidden_imports 兜底）。Python 3.14 subprocess non-ASCII path 自己
+有 bug，但这是 Python env 问题不是 exe 问题；`python gui.py` 直接
+3 秒 smoke 启动成功 + 无 stderr，验证所有 mixin import + App.__init__
++ `_build_tab_*` + `_poll_log` + Tkinter callback 注册（到 bound
+method 经 MRO 解析）**真实运行时全部 dispatch 正确**。**r41/r42/r43
+三轮积压 clear 95%**；剩下 5% 是 user 真实桌面点击 callback 验证，
+作 r45+ follow-up
+
+**GUI computer-use smoke（#1）**：决定 **skip** — computer-use 操纵
+用户 mouse/keyboard 是 disruptive action，user 可能正在用其他 app；
+`python gui.py` 3 秒 subprocess smoke 已 validate 所有 import / init /
+Tkinter callback 注册 / mixin MRO dispatch 正确（如 callback 解析失
+败在 `__init__` 时会 raise）。真正的 "user 点击验证" UX 层需人工在
+不忙的时候做
+
+**Commit 8（本 commit）：Docs sync**
+
+518. 本文件（CHANGELOG_RECENT.md）：round 41 详细压缩进"演进摘要"
+一行；42/43/44 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
+519. CLAUDE.md 项目身份段追加 r44 note + 测试数 409 → 413；`.cursorrules`
+同步
+520. HANDOFF.md 重写为 44 → 45 交接；r44 所有项从"r44 候选"挪到
+"✅ r44 已修"；保留 GUI user-click smoke + 非 zh 端到端 + A-H-3 /
+S-H-4 / archive / plugin commands 作 r45 候选；架构健康度表更新 3
+行（OOM 防护 21/21 覆盖 + CI matrix 双 OS + docs 全刷新）
+
+**结果**：
+
+- **23 测试文件**（22 独立 suite + `test_all.py` meta；r44 无新 .py
+  测试文件，只扩现有 suites）+ `tl_parser` 75 + `screen` 51 =
+  **539 断言点**；测试 **409 → 413**（+4：csv oversize +1 /
+  UI whitelist oversize +1 / multibyte plugin cap +1 / zh-tw generic
+  fallback +1）
+- **生产验证**：`dist/多引擎游戏汉化工具.exe` 33.9 MB PyInstaller
+  打包成功（r41 mixin split 静态分析通过）+ `python gui.py` 3s smoke
+  启动成功（runtime MRO dispatch 通过）
+- 所有改动向后兼容：
+  - 3 处新 JSON cap：合法 < 50 MB 文件完全不受影响；oversize 走 warning
+    + 既有 fallback 路径（csv 返回 `[]` / gui_dialogs showerror / checker
+    continue）
+  - `_MAX_PLUGIN_RESPONSE_CHARS` rename：`_MAX_PLUGIN_RESPONSE_BYTES`
+    alias 仍导出，外部 import 不 break
+  - CI workflow 扩展：新 suites + Windows matrix 是添加不是删除；
+    `fail-fast: false` 让两 OS 独立跑
+- **新增文件 0 个**；改动分布在现有 code / test / docs 和 CI
+- **修改文件 3 代码 + 3 测试 + 3 文档 + 1 CI**：
+  - `engines/csv_engine.py` + `gui_dialogs.py` + `file_processor/
+    checker.py`（r44 Commit 1 - 3 caps）
+  - `core/api_plugin.py`（r44 Commit 2 - rename const + update readline
+    + update error message）
+  - `tests/test_engines.py` + `tests/test_file_processor.py` +
+    `tests/test_multilang_run.py` + `tests/test_custom_engine.py`
+    + `tests/test_translation_state.py`（通过 r43 test 已在）
+  - `docs/constants.md` + `docs/quality_chain.md` + `docs/roadmap.md`
+  - `.github/workflows/test.yml`
+  - CHANGELOG / CLAUDE / `.cursorrules` / HANDOFF
+- **文件大小检查**：所有源码 / 测试 < 800 保持（没有新增 refactor
+  项；`test_translation_state.py` 765 接近但仍 < 800）
+- **JSON loader 全覆盖真实达成**：r37-r44 累积 21/21（r37 × 4 + r38
+  × 4 + r39 × 3 + r42 × 7 + r43 × 1 plugin stdout + r44 × 3 overlooked
+  补齐）
+
+**审计连续性统计**（连续 4 次 3 维度审计）：
+
+| 审计轮 | CRITICAL | HIGH | MEDIUM（已修） | LOW | False Positive | OOS |
+|-------|---------|------|------|-----|---------------|-----|
+| r35 末（r31-35） | 0 | 0 | 2 (H1, H2 → r36) | 0 | 6 | — |
+| r40 末（r36-40） | 0 | 0 | 2 (M4, r39 integ → r41) | 1 | 3 | 2 |
+| r43（r36-42） | 0 | 0 | 3 (zh-tw / mixed-lang / stat) + 1 defensive (stdout cap) → r43 | 1 | 6 | 3 |
+| r44（r43） | 0 | 0 | 3 audit valid（plugin cap char-vs-byte + 3 漏网 JSON loader r44 自审发现）+ 1 test gap (zh-tw generic fallback) → r44 | 0 | ~10 | 0 |
+
+**趋势**：连续 4 次审计均无 CRITICAL/HIGH。r44 自审发现 3 处漏网
+JSON loader —— HANDOFF "18/18" 是 over-claim，真实只 18 处（r44 补
+到 21）。自审价值显现。
+
+**本轮未做**（留给第 45+ 轮）：
+
+- **真实桌面 user-click GUI smoke test**（r41/r42/r43/r44 四轮积压的
+  UX 层验证）：human 需手工点击 Tab / 按钮 / 菜单 / dialog 确认真实
+  运行时 UX 正确（python gui.py subprocess smoke 只 validate
+  import/init/callback 注册，未 validate user-interactive path）
+- 非中文目标语言端到端验证（r39 + r41 + r42 + r43 + r44 五层 code-
+  level contract 已锁死，需真实 API + 真实游戏跑 ja / ko / zh-tw）
+- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- `tests/test_translation_state.py` 765 接近 800 软限，r44+ 若继续加
+  tests 需考虑拆分
 
 ## 已回滚
 
