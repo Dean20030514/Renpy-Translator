@@ -139,3 +139,4 @@ if __name__ == "__main__":
 - **Shutdown**：`{"request_id": -1}` + 关闭 stdin
 - **超时**：宿主使用 `APIConfig.timeout`（默认 180s）；超时则 `proc.kill()` + `wait(2)` 清理
 - **stderr 截断**：插件异常退出时宿主读取 stderr tail（< 10KB），错误消息 ≤ 600 字符（round 30 防 OOM 加固）
+- **stdout per-line cap**：Round 43 + 44 给 `_SubprocessPluginClient._read_response_line` 加 `_MAX_PLUGIN_RESPONSE_CHARS = 50 * 1024 * 1024` 字符上限（**单位是 chars 不是 bytes** — Popen `text=True` 模式下 `readline(N)` 的 N 计算解码后的字符数；CJK 响应最坏字节数 ~150 MB）。超 cap 但无 newline 的响应被当 malformed 拒绝，raise `RuntimeError` 走宿主的 error-wrap 路径。与 stderr cap 配对 bound plugin 两条输出通道，防 OOM DoS。

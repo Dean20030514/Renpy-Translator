@@ -69,6 +69,36 @@ retranslate_file()（translators/retranslator.py）
   │   └─ 排除 auto/hover/idle 定义行、image 路径行、screen 布局属性行
   ├─ build_retranslate_chunks()：每 chunk ≤ 20 行漏翻行 + ±3 行上下文，合并重叠区间
   ├─ 专用 retranslate prompt（>>> 标记行必须翻译，上下文仅参考）
+  │   └─ Round 39: build_retranslate_system_prompt(lang_config=) 按
+  │       lang_config.code 分路 — zh / zh-tw 保中文模板 byte-identical；
+  │       非 zh（ja / ko）用 generic 英文模板
   ├─ 原地补翻，.bak 自动备份（不覆盖已有）
   └─ 独立进度文件 retranslate_progress.json
 ```
+
+## Response Checker（`file_processor::check_response_item`）
+
+Round 42 M2 phase-4 为 checker 加 `lang_config` kwarg（default None）:
+
+```
+check_response_item(item, line_offset=0, placeholder_re=None, lang_config=None):
+  ├─ 原文非空检查
+  ├─ 译文非空检查
+  │   ├─ lang_config=None (r41 default): zh = item.get("zh", "")  # 硬编码路径
+  │   └─ lang_config=<LanguageConfig> (r42 per-language):
+  │        zh = resolve_translation_field(item, lang_config) or ""
+  │        # 按 lang_config.field_aliases 顺序查 → fallback generic
+  │        # ["translation", "target", "trans"]
+  ├─ 占位符集合一致性
+  └─ 不通过 → 返回 warnings list，caller 丢弃（保留原文计漏翻）
+```
+
+**调用路径**：
+- tl_mode `_translate_one_tl_chunk` 传 `ctx.lang_config`（r39）
+- generic_pipeline chunk loop 传 `lang_config=lang_config`（r42）
+- 其他 direct-mode / retranslate / screen 路径默认 `None`（zh 硬编码）
+
+**Round 43-r44 测试契约**：
+- zh-tw 拒 bare `"zh"` 字段（`field_aliases` 不含，防 Simplified/Traditional 混淆）
+- zh-tw 接受 generic `"translation"` / `"target"` / `"trans"` 字段
+- Mixed-language item（`{"ja": "x", "ko": "y"}`）按 `field_aliases` first-match
