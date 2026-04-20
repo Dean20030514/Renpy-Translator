@@ -1,0 +1,43 @@
+# Default: normalise line endings to LF in repo, leave working-tree
+# untouched on checkout.  Project docs target cross-platform use but
+# the development baseline is Windows (CLAUDE.md), and commits via
+# bash on msys2/git-bash consistently emit the
+# "LF will be replaced by CRLF" warning when autocrlf=true — this
+# .gitattributes makes the policy explicit rather than letting every
+# commit attempt re-warn.
+* text=auto
+
+# Source code — LF in repo (works on all platforms; Windows editors
+# like VS Code / Cursor handle LF fine)
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+
+# Windows-specific batch / PowerShell scripts — keep CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+
+# Explicitly binary — never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.rpa binary
+*.rpyc binary
+*.pyc binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.exe binary
+*.dll binary
+
+# Test fixtures / game samples — binary-safe
+tests/**/*.rpa binary
+tests/**/*.rpyc binary
