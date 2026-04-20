@@ -40,6 +40,36 @@
 | 第十七轮 | 项目结构深度重构 | 根目录 25→5 .py：core/(7模块) + translators/(6模块) + tools/(扩充3模块)，消除 re-export 兼容层 + 循环依赖，162 测试全绿 |
 | 第十八轮 | 预处理工具链 + 翻译增强 | RPA 解包 + rpyc 反编译（双层策略）+ Ren'Py lint 集成 + 文件级并行翻译 + locked_terms 预替换 + 跨文件去重 + Hook 模板，测试 162→225 |
 | 第十九轮 | 翻译后工具链 + 插件系统 | RPA 打包 + HTML 交互式校对 + 自定义翻译引擎 + 默认语言设置 + Lint 流水线集成 + JSON 解析失败拆分重试，测试 225→267 |
+| 第二十轮 | CRITICAL 修复 + 治理文档 | pipeline 悬空 import 三处 + pickle RCE 三处（白名单）+ ZIP Slip 防护 + CONTRIBUTING/SECURITY，测试 266→280 |
+| 第二十一轮 | Top 5 HIGH 收敛 | HTTP 连接池（~90s 节省）+ ProgressTracker 双锁解串行 + API Key 走 subprocess env + HTTP 重试 mock + P1 快照单调性，测试 280→286 |
+| 第二十二轮 | 测试基础 + 响应体上限 | `MAX_API_RESPONSE_BYTES = 32MB` + `read_bounded` 共享工具 + T-C-3 direct_pipeline + T-H-2 tl_pipeline 集成测试，测试 286→286 |
+| 第二十三轮 | A-H-4 Part 1 | `translators/direct.py` 1301→584 + 子模块 `_direct_chunk` / `_direct_file` / `_direct_cli`，286 测试零回归 |
+| 第二十四轮 | A-H-4 Part 2 | `translators/tl_mode.py` 928→558 + `tl_parser.py` 1106→532 + 子模块拆分，286 测试零回归 |
+| 第二十五轮 | 七项 HIGH/MEDIUM 收敛 | A-H-1 尾巴 + A-H-6 UsageStats.to_dict + S-H-3 api_key_file 校验 + PF-H-2 direct log 句柄 + PF-C-2 validator 正则预编译 + T-H-1/T-H-3 新测试，测试 286→288 |
+| 第二十六轮 | 综合包 A+B+C | TranslationDB 三件套（RLock + 原子写 + line=0 + dirty flag）+ RPA 大小检查 + RPYC 白名单同步 + stages/gate 可见化 + screen.py 拆分 + quality_report 加锁 + patcher 反向索引 + RateLimiter 批量清理，测试 288→293 |
+| 第二十七轮 | 分层收尾 | A-H-2 3 wrapper 下沉 `file_processor/checker.py` + A-H-5 `tools/font_patch.py` → `core/font_patch.py`，测试 293 保持 |
+| 第二十八轮 | A-H-3 Minimal 路由 + S-H-4 Dual-mode 插件沙箱 | `main.py` 潜伏 `os` bug 修复 + `--sandbox-plugin` opt-in，测试 293→301 |
+| 第二十九轮 | Priority B 持续优化 | `tests/test_all.py` 2539 拆为 5 聚焦 suite + 49 行 meta-runner（113 tests/1 命令）+ `tools/patch_font_now.py:27` bug 修复 + TEST_PLAN/dataflow_pipeline 刷新，测试 301 保持 |
+| 第三十轮 | 冷启动审计 4 项 | `_SubprocessPluginClient` stderr 10 KB 上限 + Popen atexit 兜底 + http_pool except 收窄 + retranslator.quality_report 死代码清理，测试 301→302 |
+| 第三十一轮 | 竞品 hook_template 3 技巧 | checker UI 白名单 / 占位符漂移修正 / strip_tags L5 fallback + inject_hook.rpy 模板 + `--emit-runtime-hook` CLI，测试 302→307 |
+| 第三十二轮 | UI 白名单 + v2 schema + 字体打包 + gui/config override | sidecar JSON 可配置 + `--runtime-hook-schema v2` 嵌套多语言 + emit 时拷 `tl_inject.ttf` + `zz_tl_inject_gui.rpy` init 999 覆盖 + Commit 1 prep（`default_resources_fonts_dir` helper 修 2 处 `__file__.parent` bug），测试 307→326 |
+| 第三十三轮 | v2 多语言工具链补齐 | `merge_translations_v2.py` 合并工具 + `--font-config` 透传 runtime hook + `translation_editor.py` v2 envelope 适配 + 拆 `test_translation_state.py` 运行时 hook 测试到新 `test_runtime_hook.py`，测试 326→346 |
+| 第三十四轮 | TranslationDB schema v2 + 多语言 | `language` 字段 + 4-tuple 索引 + `has_entry`/`filter_by_status`/`upsert_entry` language-aware + editor HTML dropdown 多语言切换 + `_OVERRIDE_CATEGORIES` 泛化，测试 346→363 |
+| 第三十五轮 | 多语言外循环 + side-by-side | `ProgressTracker` language namespace + `--target-lang zh,ja,zh-tw` 逗号分隔 + main.py 外层循环 + editor checkbox 切换 side-by-side 多列 + `_OVERRIDE_CATEGORIES` 注册 `config_overrides`，测试 363→376 |
+| 第三十六轮 | 深度审计 H1+H2 | H1 跨语言 bare-key 污染 + H2 `_sanitise_overrides` isfinite 过滤，测试 376→378 |
+| 第三十七轮 | M 级防御加固包 M1-M5 | M1 TranslationDB.load() partial v2 backfill + M2 4 处 JSON loader 50 MB cap + M3 main.py try/finally restore + M4 CWD path whitelist + M5 empty-cell SKIP 语义，测试 378→385 |
+| 第三十八轮 | "收尾包"一轮清 | 拆 test_translation_editor.py 847→376 + 新 test_translation_editor_v2.py + M2 扩 4 处 + `config_overrides` 扩 bool + editor side-by-side mobile @media，测试 385→391 |
+| 第三十九轮 | "收尾包 Part 2" | 拆 test_translation_state.py 850→681 + tl-mode/retranslate per-lang prompt（r35 挂起绿色小项）+ M2 phase-2 × 3，测试 391→396 |
+| 第四十轮 | pre-existing 大文件拆 3/4 | `tests/test_engines.py` 962→694 + `tools/rpyc_decompiler.py` 974→725 + `core/api_client.py` 965→642；`gui.py` 815 挂 r41，纯 refactor 396 保持 |
+| 第四十一轮 | gui.py 拆 4/4 mixin 收官 + 3 项审计尾巴 | `gui.py` 815→489 拆为 `gui_handlers.py`/`gui_pipeline.py`/`gui_dialogs.py`（MRO mixin 架构）+ M4 OSError warning log + r39 alias integration test + suite count 口径统一，测试 396→398 |
+| 第四十二轮 | 内部 JSON loader cap 收尾 + checker per-language 化 | rpgm × 2 + 3 progress + 2 pipeline reports cap（原声称 18/18）+ `check_response_item` `lang_config` kwarg + 调用点透传 + 5 regression tests，测试 398→405 |
+| 第四十三轮 | r36-r42 累计三维度专项审计 | 3 audit agent（correctness/tests/security）发现 3 test gap（zh-tw / mixed-lang / stat fallback）+ 1 defensive（plugin stdout 50 MB cap），0 CRITICAL/HIGH，测试 405→409 |
+| 第四十四轮 | r43 审计 + 10 项综合清算 + 14 轮欠账 closed | 3 漏网 JSON cap（csv × 2 / gui_dialogs / ui_whitelist，真实 21/21）+ plugin cap rename `_CHARS` 澄清语义 + zh-tw generic fallback test + docs/constants/quality_chain/roadmap 三大刷新 + CI Windows matrix + PyInstaller build 33.9 MB exe 成功 + gui.py 3s smoke 成功，测试 409→413 |
+| 第四十五轮 | 综合维护（测试拆分 / 审计 / docs / CI / hooks 等） | test_file_processor 830→560 拆 UI whitelist → test_ui_whitelist.py + .gitattributes LF policy + 扩 .gitignore + build.py --clean + pre-commit hook + docs/constants 扩 pricing+rate_limit+retry + 其他 docs 复查 + CI shell 一致性 + rpyc_decompiler:416 audit fix，测试 413+ |
+
+> **注**：r20-r44 的详细轮次内容（功能/增强/修复分组、具体 commit、技术决策）见
+> [CHANGELOG_RECENT.md](../CHANGELOG_RECENT.md) 近 3 轮详细段 + `git log`
+> commit 历史。本 FULL 只保留总览表以控制文档规模。
 
 ---
 
