@@ -39,169 +39,9 @@
 - 第三十一轮：从竞品 renpy_hook_template 提炼 3 项技巧 — checker UI 白名单 / 占位符漂移修正 / strip_tags L5 fallback + inject_hook.rpy 模板（270 行）+ `--emit-runtime-hook` opt-in CLI（core/runtime_hook_emitter.py + 4 管线 tail 统一调用）；测试 302→307
 - 第三十二轮：round 31 续做全包 — UI 白名单可配置化（sidecar JSON + `--ui-button-whitelist`）+ 字体自动打包（emit 时拷 `game/fonts/tl_inject.ttf`）+ `translations.json` v2 多语言 schema（`--runtime-hook-schema v2` + `RENPY_TL_INJECT_LANG` env 选运行时语言）+ Commit 1 prep（抽 `default_resources_fonts_dir` helper 修 `direct.py:523` / `_tl_patches.py:88` 两处 `__file__.parent` 少一层 bug）；测试 307→326
 - 第三十三轮：round 32 延续三小项全包 — `tools/merge_translations_v2.py`（v2 多语言合并工具，独立 260 行纯 stdlib）+ `--font-config` 透传 runtime hook（生成 `zz_tl_inject_gui.rpy` `init 999` 覆盖 gui 字号/布局，`RENPY_TL_INJECT=1` env guard 安全）+ `tools/translation_editor.py` v2 envelope 适配（`--v2-lang` 选 bucket 编辑）+ Commit 4 prep 拆 `test_translation_state.py` 运行时 hook 测试到新 `test_runtime_hook.py`（791 行，21 测试）；测试 326→346
+- 第三十四轮：round 33 延续三小项全包 — `TranslationDB` schema v2 + `language` 字段 + 4-tuple 索引（`has_entry` / `filter_by_status` / `upsert_entry` language-aware；v1→v2 `load()` 强制回填防 duplicate-bucket 膨胀）+ `tools/translation_editor.py` HTML dropdown 同页多语言切换（per-lang `_edits` 状态 + 切换时 flush 保 pending）+ `_translation_editor_html.py` 模板抽离（368 行）+ `_OVERRIDE_CATEGORIES` 泛化 override 分派表（仅注册 gui，为 r35 config 扩展留点）+ Commit 1 prep `build_translations_map::entry_language_filter` 防 v2 emit 跨 bucket 污染；测试 346→363
 
 ## 详细记录
-
-### 第三十四轮：round 33 延续三小项 — TranslationDB language 字段 + editor 同页多语言 + override 分派表
-
-HANDOFF round 33 挂起的三项"🟢 自然延续 round 33 方向（小项）"本轮按用户
-指定一次全做。Plan agent 审查时发现 5 大风险（2 CRITICAL + 3 HIGH），用户
-批准的 5-commit 修订方案全部吸收风险缓解。每个 commit bisect-safe。
-
-**Commit 1 · Prep（de-risk）：`build_translations_map` `entry_language_filter`**
-
-366. `core/runtime_hook_emitter.py::_iter_translation_pairs` + `build_translations_map`
-+ `emit_runtime_hook` 新增 `entry_language_filter: str | None = None` 参数。
-filter=None 时零行为变化（round 33 byte-identical）。filter 非 None 时只
-保留 `entry.get("language") == filter` 或 `language` 字段缺失（None bucket，
-对应 v1 legacy 条目）的 entries，丢弃其他 language 字符串
-367. `emit_if_requested` 在 v2 schema 路径下计算 `entry_lang_filter =
-args.target_lang` 并透传；v1 路径保持 None（flat schema 无 language 维度）
-368. 新独立文件 `tests/test_runtime_hook_filter.py`（90 行，不进 meta-runner）：
-   - `test_build_translations_map_filters_by_language`（zh/ja filter + 混合
-     buckets + v2 envelope 输出验证）
-   - `test_build_translations_map_filter_none_means_no_filter`（round-33
-     回归 guard + legacy no-language 形态仍工作）
-   避开 `tests/test_runtime_hook.py` 791 行的 800 软上限
-
-**Commit 2 · Subtask 1（最大）：`TranslationDB` schema v2 + `language` 字段**
-
-369. `core/translation_db.py` 194 → 305 行：
-   - `SCHEMA_VERSION = 2`（从 1 bump）
-   - 构造器新增 `default_language: Optional[str] = None` kwarg
-   - `_index` key 从 3-tuple `(file, line, original)` 改为 4-tuple
-     `(file, line, original, language_or_None)`；None 是独立 bucket（非通配）
-   - `upsert_entry` 自动回填：`default_language` 非空且 entry 无 `language`
-     → shallow-copy + 盖章；caller 显式 language 始终胜出
-   - `has_entry(file, line, original, language=None)` + `filter_by_status(
-     ..., language=None)` 新增 language kwarg；None 精确匹配（非 wildcard），
-     3-参 旧调用 shape 向后兼容
-   - `save()` 始终写 `version=2`；`load()` 检测 v1 数据 + caller 非空
-     `default_language` → **强制回填**所有无 `language` 字段的 entry；
-     `_dirty=True` 让下次 save 持久化回填结果；防"(file,line,orig,None)
-     与 (file,line,orig,zh) 双份"DB 膨胀
-   - 新 `_entry_language(entry)` 静态 helper 规范化 language 字段
-370. 所有生产调用者透传 `default_language=args.target_lang`（8 处）：
-`pipeline/stages.py` 4 处（retranslate_db / pilot_db / project_db merge 目标
-/ sub_db merge 源）+ `translators/direct.py:139` + `translators/tl_mode.py:180`
-+ `translators/retranslator.py:375` + `engines/generic_pipeline.py:239`
-371. `engines/generic_pipeline.py:260-265` resume index 从 `(file, original)`
-2-tuple 改为 `(file, original, language)` 3-tuple；查询 `target_lang` 优先
-→ fallback None bucket（兼容 pre-r34 DB）→ miss = 重新翻译。防止 zh 运行
-误 resume ja 翻译
-372. 新独立测试文件 `tests/test_translation_db_language.py`（307 行，10 tests，
-不进 meta-runner）：
-   - upsert 显式 language / autofill from default / 同 key 不同 language
-     分 bucket 存 / None vs 字符串 language 区分 / filter_by_status
-     language kwarg / save+load v2 roundtrip / load v1 无 default 保 None /
-     load v1 有 default 回填（**关键 duplicate-prevention 检查**）/
-     default_language=None 等价 round 33 / save version bump 2
-   每一条都带 tempfile + 原子行为断言
-
-**Commit 3 · Subtask 2：editor 同页多语言切换 + HTML template 抽取**
-
-373. `tools/translation_editor.py::_extract_from_v2_envelope` 给每条 entry
-加 `languages: {lang: trans}` 完整 bucket dict；HTML 用这个作切语言的
-baseline。`export_html` safe_entries 白名单加入 `languages` key 以随
-metadata JSON 传到浏览器
-374. **Prep 抽取**（强制执行：改动后 translation_editor.py 达 893 行超 800
-限制）：新增 `tools/_translation_editor_html.py`（368 行），把
-`_HTML_TEMPLATE = r"""..."""` 常量整体移入作 `HTML_TEMPLATE` 导出；原
-文件 `from tools._translation_editor_html import HTML_TEMPLATE as
-_HTML_TEMPLATE`，其余字节不变。主文件回到 549 行
-375. HTML toolbar 新增 `<label id="v2-lang-switch-label" style="display:none">`
-包 `<select id="v2-lang-switch">`；JS 检测 v2 source 后枚举 `v2_langs_seen`
-填充 options + 显示 label。非 v2 flow（tl/db source）label 保持隐藏零干扰
-376. 新 JS 状态：`_currentV2Lang`（当前编辑语言）+ `_edits[idx][lang]`
-（per-row per-lang 待提交 edit 存储）。input 事件除了更新 DOM 也写入
-`_edits[i][_currentV2Lang]`，保证切语言不丢失已输入但未导出的 edits
-377. 新 JS 函数：
-   - `initV2UI()` 替换 round 33 的 `initV2Banner` — 不仅显示 banner 还
-     populate dropdown 并 bind change handler
-   - `_getRowBaseline(idx, lang)` / `_applyRowFromEdits(tr, idx, lang)`
-     辅助：从 `META[idx].languages` 取 baseline；按 pending edit or
-     baseline 重绘 col-trans 单元格；更新 dirty/empty/stats flags
-   - `switchV2Language(newLang)` 切换：(a) flush 当前 DOM 的 in-flight
-     edit 到 `_edits[idx][oldLang]`；(b) 遍历 v2 rows 用新 lang 重绘；
-     (c) 更新 banner 的 `<code id="v2-banner-lang">` 文字
-378. `exportEdits()` 改 per-(idx, lang) 迭代 `_edits`（v2 路径）+ 保留
-per-row DOM-read（非 v2 路径）。一个 original 同时编辑 3 语言 → 导出
-3 条独立 record，每条带对应 `v2_lang`；`_apply_v2_edits` 早已 per-lang
-处理所以后端侧无需改动
-379. `--v2-lang LANG` CLI 语义从"排它性单语言"改为"**初始默认语言**"，
-向后兼容（现有 `--v2-lang zh` 调用仍产出合法 HTML，只是多了个 dropdown）
-380. `tests/test_translation_editor.py` +3（16 → 19）：
-   - `test_extract_from_v2_exposes_full_languages_dict`（每 entry 的
-     `languages` 完整 bucket）
-   - `test_v2_html_includes_language_switch_dropdown`（扫 HTML 找
-     dropdown 元素 + `switchV2Language` / `_edits` / `_currentV2Lang`
-     标记 + metadata JSON 的 `languages` 字段）
-   - `test_export_edits_multi_language_produces_per_lang_records`（同
-     original 多语言 edits 写回各自 bucket 不互扰）
-
-**Commit 4 · Subtask 3：font-config 泛化分派表（只注册 gui）**
-
-381. `core/runtime_hook_emitter.py` 新模块级 `_OVERRIDE_CATEGORIES:
-dict[str, re.Pattern]` 分派表；**今天只注册** `"gui_overrides":
-_SAFE_GUI_KEY`。docstring 明确解释为何不注册 `style_overrides`（与
-`inject_hook.rpy:34-37` 项目级设计选择冲突："不走 style 对象
-monkey-patch"）
-382. `_sanitise_gui_overrides` → 泛化为 `_sanitise_overrides(overrides,
-key_regex, category_name)`，category_name 只作 warning 标签。旧名保留
-为 thin back-compat wrapper 调新版
-383. `_emit_gui_overrides_rpy` → 泛化为 `_emit_overrides_rpy(output_game_
-dir, font_config)` 遍历 `_OVERRIDE_CATEGORIES` 累加安全 key/value 到一
-个合并字典 → 单一 `init 999 python:` 块写入 `zz_tl_inject_gui.rpy`。
-旧名保留为 thin wrapper 把 single overrides dict 包成 font_config shape
-384. `emit_runtime_hook` 的 font_config 分支改调 `_emit_overrides_rpy`
-（非未来再修一次）。文件名 `zz_tl_inject_gui.rpy` 保持 round 33 兼容
-385. `tests/test_translation_state.py` +2（13 → 15）：
-   - `test_sanitise_overrides_unknown_category_ignored`（font_config 带
-     `nvl_overrides` / `config_overrides` 未注册 sub-dict 被静默丢弃）
-   - `test_override_categories_table_is_extensible`（identity check:
-     `_OVERRIDE_CATEGORIES["gui_overrides"] is _SAFE_GUI_KEY`；正负样例
-     守护 regex 不被回归放宽）
-
-**Commit 5 · Docs 同步**
-
-386. 本文件（CHANGELOG_RECENT.md）：round 31 详细压缩进"演进摘要"一行；
-32/33/34 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
-387. CLAUDE.md 项目身份段追加 round 34 新能力（DB language 字段、editor
-同页多语言、override 分派表）+ 测试数 346 → 363；`.cursorrules` 同步
-388. HANDOFF.md 重写为 34 → 35 交接（测试 363、16 测试套件、round 33
-延续三项全部 ✅）
-
-**结果**：
-- 16 测试套件 + `tl_parser` 75 + `screen` 51 全绿；测试 **346 → 363**
-  （+2 C1 / +10 C2 / +3 C3 / +2 C4，合计 +17）
-- 所有新能力向后兼容：`TranslationDB(path)` 旧 2-参构造 = round-33 byte-
-  identical；`has_entry(file, line, orig)` 3-参 = round-33 byte-identical；
-  v1 DB 文件 + 无 default_language caller = 不做回填保 None bucket；
-  editor `--v2-lang` CLI 仍产出合法 HTML
-- 新增文件 3 个：
-  - `tests/test_runtime_hook_filter.py`（90 行 Commit 1 独立 suite）
-  - `tests/test_translation_db_language.py`（307 行 Commit 2 独立 suite）
-  - `tools/_translation_editor_html.py`（368 行 Commit 3 prep 抽取）
-- 修改文件 10 个：核心 DB / 4 pipeline+translator 调用者 / generic_pipeline
-  resume index / runtime_hook_emitter 多次扩展 / translation_editor 多语言
-  UI / test_translation_state 加 2 test / test_translation_editor 加 3
-  test / test_runtime_hook 注释指针 / 本 CHANGELOG / CLAUDE / HANDOFF
-- **所有源文件仍 < 800 行**（最大 translation_editor.py 555 / runtime_hook_
-  emitter.py 634 / test_translation_state.py 571 / test_runtime_hook.py 794）
-- `has_entry(..., language=...)` / `filter_by_status(..., language=...)`
-  / `TranslationDB(path, default_language=...)` / `build_translations_map(
-  ..., entry_language_filter=...)` 均为新扩展点，default 保 round-33 语义
-
-**本轮未做**（留给第 35+ 轮）：
-- 同次翻译运行产出多语言（需把 `translators/direct.py` / `tl_mode.py`
-  的内循环改为按语言迭代；DB schema 已 ready）
-- editor 多语言**同行**并列显示（3 列各一语言）— 目前 dropdown 切换是
-  单列显示；多列需要 HTML 表格 schema 扩展
-- `_OVERRIDE_CATEGORIES` 新注册 category（需要 Ren'Py init-timing 分析）
-- A-H-3 Medium/Deep / S-H-4 Breaking（需真实 API + 游戏验证）
-- RPG Maker Plugin Commands / 加密 RPA / RGSS
-- CI Windows runner + docs/constants/quality_chain/roadmap 复查（连续 5
-  轮欠账）
 
 ### 第三十五轮：round 34 延续三小项 — 同次多语言输出 + editor side-by-side + 新 override category
 
@@ -498,6 +338,167 @@ progress 数据语义被动变化是 surprising，显式更新常量 + docstring
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - CI Windows runner + docs/constants / quality_chain / roadmap 复查
   （连续 7 轮欠账）
+
+### 第三十七轮：M 级防御加固包（M1+M2+M3+M4+M5）
+
+r35 深度审计挂起的 5 项 Medium-level 防御加固，HANDOFF round 36→37
+建议打包一轮。本轮按用户拍板的"M 级防御包"方向全做，纯 fix + 防御
+加固、不加新功能。用户额外同意把 M2 范围从 HANDOFF 原列的 3 处扩到 4
+处（含 `tools/translation_editor.py::_apply_v2_edits:445`，理由：该
+函数读操作员控制的 v2_path，与 M4 路径白名单互补）。6 commits，每
+commit bisect-safe。
+
+**Commit 1：Fix M1 `TranslationDB.load()` backfill 覆盖 partial v2 文件**
+
+`core/translation_db.py::load()` r34 的强制回填只在 `version <
+SCHEMA_VERSION` 分支触发（即 v1 文件迁移 v2 时）。手编 v2 DB 或第
+三方工具产出的 v2 文件若仍有部分 entry 缺 `language` 字段，永远
+留在 None bucket；后续 `upsert_entry` 按 default_language 自动填新
+entry → None bucket 与 zh bucket 并存，duplicate-bucket 漂移。
+
+411. `core/translation_db.py::load()` 去掉 `version < SCHEMA_VERSION`
+gate：只要 `default_language` 非空且有 entry 缺 `language` 字段就
+backfill。新增 `any_backfilled` 局部 flag 精准控制 `_dirty` 只在
+实际有回填时标记（避免 already-complete v2 文件被误标 dirty）
+412. `tests/test_translation_db_language.py` +1 `test_load_backfills_
+v2_entries_missing_language`（~40 行）：handcraft v2 DB 混合 "有
+language" + "缺 language" 条目，断言两者最终都标 zh；control 组
+`default_language=None` 保持原样不回填。`run_all()` 注册 meta→11
+
+**Commit 2：Fix M2 JSON loader 50 MB size cap（4 处站点）**
+
+4 处用户面向的 JSON 读取路径先全读 file → `json.loads`，对 attacker
+crafted 或误供巨型文件会 OOM 进程。每处加 module-level 50 MB 常量
+ + 读前 `path.stat().st_size` 检查：
+
+413. `core/font_patch.py::load_font_config` 加 `_MAX_FONT_CONFIG_SIZE
+= 50 * 1024 * 1024`；oversize → warning + return `{}`
+414. `core/translation_db.py::TranslationDB._MAX_DB_FILE_SIZE = 50MB`；
+oversize → warning + entries/index/dirty 全清 + 保 on-disk 不覆盖
+（镜像现有 "corrupt file" 分支语义，让 operator 能人工恢复）
+415. `tools/merge_translations_v2.py::_MAX_V2_ENVELOPE_SIZE = 50MB`；
+oversize → raise `MergeError` → CLI 传播 exit=1
+416. `tools/translation_editor.py::_MAX_V2_APPLY_SIZE = 50MB`（M4 白
+名单后第二层防御：即使 CWD-rooted 路径过大也拒）；oversize → warning
++ skip 该 path 下所有 edits
+417. `tests/test_runtime_hook_filter.py` +2（font_patch + _apply_v2_
+edits，scope 扩到 "safety / filter overflow"，文件头 docstring 同步）
+418. `tests/test_translation_db_language.py` +1（db load）；
+`tests/test_merge_translations_v2.py` +1（merge cli + library 双断
+言）。共 4 新测试，全用 51 MB sparse file（`f.seek(51<<20-1); f.write
+(b'\\0')`）—— OS-dep 磁盘分配，但 stat() 报全尺寸，size gate 触发
+在 read 前，测试在 NTFS / ext4 均能工作
+
+**Commit 3：Fix M3 `main.py` 外循环末尾 args 状态恢复**
+
+r35 的 multi-lang 外循环（`main.py:342`）每 iteration 改 `args.target_
+lang` + `args.lang_config`，循环结束残留最后一个 language。当前无 post-
+loop reader，但未来加 reporting / integration test 会踩。
+
+419. `main.py:342-353` 外循环前 `_saved_target_lang / _saved_lang_config
+= args.*`；try/finally 包 for 循环，finally 内 restore。~12 行。
+保留循环体完全不变。无新测试：`main()` 带 mocked engine 的 plumbing
+成本 > 6 行 save/restore 的可读性收益，per "最小改动" skip
+
+**Commit 4：Fix M4 `_apply_v2_edits::v2_path` CWD 路径白名单**
+
+`tools/translation_editor.py::_apply_v2_edits` 读 edit dict 的
+`v2_path` 后直接 open + write。不可信 edits.json（钓鱼下载 / 其他
+workspace 的旧文件）能把 v2_path 指向 `/etc/passwd` 或
+`C:\Windows\System32\...`，只要目标碰巧 parse 成 v2 envelope 就被覆
+盖。威胁模型 LOW-MEDIUM（r36 审计核实）但加一层防御足够便宜。
+
+420. `_apply_v2_edits` 函数顶部算 `trust_root = Path.cwd().resolve()`；
+for-loop 遍历 edit 时 `Path(v2_path).resolve().relative_to(trust_root)`
+失败（`ValueError`）→ warning + skip 该 edit。非 raise 因单个 bad edit
+不应 abort 整批 import。docstring 同步加两条 skip 原因（M2 size / M4
+whitelist）
+421. `tests/test_translation_editor.py` +1 `test_apply_v2_edits_
+rejects_path_outside_cwd`（~35 行）：混合 batch（CWD-rooted + 系统
+tempdir），断言 outside 被 skip + 文件字节不变 + CWD-rooted 合法
+edit 仍 apply
+422. 3 个 pre-existing v2-apply 测试 (`test_import_to_v2_envelope` /
+`test_export_edits_multi_language_produces_per_lang_records` /
+`test_v2_envelope_preserves_non_edited_languages`) 用 `tempfile.
+TemporaryDirectory()` 默认 OS-tempdir（POSIX `/tmp` / Windows
+`%LOCALAPPDATA%\\Temp`），M4 白名单会拒。改为 `tempfile.TemporaryDirectory
+(dir=str(Path.cwd()))` 让它们 CWD-rooted。零测试语义改变，只是
+选址调整
+
+**Commit 5：Fix M5 空字符串 cell 语义文档化 + side-by-side UI tooltip**
+
+side-by-side 编辑中 operator 清空某 cell → `exportEdits()` 产出
+`new_translation: ""`；Python 侧 `_apply_v2_edits` 现有 `not new_trans.
+strip()` guard silently skip。semantic 其实是 intentional（防止空白
+删字导致意外 destructive），但未文档化，operator 看不出来。
+
+423. `_apply_v2_edits` docstring +1 段：明确 empty-string = SKIP 非
+DELETE；要删 bucket 请直接编辑 v2 JSON；side-by-side toolbar 有
+tooltip 提示
+424. `tools/_translation_editor_html.py` side-by-side label 加
+`title="Empty cells are skipped on import (not treated as a delete).
+To remove a translation bucket, edit the v2 JSON file directly."`。
+1 行 attribute 追加
+425. `tests/test_translation_editor.py` +1 `test_side_by_side_label_
+has_empty_string_hint_tooltip`（~15 行）：直接 assert `HTML_TEMPLATE`
+常量含 `title="Empty cells are skipped` + "edit the v2 JSON file
+directly"。不需 tempdir / export roundtrip
+
+**Commit 6：Docs sync**
+
+426. 本文件（CHANGELOG_RECENT.md）：round 34 详细压缩进"演进摘要"
+一行；35/36/37 保留详细
+427. CLAUDE.md 项目身份段追加 r37 M1-M5 note + 测试数 378 → 385；
+`.cursorrules` 同步（字节相同）
+428. HANDOFF.md 重写为 37 → 38 交接；M1-M5 从"r37 候选"挪到"✅ r37
+已修"；保留 pre-existing 4 大文件 + r35 绿色小项 + r37 其他 JSON
+loader（未在 M2 四处内的）作 r38 候选；架构健康度表"防御加固"
+状态更新
+
+**结果**：
+- 18 测试套件 + `tl_parser` 75 + `screen` 51 内建自测全绿；测试 **378 → 385**
+  （+1 M1 + 4 M2 + 0 M3 + 1 M4 + 1 M5 = +7）
+- 所有改动向后兼容：
+  - M1：已完整填 language 的 v2 文件完全不受影响（`any_backfilled`
+    flag 只在实际回填时标 dirty）
+  - M2：合法大小文件（< 50 MB）完全不受影响
+  - M3：`main()` 调用方无变化，外部 API byte-identical
+  - M4：CWD-rooted 的 v2_path 完全不受影响（production 场景下 v2
+    envelope 本来就在 `<project>/output/` 下运行）
+  - M5：纯文档 + tooltip 追加，无行为改变（empty-string skip 语义
+    从 r33 就在）
+- 新增文件 0 个；修改文件 5 代码 + 2 测试 + 4 文档：
+  - `core/translation_db.py` 305 → 332（+M1 +M2）
+  - `core/font_patch.py` 161 → 185（+M2）
+  - `tools/merge_translations_v2.py` 284 → 301（+M2）
+  - `tools/translation_editor.py` 620 → 677（+M2 +M4 +M5 docstring）
+  - `main.py` 358 → 370（+M3）
+  - `tools/_translation_editor_html.py` label title（+~100 chars）
+  - `tests/test_translation_db_language.py` 307 → 374
+  - `tests/test_merge_translations_v2.py` 294 → 325
+  - `tests/test_runtime_hook_filter.py` 146 → 211
+  - `tests/test_translation_editor.py` 751 → 847（越 800 软限 47 行，
+    r38 建议拆分 — 标注在 HANDOFF 未做列表）
+  - CHANGELOG / CLAUDE / .cursorrules / HANDOFF
+- 文件大小检查：`tests/test_translation_editor.py` 847 行已越 800 软
+  限（r37 加 M4 + M5 测试 + 3 处 tempdir dir=cwd 调整共 96 行净增导致），
+  建议 r38 拆分（参 r33 `test_runtime_hook.py` 拆分 precedent）。源码
+  全部 < 800
+
+**本轮未做**（留给第 38+ 轮）：
+- `tests/test_translation_editor.py` 810 行越 800 软限，拆分（建议 r38）
+- Pre-existing 4 个源文件 > 800 行（`tools/rpyc_decompiler.py` 974 /
+  `core/api_client.py` 965 / `tests/test_engines.py` 962 / `gui.py` 815）
+- 其他 JSON loader（M2 未覆盖的站点：`core/config.py:105` /
+  `core/glossary.py:119,139,211,231` / `pipeline/stages.py:212,378` /
+  `pipeline/gate.py:116` / `engines/rpgmaker_engine.py:85,396` / 等共
+  ~10 处）的 size cap 扩展
+- r35 原候选的 3 项绿色小项：tl-mode / retranslate per-lang prompt /
+  `config_overrides` 值类型扩 bool / editor side-by-side mobile 自适应
+- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- CI Windows runner + docs/constants / quality_chain / roadmap 复查
+  （连续 8 轮欠账）
 
 ## 已回滚
 
