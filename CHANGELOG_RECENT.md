@@ -42,169 +42,9 @@
 - 第三十四轮：round 33 延续三小项全包 — `TranslationDB` schema v2 + `language` 字段 + 4-tuple 索引（`has_entry` / `filter_by_status` / `upsert_entry` language-aware；v1→v2 `load()` 强制回填防 duplicate-bucket 膨胀）+ `tools/translation_editor.py` HTML dropdown 同页多语言切换（per-lang `_edits` 状态 + 切换时 flush 保 pending）+ `_translation_editor_html.py` 模板抽离（368 行）+ `_OVERRIDE_CATEGORIES` 泛化 override 分派表（仅注册 gui，为 r35 config 扩展留点）+ Commit 1 prep `build_translations_map::entry_language_filter` 防 v2 emit 跨 bucket 污染；测试 346→363
 - 第三十五轮：round 34 延续三小项全包 — `ProgressTracker` 加 `language` kwarg + `_key()` namespace（`"<lang>:<rel_path>"` key，保 bare-key fallback 兼容 r34 progress.json resume）+ `main.py::_parse_target_langs` 解析 `--target-lang zh,ja,zh-tw` 逗号分隔多语言（外层 `engine.run` 循环 + `--tl-mode` / `--retranslate` 多语言 guard 因 prompt 中文专用）+ `tools/_translation_editor_html.py` `toggleSideBySide` / `_bindSideBySideCellEvents` + `.col-trans-multi` CSS 做 side-by-side 多列并列显示（dropdown 保留共存，flush-before-toggle 保 pending 不丢）+ `_OVERRIDE_CATEGORIES` 注册第二个 category `config_overrides`（扁平 `config.X = int|float` 仅，为 r38 bool 扩展留点）+ 新独立 suite `tests/test_multilang_run.py`；测试 363→376
 - 第三十六轮：深度审计驱动的 2 个 edge-case bug 修复（纯 fix 无新功能）— H1 `ProgressTracker` 跨语言 bare-key 污染（非 zh language-aware tracker 不再读/写 bare bucket；新增 class 常量 `_LEGACY_BARE_LANG = "zh"` 标注 pre-r35 implicit owner + `mark_file_done` 镜像守卫防非 zh 清 bare 数据）+ H2 `_sanitise_overrides` 加 `math.isfinite` 过滤拒收 `float('inf')/'-inf'/'nan'`（防 `repr(inf)='inf'` 写入 `init python:` block 致 Ren'Py 启动 NameError）；2 regression 测试；测试 376→378
+- 第三十七轮：HANDOFF round 36→37 预规划的 M 级防御加固包（M1-M5）— M1 `TranslationDB.load()` 去 `version < SCHEMA_VERSION` gate 让 partial v2 文件缺 `language` 字段的 entry 也 backfill + M2 4 处用户面 JSON loader 加 50 MB size cap（`font_patch.load_font_config` / `translation_db.load` / `merge_translations_v2._load_v2_envelope` / `translation_editor._apply_v2_edits`）+ M3 `main.py` 外层 multi-lang 循环 try/finally restore `args.target_lang` / `lang_config` + M4 `_apply_v2_edits` 加 `Path.cwd().resolve()` path whitelist 防钓鱼 edits.json + M5 空串 cell = SKIP 语义文档化 + side-by-side label 加 tooltip；5 fix + 1 docs commits，+7 regression 测试；测试 378→385
 
 ## 详细记录
-
-### 第三十七轮：M 级防御加固包（M1+M2+M3+M4+M5）
-
-r35 深度审计挂起的 5 项 Medium-level 防御加固，HANDOFF round 36→37
-建议打包一轮。本轮按用户拍板的"M 级防御包"方向全做，纯 fix + 防御
-加固、不加新功能。用户额外同意把 M2 范围从 HANDOFF 原列的 3 处扩到 4
-处（含 `tools/translation_editor.py::_apply_v2_edits:445`，理由：该
-函数读操作员控制的 v2_path，与 M4 路径白名单互补）。6 commits，每
-commit bisect-safe。
-
-**Commit 1：Fix M1 `TranslationDB.load()` backfill 覆盖 partial v2 文件**
-
-`core/translation_db.py::load()` r34 的强制回填只在 `version <
-SCHEMA_VERSION` 分支触发（即 v1 文件迁移 v2 时）。手编 v2 DB 或第
-三方工具产出的 v2 文件若仍有部分 entry 缺 `language` 字段，永远
-留在 None bucket；后续 `upsert_entry` 按 default_language 自动填新
-entry → None bucket 与 zh bucket 并存，duplicate-bucket 漂移。
-
-411. `core/translation_db.py::load()` 去掉 `version < SCHEMA_VERSION`
-gate：只要 `default_language` 非空且有 entry 缺 `language` 字段就
-backfill。新增 `any_backfilled` 局部 flag 精准控制 `_dirty` 只在
-实际有回填时标记（避免 already-complete v2 文件被误标 dirty）
-412. `tests/test_translation_db_language.py` +1 `test_load_backfills_
-v2_entries_missing_language`（~40 行）：handcraft v2 DB 混合 "有
-language" + "缺 language" 条目，断言两者最终都标 zh；control 组
-`default_language=None` 保持原样不回填。`run_all()` 注册 meta→11
-
-**Commit 2：Fix M2 JSON loader 50 MB size cap（4 处站点）**
-
-4 处用户面向的 JSON 读取路径先全读 file → `json.loads`，对 attacker
-crafted 或误供巨型文件会 OOM 进程。每处加 module-level 50 MB 常量
- + 读前 `path.stat().st_size` 检查：
-
-413. `core/font_patch.py::load_font_config` 加 `_MAX_FONT_CONFIG_SIZE
-= 50 * 1024 * 1024`；oversize → warning + return `{}`
-414. `core/translation_db.py::TranslationDB._MAX_DB_FILE_SIZE = 50MB`；
-oversize → warning + entries/index/dirty 全清 + 保 on-disk 不覆盖
-（镜像现有 "corrupt file" 分支语义，让 operator 能人工恢复）
-415. `tools/merge_translations_v2.py::_MAX_V2_ENVELOPE_SIZE = 50MB`；
-oversize → raise `MergeError` → CLI 传播 exit=1
-416. `tools/translation_editor.py::_MAX_V2_APPLY_SIZE = 50MB`（M4 白
-名单后第二层防御：即使 CWD-rooted 路径过大也拒）；oversize → warning
-+ skip 该 path 下所有 edits
-417. `tests/test_runtime_hook_filter.py` +2（font_patch + _apply_v2_
-edits，scope 扩到 "safety / filter overflow"，文件头 docstring 同步）
-418. `tests/test_translation_db_language.py` +1（db load）；
-`tests/test_merge_translations_v2.py` +1（merge cli + library 双断
-言）。共 4 新测试，全用 51 MB sparse file（`f.seek(51<<20-1); f.write
-(b'\\0')`）—— OS-dep 磁盘分配，但 stat() 报全尺寸，size gate 触发
-在 read 前，测试在 NTFS / ext4 均能工作
-
-**Commit 3：Fix M3 `main.py` 外循环末尾 args 状态恢复**
-
-r35 的 multi-lang 外循环（`main.py:342`）每 iteration 改 `args.target_
-lang` + `args.lang_config`，循环结束残留最后一个 language。当前无 post-
-loop reader，但未来加 reporting / integration test 会踩。
-
-419. `main.py:342-353` 外循环前 `_saved_target_lang / _saved_lang_config
-= args.*`；try/finally 包 for 循环，finally 内 restore。~12 行。
-保留循环体完全不变。无新测试：`main()` 带 mocked engine 的 plumbing
-成本 > 6 行 save/restore 的可读性收益，per "最小改动" skip
-
-**Commit 4：Fix M4 `_apply_v2_edits::v2_path` CWD 路径白名单**
-
-`tools/translation_editor.py::_apply_v2_edits` 读 edit dict 的
-`v2_path` 后直接 open + write。不可信 edits.json（钓鱼下载 / 其他
-workspace 的旧文件）能把 v2_path 指向 `/etc/passwd` 或
-`C:\Windows\System32\...`，只要目标碰巧 parse 成 v2 envelope 就被覆
-盖。威胁模型 LOW-MEDIUM（r36 审计核实）但加一层防御足够便宜。
-
-420. `_apply_v2_edits` 函数顶部算 `trust_root = Path.cwd().resolve()`；
-for-loop 遍历 edit 时 `Path(v2_path).resolve().relative_to(trust_root)`
-失败（`ValueError`）→ warning + skip 该 edit。非 raise 因单个 bad edit
-不应 abort 整批 import。docstring 同步加两条 skip 原因（M2 size / M4
-whitelist）
-421. `tests/test_translation_editor.py` +1 `test_apply_v2_edits_
-rejects_path_outside_cwd`（~35 行）：混合 batch（CWD-rooted + 系统
-tempdir），断言 outside 被 skip + 文件字节不变 + CWD-rooted 合法
-edit 仍 apply
-422. 3 个 pre-existing v2-apply 测试 (`test_import_to_v2_envelope` /
-`test_export_edits_multi_language_produces_per_lang_records` /
-`test_v2_envelope_preserves_non_edited_languages`) 用 `tempfile.
-TemporaryDirectory()` 默认 OS-tempdir（POSIX `/tmp` / Windows
-`%LOCALAPPDATA%\\Temp`），M4 白名单会拒。改为 `tempfile.TemporaryDirectory
-(dir=str(Path.cwd()))` 让它们 CWD-rooted。零测试语义改变，只是
-选址调整
-
-**Commit 5：Fix M5 空字符串 cell 语义文档化 + side-by-side UI tooltip**
-
-side-by-side 编辑中 operator 清空某 cell → `exportEdits()` 产出
-`new_translation: ""`；Python 侧 `_apply_v2_edits` 现有 `not new_trans.
-strip()` guard silently skip。semantic 其实是 intentional（防止空白
-删字导致意外 destructive），但未文档化，operator 看不出来。
-
-423. `_apply_v2_edits` docstring +1 段：明确 empty-string = SKIP 非
-DELETE；要删 bucket 请直接编辑 v2 JSON；side-by-side toolbar 有
-tooltip 提示
-424. `tools/_translation_editor_html.py` side-by-side label 加
-`title="Empty cells are skipped on import (not treated as a delete).
-To remove a translation bucket, edit the v2 JSON file directly."`。
-1 行 attribute 追加
-425. `tests/test_translation_editor.py` +1 `test_side_by_side_label_
-has_empty_string_hint_tooltip`（~15 行）：直接 assert `HTML_TEMPLATE`
-常量含 `title="Empty cells are skipped` + "edit the v2 JSON file
-directly"。不需 tempdir / export roundtrip
-
-**Commit 6：Docs sync**
-
-426. 本文件（CHANGELOG_RECENT.md）：round 34 详细压缩进"演进摘要"
-一行；35/36/37 保留详细
-427. CLAUDE.md 项目身份段追加 r37 M1-M5 note + 测试数 378 → 385；
-`.cursorrules` 同步（字节相同）
-428. HANDOFF.md 重写为 37 → 38 交接；M1-M5 从"r37 候选"挪到"✅ r37
-已修"；保留 pre-existing 4 大文件 + r35 绿色小项 + r37 其他 JSON
-loader（未在 M2 四处内的）作 r38 候选；架构健康度表"防御加固"
-状态更新
-
-**结果**：
-- 18 测试套件 + `tl_parser` 75 + `screen` 51 内建自测全绿；测试 **378 → 385**
-  （+1 M1 + 4 M2 + 0 M3 + 1 M4 + 1 M5 = +7）
-- 所有改动向后兼容：
-  - M1：已完整填 language 的 v2 文件完全不受影响（`any_backfilled`
-    flag 只在实际回填时标 dirty）
-  - M2：合法大小文件（< 50 MB）完全不受影响
-  - M3：`main()` 调用方无变化，外部 API byte-identical
-  - M4：CWD-rooted 的 v2_path 完全不受影响（production 场景下 v2
-    envelope 本来就在 `<project>/output/` 下运行）
-  - M5：纯文档 + tooltip 追加，无行为改变（empty-string skip 语义
-    从 r33 就在）
-- 新增文件 0 个；修改文件 5 代码 + 2 测试 + 4 文档：
-  - `core/translation_db.py` 305 → 332（+M1 +M2）
-  - `core/font_patch.py` 161 → 185（+M2）
-  - `tools/merge_translations_v2.py` 284 → 301（+M2）
-  - `tools/translation_editor.py` 620 → 677（+M2 +M4 +M5 docstring）
-  - `main.py` 358 → 370（+M3）
-  - `tools/_translation_editor_html.py` label title（+~100 chars）
-  - `tests/test_translation_db_language.py` 307 → 374
-  - `tests/test_merge_translations_v2.py` 294 → 325
-  - `tests/test_runtime_hook_filter.py` 146 → 211
-  - `tests/test_translation_editor.py` 751 → 847（越 800 软限 47 行，
-    r38 建议拆分 — 标注在 HANDOFF 未做列表）
-  - CHANGELOG / CLAUDE / .cursorrules / HANDOFF
-- 文件大小检查：`tests/test_translation_editor.py` 847 行已越 800 软
-  限（r37 加 M4 + M5 测试 + 3 处 tempdir dir=cwd 调整共 96 行净增导致），
-  建议 r38 拆分（参 r33 `test_runtime_hook.py` 拆分 precedent）。源码
-  全部 < 800
-
-**本轮未做**（留给第 38+ 轮）：
-- `tests/test_translation_editor.py` 810 行越 800 软限，拆分（建议 r38）
-- Pre-existing 4 个源文件 > 800 行（`tools/rpyc_decompiler.py` 974 /
-  `core/api_client.py` 965 / `tests/test_engines.py` 962 / `gui.py` 815）
-- 其他 JSON loader（M2 未覆盖的站点：`core/config.py:105` /
-  `core/glossary.py:119,139,211,231` / `pipeline/stages.py:212,378` /
-  `pipeline/gate.py:116` / `engines/rpgmaker_engine.py:85,396` / 等共
-  ~10 处）的 size cap 扩展
-- r35 原候选的 3 项绿色小项：tl-mode / retranslate per-lang prompt /
-  `config_overrides` 值类型扩 bool / editor side-by-side mobile 自适应
-- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
-- RPG Maker Plugin Commands / 加密 RPA / RGSS
-- CI Windows runner + docs/constants / quality_chain / roadmap 复查
-  （连续 8 轮欠账）
 
 ### 第三十八轮："收尾包"一轮清（测试拆 + M2 扩 + config bool + mobile CSS）
 
@@ -505,6 +345,132 @@ tree + DB，属集成测试范畴）
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - CI Windows runner + docs/constants / quality_chain / roadmap 复查
   （连续 10 轮欠账）
+
+### 第四十轮：pre-existing 大文件拆分（3/4，gui.py 挂 r41）
+
+HANDOFF round 39→40 主推方向：拆分 4 个 pre-existing > 800 行源文件
+（r31-39 均未触碰，最老可追溯到 r10 前）。`gui.py` (815 行) 因
+PyInstaller 打包耦合 + 单 class 内部边界不清 + UI 代码手动测试要求，
+风险显著高于其他三个——本轮优先做风险低的 3 个，`gui.py` 挂 r41
+独立一轮专门做（含 `build.py` 打包回归）。4 commits，每 bisect-safe，
+全部是纯结构 refactor（byte-identical extraction + re-export 保
+向后兼容），零行为变化 / 零新测试。
+
+**Commit 1（prep）：拆 `tests/test_engines.py` RPG Maker 块**
+
+r10 前就形成的 962 行测试文件。RPG Maker MV/MZ 是自包含的 engine
+slice（独立导入 `engines.rpgmaker_engine` + `core.glossary`，自带
+2 个 tempdir 辅助函数 `_make_rpgm_mv_dir` / `_make_rpgm_mz_dir`）—
+clean cut point。
+
+463. 新建 `tests/test_engines_rpgmaker.py`（315 行，15 测试 + 2
+helper + main runner）：`test_rpgm_detect_mv` / `_mz` / `_false` /
+`_find_data_dir` / 4 event-command extraction 测试（401 merge / 102
+choices / 405 scroll / 320 name change）/ `_extract_database` /
+`_extract_system` / 2 writeback 测试 / `_patch_by_json_path` /
+`_navigate_to_node` / `test_glossary_scan_rpgmaker`
+464. `tests/test_engines.py` 瘦身到 694 行（962 → 694），剩 47 测试
+（EngineProfile / TranslatableUnit / EngineDetector / RenPyEngine /
+EngineBase / CSV Engine / generic_pipeline / patcher-checker / prompts
+addon）
+465. 两文件均 `< 800` ✓；test 总数 62 保持（47 + 15）；meta-runner
+`test_all.py` 不受影响（test_engines 作独立 suite）
+
+**Commit 2：拆 `tools/rpyc_decompiler.py` 974 → 725（-249）**
+
+HANDOFF 建议"Tier1 + Tier2 两条反编译链可拆"。实际拆分采用 3-module
+布局避免循环 import（主 re-exports from Tier 2 requires Tier 2 import
+first but Tier 2 imports shared constants → shared must be a leaf）：
+
+466. 新建 `tools/_rpyc_shared.py`（47 行）：`RPYC2_HEADER` /
+`_AST_SLOT` 格式常量 + `_SHARED_WHITELIST` / `_WHITELIST_TIER1_PY2_
+EXTRAS` pickle 白名单（r26 H-4 "no drift" 契约的源头数据）
+467. 新建 `tools/_rpyc_tier2.py`（274 行）：`_DummyClass` stub +
+`_RestrictedUnpickler` 白名单 unpickler + `_read_rpyc_data` slot
+reader + `_safe_unpickle` + `_extract_text_from_node` AST walker +
+`extract_strings_from_rpyc` 公共入口；从 `_rpyc_shared` 导入常量
+（leaf-only，无循环）
+468. `tools/rpyc_decompiler.py` 974 → 725 行：保留 Tier 1（game-python
+helper template + `_render_decompile_helper` + `_run_decompile_with_
+game_python`）/ Errors / 平台+版本检测 / 公共 API（`decompile_game`
+/ `extract_strings_standalone`）/ CLI；末尾 re-export Tier 2 的 6
+个符号 + `_rpyc_shared` 的 4 个常量让 `tests/test_rpyc_decompiler.py`
+（18 测试 import 6 个 Tier 2 符号 + `_SHARED_WHITELIST` by 老名）+
+`tools/renpy_lint_fixer.py`（import `_find_renpy_python`）完全不用
+改
+469. 零行为变化；18 rpyc 测试 + renpy_lint_fixer 依赖全保
+
+**Commit 3：拆 `core/api_client.py` 965 → 642（-323）**
+
+提取 custom plugin loader surface（`_load_custom_engine` legacy
+importlib mode + `_SubprocessPluginClient` round-28 S-H-4 JSONL
+subprocess sandbox）到新模块。剩下 APIClient 主类 + 5 provider
+dispatch（xAI / OpenAI / DeepSeek / Claude / Gemini）+ APIConfig /
+UsageStats / RateLimiter 继续留在主文件。
+
+470. 新建 `core/api_plugin.py`（378 行）：`_CUSTOM_ENGINES_DIR`
+常量 + `_load_custom_engine` 函数（签名 + 文件名 security check +
+interface contract validation）+ `_SubprocessPluginClient` 完整类
+（包括 r28 初始化 + r30 `atexit` 异常兜底 + stderr 10 KB 上限 +
+`_SHUTDOWN_REQUEST_ID` + `close()` + `__del__` finaliser）
+471. `core/api_client.py` 965 → 642 行：原 "Custom engine plugin
+loader" section 替换为一行 import + 4-行 re-export block
+（`_load_custom_engine`, `_SubprocessPluginClient`）让
+`tests/test_custom_engine.py`（20 测试 import 2 符号 by 老名）
+完全不用改
+472. 零行为变化；20 custom-engine 测试全绿；APIClient.__init__
+的 duck-typed plugin dispatch（`config.sandbox_plugin` 分支）
+通过 re-export 名 lookup 保工作
+
+**Commit 4：Docs sync**
+
+473. 本文件（CHANGELOG_RECENT.md）：round 37 详细压缩进"演进摘要"
+一行；38/39/40 保留详细
+474. CLAUDE.md 项目身份段追加 r40 note + 测试数 396 保持（纯
+refactor）；`.cursorrules` 同步
+475. HANDOFF.md 重写为 40 → 41 交接；r40 三项拆分从"r40 候选"挪到
+"✅ r40 已修"；保留 `gui.py` 815 行 + 其余 ~7 处内部 JSON loader +
+A-H-3 Medium/Deep 等作 r41 候选；架构健康度表"大文件"维度更新为"全
+源码 < 800 except gui.py 815（PyInstaller 打包耦合，r41 独立一轮）"
+
+**结果**：
+- 21 测试套件 + `tl_parser` 75 + `screen` 51 = **522 断言点**；测试
+  **396 保持**（纯 refactor，byte-identical 拆分）
+- 所有改动向后兼容：
+  - rpyc_decompiler.py re-export Tier 2 符号 + shared 常量 → 老调用
+    无感
+  - api_client.py re-export `_load_custom_engine` +
+    `_SubprocessPluginClient` → 老调用无感
+  - test_engines.py 拆 rpgmaker → 新 suite 独立跑，总 test 数不变
+- 新增文件 4 个：
+  - `tools/_rpyc_shared.py`（47 行，leaf constants）
+  - `tools/_rpyc_tier2.py`（274 行，safe-unpickle chain）
+  - `core/api_plugin.py`（378 行，custom plugin loader + sandbox）
+  - `tests/test_engines_rpgmaker.py`（315 行，15 rpgmaker 测试）
+- 修改文件 3 代码 + 4 文档：
+  - `tools/rpyc_decompiler.py` 974 → 725（-249）
+  - `core/api_client.py` 965 → 642（-323）
+  - `tests/test_engines.py` 962 → 694（-268）
+  - CHANGELOG / CLAUDE / .cursorrules / HANDOFF
+- 文件大小检查：源码 3/4 从 >800 降到 <800；`gui.py` 815 仍保持
+  （r41 候选）。所有测试文件继续 < 800（r39 拆 test_translation_state
+  的遗产）
+
+**本轮未做**（留给第 41+ 轮）：
+- **`gui.py` 815 行**（PyInstaller 打包耦合 + 单 `class App` 内部
+  难以清晰分边界 + UI 代码自动化测试覆盖不到 → 建议 r41 独立一轮，
+  配合 `build.py` 回归手动验证）
+- 剩余 ~7 处内部 / 低风险 JSON loader size cap（`engines/generic_
+  pipeline.py:151` / `core/translation_utils.py:138` / `translators/
+  _screen_patch.py:311` / `tools/rpyc_decompiler.py:437` /
+  `engines/rpgmaker_engine.py:85,396` / `pipeline/stages.py:212,378`
+  / `gui.py:718`）
+- 非中文目标语言的端到端验证（r39 per-language prompt 落地，需真实
+  API + 真实游戏跑）
+- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- CI Windows runner + docs/constants / quality_chain / roadmap 复查
+  （连续 11 轮欠账）
 
 ## 已回滚
 
