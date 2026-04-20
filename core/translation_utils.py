@@ -64,11 +64,18 @@ class TranslationContext:
 
     注意：并发路径（ThreadPoolExecutor）中不应直接修改 all_warnings，
     而是通过 ChunkResult 返回 warnings，由主线程串行合并。
+
+    Round 39: ``lang_config`` 字段让 tl-mode / retranslate 的 chunk
+    处理函数知道目标语言，用 :func:`core.lang_config.resolve_translation_
+    field` 从 AI 响应里按 alias 读取译文（原 `t.get("zh", "")` 硬编码
+    替代）。``None`` 保 r38 byte-identical（direct-mode 内部不走这条
+    路径，tl-mode / retranslate 以前本来就只产出中文）。
     """
     client: object              # APIClient 实例
     system_prompt: str          # 当前翻译的系统 prompt
     rel_path: str               # 当前文件相对路径（用于 user_prompt 构建）
     locked_terms_map: "dict[str, str]" = field(default_factory=dict)  # {英文术语: 中文译名}，用于预替换保护
+    lang_config: "object | None" = None  # Round 39: target language config for multi-lang tl-mode/retranslate
 
 
 # ============================================================

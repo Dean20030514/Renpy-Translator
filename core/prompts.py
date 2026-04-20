@@ -422,12 +422,96 @@ RETRANSLATE_SYSTEM_PROMPT = """\
 ⚠️ 每个 `>>>` 标记行都必须翻译，遗漏比误翻更严重。"""
 
 
-def build_retranslate_system_prompt(glossary_text: str = "") -> str:
+_GENERIC_RETRANSLATE_SYSTEM_PROMPT = """\
+You are a professional game translator specialising in Ren'Py visual
+novel scripts.  You will receive a snippet of a partially translated
+script in which lines needing translation are marked with ``>>>``.
+
+Target language: {target_language} ({native_name})
+
+{translation_instruction}
+
+## Task
+Translate every line prefixed with ``>>>``.  Unmarked lines are context
+to help you understand the scene — do NOT translate them.
+
+## Rules
+- Every ``>>>`` line MUST be translated; skipping is a worse failure than
+  mistranslating.
+- ``[variable]`` bracketed variable names stay verbatim.
+- ``{{{{tag}}}}`` Ren'Py text tags stay verbatim.
+- ``%(name)s`` format placeholders stay verbatim.
+- ``{{{{#identifier}}}}`` menu-choice identifiers stay verbatim.
+- Preserve ``\\n`` newline count and position.
+- Translate naturally into {target_language}; maintain the original
+  tone, emotion, and register.
+
+{style_notes}
+
+{glossary_block}
+
+## Output Format
+Return a JSON array where each element is:
+- ``line``: 1-based line number (matching the chunk's ``>>> Nnnn|`` markers)
+- ``original``: the exact English source text (no outer quotes)
+- ``{field}``: the translated text in {target_language}
+
+```json
+[
+  {{"line": 236, "original": "So, what's for dinner?", "{field}": "…"}},
+  {{"line": 238, "original": "She smiled warmly.",    "{field}": "…"}}
+]
+```
+
+Return ONLY the raw JSON array — no markdown fences, no commentary,
+no reasoning trace.  Missing a marked line is worse than a clumsy
+translation."""
+
+
+def build_retranslate_system_prompt(
+    glossary_text: str = "",
+    lang_config: object = None,
+) -> str:
+    """Build the retranslate-mode system prompt.
+
+    Round 39: accepts an optional ``lang_config`` and branches by
+    target-language code.  ``None`` or ``zh`` / ``zh-tw`` → the existing
+    Chinese template (byte-identical r38 behaviour).  Other languages
+    (``ja`` / ``ko`` / etc.) → a new generic English template that
+    instructs the model to emit the ``{lang_config.glossary_field}``
+    field with the translation in ``{lang_config.name}``; the reader in
+    :func:`translators.retranslator.retranslate_file` uses
+    :func:`core.lang_config.resolve_translation_field` to pick the value
+    back up.
+    """
+    lang_code = getattr(lang_config, "code", "zh") if lang_config else "zh"
+    if lang_code in ("zh", "zh-tw"):
+        # Chinese path: preserve existing template byte-identical (the
+        # production-validated prompt worth keeping stable).
+        if glossary_text:
+            glossary_block = f"## 术语表\n{glossary_text}"
+        else:
+            glossary_block = ""
+        return RETRANSLATE_SYSTEM_PROMPT.format(glossary_block=glossary_block)
+    # Generic (non-zh) path: English meta-prompt with lang_config fields
+    # substituted in.
+    native_name = getattr(lang_config, "native_name", "Unknown")
+    target_language = getattr(lang_config, "name", "Unknown")
+    field = getattr(lang_config, "glossary_field", "translation")
+    style_notes = getattr(lang_config, "style_notes", "")
+    instruction = getattr(lang_config, "translation_instruction", "")
     if glossary_text:
-        glossary_block = f"## 术语表\n{glossary_text}"
+        glossary_block = f"## Glossary (maintain consistency)\n{glossary_text}"
     else:
         glossary_block = ""
-    return RETRANSLATE_SYSTEM_PROMPT.format(glossary_block=glossary_block)
+    return _GENERIC_RETRANSLATE_SYSTEM_PROMPT.format(
+        target_language=target_language,
+        native_name=native_name,
+        translation_instruction=instruction,
+        field=field,
+        style_notes=style_notes,
+        glossary_block=glossary_block,
+    )
 
 
 def build_retranslate_user_prompt(
@@ -501,23 +585,112 @@ TLMODE_SYSTEM_PROMPT = """\
 每条都必须翻译，遗漏比误翻更严重。"""
 
 
+_GENERIC_TLMODE_SYSTEM_PROMPT = """\
+You are a professional Ren'Py visual novel translator.  You will receive
+extracted translation entries from Ren'Py's translation framework and
+must translate each English source text.
+
+Target language: {target_language} ({native_name})
+
+{translation_instruction}
+
+## Entry Format
+Each entry in the chunk carries a header line:
+- ``[ID: xxx]`` marks a dialogue entry; ``[Char: yyy]`` is the speaking
+  character (may be empty for narration).
+- ``[STRING]`` marks a UI / system string entry.
+- ``[MULTILINE]`` marks an entry containing ``\\n`` line breaks — you
+  MUST preserve every ``\\n`` in the translation.
+
+## Rules
+- Every entry MUST be translated — skipping is a worse failure than
+  mistranslating.
+- ``[variable]`` bracketed variable names stay verbatim.
+- ``{{{{tag}}}}content{{{{/tag}}}}`` — keep the tags verbatim, translate
+  only the content between them.
+- ``%(name)s`` format placeholders stay verbatim.
+- ``{{{{#identifier}}}}`` menu-choice identifiers stay verbatim.
+- Preserve ``\\n`` newline count AND position — especially inside
+  ``[MULTILINE]`` entries.
+- Translate naturally into {target_language}; match the original
+  tone, emotion, and register.
+
+{style_notes}
+
+{glossary_block}
+
+## Output Format
+Return a JSON array where each element has:
+- ``id``: identifier (e.g. ``"start_636ae3f5"``) for dialogue entries,
+  or the original text itself (e.g. ``"History"``) for string entries.
+- ``original``: the exact English source text.
+- ``{field}``: the translated text in {target_language}.
+
+```json
+[
+  {{"id": "start_636ae3f5", "original": "Hello, how are you?", "{field}": "…"}},
+  {{"id": "History", "original": "History", "{field}": "…"}}
+]
+```
+
+Return ONLY the raw JSON array — no markdown fences, no commentary,
+no reasoning trace.  Every entry must have a translation."""
+
+
 def build_tl_system_prompt(
     glossary_text: str = "",
     genre: str = "adult",
     cot: bool = False,
+    lang_config: object = None,
 ) -> str:
-    """构建 tl-mode 系统提示词。"""
-    style_block = _STYLES.get(genre, STYLE_GENERAL)
+    """Build the tl-mode system prompt.
+
+    Round 39: accepts an optional ``lang_config`` and branches by
+    target-language code.  ``None`` or ``zh`` / ``zh-tw`` → the existing
+    Chinese template (byte-identical r38 behaviour).  Other languages
+    (``ja`` / ``ko`` / etc.) → a new generic English template that
+    instructs the model to emit the ``{lang_config.glossary_field}``
+    field with the translation in ``{lang_config.name}``; the reader in
+    :func:`translators.tl_mode._translate_chunk` uses
+    :func:`core.lang_config.resolve_translation_field` to pick the value
+    back up.
+    """
+    lang_code = getattr(lang_config, "code", "zh") if lang_config else "zh"
+    if lang_code in ("zh", "zh-tw"):
+        # Chinese path: preserve existing template byte-identical (the
+        # production-validated prompt worth keeping stable).
+        style_block = _STYLES.get(genre, STYLE_GENERAL)
+        if glossary_text:
+            glossary_block = f"## 术语表（请保持翻译一致）\n{glossary_text}"
+        else:
+            glossary_block = ""
+        base = TLMODE_SYSTEM_PROMPT.format(
+            style_block=style_block,
+            glossary_block=glossary_block,
+        )
+        if cot:
+            base = base.rstrip() + "\n" + _COT_ADDON_ZH.strip() + "\n"
+        return base
+    # Generic (non-zh) path.
+    native_name = getattr(lang_config, "native_name", "Unknown")
+    target_language = getattr(lang_config, "name", "Unknown")
+    field = getattr(lang_config, "glossary_field", "translation")
+    style_notes = getattr(lang_config, "style_notes", "")
+    instruction = getattr(lang_config, "translation_instruction", "")
     if glossary_text:
-        glossary_block = f"## 术语表（请保持翻译一致）\n{glossary_text}"
+        glossary_block = f"## Glossary (maintain consistency)\n{glossary_text}"
     else:
         glossary_block = ""
-    base = TLMODE_SYSTEM_PROMPT.format(
-        style_block=style_block,
+    base = _GENERIC_TLMODE_SYSTEM_PROMPT.format(
+        target_language=target_language,
+        native_name=native_name,
+        translation_instruction=instruction,
+        field=field,
+        style_notes=style_notes,
         glossary_block=glossary_block,
     )
     if cot:
-        base = base.rstrip() + "\n" + _COT_ADDON_ZH.strip() + "\n"
+        base = base.rstrip() + "\n" + _COT_ADDON_EN.strip() + "\n"
     return base
 
 

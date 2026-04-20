@@ -162,8 +162,9 @@ def main():
                         help="目标语言 (默认: zh 简体中文)。Round 35: "
                              "支持逗号分隔多语言（如 ``--target-lang zh,ja,zh-tw``）"
                              "触发外层语言循环，每语言跑一次流水线；"
-                             "API 成本 N 倍。注意 ``--tl-mode`` / ``--retranslate`` "
-                             "的 prompt 是中文专用，多语言下会报错")
+                             "API 成本 N 倍。Round 39: ``--tl-mode`` / "
+                             "``--retranslate`` 也已支持非 zh 目标语言 "
+                             "（per-language prompt + 响应字段别名读取）")
     parser.add_argument("--input-price", type=float, default=None, metavar="USD",
                         help="手动指定输入价格 (每百万 tokens, 美元)")
     parser.add_argument("--output-price", type=float, default=None, metavar="USD",
@@ -294,24 +295,16 @@ def main():
         logger.error("[ERROR] --retranslate 和 --tl-mode 互斥，不能同时使用")
         sys.exit(1)
 
-    # Round 35 Subtask 1: multi-language guard.  ``tl-mode`` and
-    # ``retranslate`` share Chinese-only system prompts (see
-    # core/prompts.py::TLMODE_SYSTEM_PROMPT + RETRANSLATE_SYSTEM_PROMPT —
-    # both hardcode the ``"zh"`` output field regardless of target_lang)
-    # so multi-language invocation would silently produce duplicate
-    # Chinese translations stored under each non-zh language bucket.
-    # Error out with an actionable message rather than letting that
-    # land in the DB.
-    if len(args.target_langs) > 1 and (tl_mode or args.retranslate):
-        logger.error(
-            "[ERROR] --target-lang %s 指定了多语言，但 --%s 的 prompt 是"
-            "中文专用（只认 zh 字段），多语言模式会产出错误结果。请：(a) "
-            "单语言运行；或 (b) 去掉 --%s 改用 direct-mode",
-            ",".join(args.target_langs),
-            "tl-mode" if tl_mode else "retranslate",
-            "tl-mode" if tl_mode else "retranslate",
-        )
-        sys.exit(1)
+    # Round 39: the r35 multi-language guard that rejected
+    # ``--tl-mode --target-lang ja`` / ``--retranslate --target-lang ko``
+    # is removed now that ``core.prompts.build_tl_system_prompt`` and
+    # ``build_retranslate_system_prompt`` branch on ``lang_config.code``
+    # to emit a generic English template for non-zh targets, and the
+    # response readers in ``tl_mode._translate_chunk`` /
+    # ``retranslator.retranslate_file`` use
+    # ``core.lang_config.resolve_translation_field`` to read the
+    # per-language field back out of the AI response.  Multi-language
+    # tl-mode / retranslate runs now genuinely work end-to-end.
 
     # Round 28 A-H-3 Minimal: unified engine routing.  Every engine
     # (Ren'Py + auto + rpgmaker + csv + jsonl) now goes through the same

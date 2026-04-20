@@ -82,6 +82,11 @@ def _translate_one_tl_chunk(
     kept_items: dict[str, str] = {}
     dropped = 0
     warnings: list[str] = []
+    # Round 39: resolve target-language translation field via
+    # ``lang_config.field_aliases`` when a non-default lang_config is
+    # present on ctx.  Falls back to the literal ``"zh"`` field for
+    # backward compat when lang_config is None or the target is zh/zh-tw.
+    from core.lang_config import resolve_translation_field as _resolve_field
     for t in translations:
         item_w = check_response_item(t)
         if item_w:
@@ -89,7 +94,10 @@ def _translate_one_tl_chunk(
             warnings.extend(f"[CHECK-DROPPED] {w}" for w in item_w)
         else:
             tid = t.get("id", "")
-            zh = t.get("zh", "")
+            if ctx.lang_config is not None:
+                zh = _resolve_field(t, ctx.lang_config) or ""
+            else:
+                zh = t.get("zh", "")
             if tid and zh:
                 kept_items[tid] = zh
     return rel_path, ci, kept_items, dropped, warnings
@@ -186,10 +194,16 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     translation_db.load()
     run_id = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
+    # Round 39: pass lang_config through so non-zh targets (ja / ko / etc.)
+    # get the English generic tl-mode template with lang_config fields
+    # substituted in.  ``None`` / zh / zh-tw still use the Chinese template
+    # byte-identical to r38 for stability.
+    _lang_cfg = getattr(args, "lang_config", None)
     system_prompt = build_tl_system_prompt(
         glossary_text=glossary.to_prompt_text(),
         genre=args.genre,
         cot=getattr(args, 'cot', False),
+        lang_config=_lang_cfg,
     )
 
     # ── 1b. 自动回填不需要 AI 翻译的条目（纯空白/纯标点原文） ──
@@ -291,7 +305,12 @@ def run_tl_pipeline(args: argparse.Namespace) -> None:
     _completed = [0]
 
     # 构建翻译上下文（替代嵌套函数闭包捕获）
-    ctx = TranslationContext(client=client, system_prompt=system_prompt, rel_path="")
+    ctx = TranslationContext(
+        client=client,
+        system_prompt=system_prompt,
+        rel_path="",
+        lang_config=_lang_cfg,  # Round 39: needed by _translate_chunk response reader
+    )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending_futures: dict[concurrent.futures.Future, tuple] = {}
