@@ -538,6 +538,63 @@ def test_side_by_side_label_has_empty_string_hint_tooltip():
 # Runner
 # ============================================================
 
+def test_apply_v2_edits_warns_when_cwd_resolve_fails():
+    """Round 41 audit tail: if ``Path.cwd().resolve()`` raises ``OSError``,
+    ``_apply_v2_edits`` previously let ``trust_root`` degrade silently to
+    ``None``, which in turn silently disabled the CWD whitelist — the
+    operator saw no distinguishing log between "edits under CWD accepted"
+    and "every edit accepted because cwd() failed".  r41 adds a WARNING
+    log before the fallback; this test mocks ``Path.cwd`` to raise and
+    asserts the warning is emitted and the empty-edits call still returns
+    the well-formed zero summary.
+    """
+    import logging
+    import pathlib
+
+    from tools import translation_editor
+
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    handler = _Capture()
+    handler.setLevel(logging.WARNING)
+    translation_editor.logger.addHandler(handler)
+    original_cwd = pathlib.Path.cwd
+
+    try:
+        def _raise(*_a, **_k):  # pragma: no branch — single call site
+            raise OSError("mocked cwd failure")
+        pathlib.Path.cwd = _raise  # type: ignore[assignment]
+        try:
+            result = translation_editor._apply_v2_edits(
+                [], create_backup=False,
+            )
+        finally:
+            pathlib.Path.cwd = original_cwd  # type: ignore[assignment]
+    finally:
+        translation_editor.logger.removeHandler(handler)
+
+    assert result == {"applied": 0, "skipped": 0, "files_modified": 0}, (
+        f"empty edits must still return zero summary, got {result}"
+    )
+    warnings_emitted = [
+        rec.getMessage() for rec in captured
+        if rec.levelno >= logging.WARNING
+    ]
+    assert any(
+        "whitelist disabled" in msg.lower()
+        or "cwd" in msg.lower()
+        for msg in warnings_emitted
+    ), (
+        "no CWD-whitelist-disabled warning captured; "
+        f"got warnings: {warnings_emitted}"
+    )
+    print("[OK] test_apply_v2_edits_warns_when_cwd_resolve_fails")
+
+
 ALL_TESTS = [
     # Round 33 Subtask 3 — v2 envelope read/write
     test_extract_from_v2_envelope,
@@ -557,6 +614,8 @@ ALL_TESTS = [
     test_side_by_side_label_has_empty_string_hint_tooltip,
     # Round 38 C4 — mobile @media adaptive CSS
     test_side_by_side_mobile_media_query_present,
+    # Round 41 audit tail — M4 OSError warning log (no silent bypass)
+    test_apply_v2_edits_warns_when_cwd_resolve_fails,
 ]
 
 

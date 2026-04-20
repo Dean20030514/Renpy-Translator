@@ -498,6 +498,16 @@ def _apply_v2_edits(
     try:
         trust_root: Optional[Path] = Path.cwd().resolve()
     except OSError:
+        # Round 41 audit tail: the prior silent fallback to ``None`` let the
+        # CWD whitelist below silently disable itself, so an operator could
+        # not tell apart "trust root is my project root" from "every edit is
+        # accepted unconditionally because cwd() failed".  Log a warning so
+        # the degradation is visible in the same log stream as the per-edit
+        # skip warnings below.
+        logger.warning(
+            "[V2-EDIT] Path.cwd().resolve() failed — CWD whitelist "
+            "disabled, edits outside the project tree will NOT be rejected"
+        )
         trust_root = None
 
     by_path: Dict[str, List[Dict[str, Any]]] = {}
