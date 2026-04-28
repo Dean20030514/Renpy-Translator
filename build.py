@@ -50,7 +50,7 @@ def clean_build_artifacts() -> int:
 
     for d in targets_dirs:
         if d.exists():
-            # Round 46 audit-tail: defense-in-depth against accidental
+            # Round 45 audit-tail: defense-in-depth against accidental
             # symlink traversal.  shutil.rmtree on Python 3.8+ already
             # refuses to follow symlinks into directories, but an
             # explicit is_symlink() check stops the operation earlier

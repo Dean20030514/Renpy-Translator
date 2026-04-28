@@ -309,7 +309,7 @@ ALL_TESTS = [
 def run_all() -> int:
     """Run every test in this module; return test count.
 
-    Added in round 46 audit fix: aligns this suite with the pattern
+    Added in round 45 audit fix: aligns this suite with the pattern
     used by all 22 other independent test suites so integrators can
     treat them uniformly.  Runtime is unchanged.
     """
