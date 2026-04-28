@@ -420,10 +420,19 @@ def test_gate_glossary_uses_check_fstat_size_pattern():
     )
 
     src = inspect.getsource(gate_mod)
-    assert "check_fstat_size(f, _MAX_GATE_GLOSSARY_SIZE)" in src, (
-        "pipeline.gate must call check_fstat_size on the glossary fd"
+    # Round 49 Step 3 audit-fix (Coverage HIGH): strip comment-only
+    # lines so a future maintainer who deletes the with-block but
+    # leaves a residual ``# was: check_fstat_size(...)`` comment
+    # cannot pass this regression spuriously.
+    active_src = "\n".join(
+        line for line in src.split("\n")
+        if not line.lstrip().startswith("#")
     )
-    assert "raise OSError" in src and "TOCTOU" in src, (
+    assert "check_fstat_size(f, _MAX_GATE_GLOSSARY_SIZE)" in active_src, (
+        "pipeline.gate must call check_fstat_size on the glossary fd "
+        "(active code, not a comment)"
+    )
+    assert "raise OSError" in active_src and "TOCTOU" in active_src, (
         "pipeline.gate must raise OSError on cap violation so the "
         "r26 H-4 except branch logs the gate degradation"
     )
@@ -549,11 +558,20 @@ def test_gui_dialogs_load_config_uses_check_fstat_size_pattern():
     )
 
     src = inspect.getsource(gui_dialogs.AppDialogsMixin._load_config)
-    assert "check_fstat_size" in src, (
-        "_load_config must call check_fstat_size for TOCTOU defense"
+    # Round 49 Step 3 audit-fix (Coverage HIGH): strip comment-only
+    # lines so a comment-residual cannot make this test pass after
+    # the active call has been deleted.
+    active_src = "\n".join(
+        line for line in src.split("\n")
+        if not line.lstrip().startswith("#")
     )
-    assert "_MAX_GUI_CONFIG_SIZE" in src, (
-        "_load_config must compare against _MAX_GUI_CONFIG_SIZE"
+    assert "check_fstat_size" in active_src, (
+        "_load_config must call check_fstat_size for TOCTOU defense "
+        "(active code, not a comment)"
+    )
+    assert "_MAX_GUI_CONFIG_SIZE" in active_src, (
+        "_load_config must compare against _MAX_GUI_CONFIG_SIZE "
+        "(active code, not a comment)"
     )
     print("[OK] gui_dialogs_load_config_uses_check_fstat_size_pattern")
 

@@ -349,12 +349,20 @@ def test_stages_tl_mode_report_uses_check_fstat_size_pattern():
     )
 
     src = inspect.getsource(stages_mod)
-    # Two distinct sites in stages.py — both must use the helper.
+    # Round 49 Step 3 audit-fix (Coverage HIGH): strip comment-only
+    # lines before counting so a future maintainer who deletes both
+    # active calls but leaves residual comment references cannot
+    # pass this regression spuriously.
+    active_src = "\n".join(
+        line for line in src.split("\n")
+        if not line.lstrip().startswith("#")
+    )
     helper_call = "check_fstat_size(f, _MAX_REPORT_JSON_SIZE)"
-    occurrences = src.count(helper_call)
+    occurrences = active_src.count(helper_call)
     assert occurrences >= 2, (
         f"pipeline.stages must use check_fstat_size at BOTH report-read "
-        f"sites (tl_mode_report + full report); found {occurrences} usages"
+        f"sites (tl_mode_report + full report) in active code; "
+        f"found {occurrences} usages"
     )
     print("[OK] stages_tl_mode_report_uses_check_fstat_size_pattern")
 
@@ -372,15 +380,20 @@ def test_stages_full_report_uses_check_fstat_size_pattern():
     import pipeline.stages as stages_mod
 
     src = inspect.getsource(stages_mod)
-    # Full report read must raise ValueError on TOCTOU growth so the
-    # existing except (..., ValueError) branch produces report_error.
+    # Round 49 Step 3 audit-fix (Coverage HIGH): strip comment-only
+    # lines so a comment-residual cannot pass this regression after
+    # the active raise branch has been deleted.
+    active_src = "\n".join(
+        line for line in src.split("\n")
+        if not line.lstrip().startswith("#")
+    )
     assert (
-        "raise ValueError" in src and "TOCTOU" in src
-        and "full report.json" in src
+        "raise ValueError" in active_src and "TOCTOU" in active_src
+        and "full report.json" in active_src
     ), (
         "pipeline.stages full-report TOCTOU branch must raise ValueError "
-        "with TOCTOU and 'full report.json' in the message so the r26 H-3 "
-        "except branch surfaces the failure"
+        "with TOCTOU and 'full report.json' in the message (active code, "
+        "not a comment) so the r26 H-3 except branch surfaces the failure"
     )
     print("[OK] stages_full_report_uses_check_fstat_size_pattern")
 

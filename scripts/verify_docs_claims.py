@@ -310,7 +310,34 @@ def execute_all_ci_test_steps(workflow_path: Path, repo_root: Path) -> None:
 
     Raises ``RuntimeError`` on the first failing step with the
     command and stderr tail attached.  No return value — the count
-    of tests is derived statically by ``derive_tests_total``."""
+    of tests is derived statically by ``derive_tests_total``.
+
+    Round 49 Step 3 (audit-fix Security HIGH) — ``shell=True`` trust
+    contract:
+        ``subprocess.run(run, shell=True)`` below executes commands
+        sourced from ``.github/workflows/test.yml`` ``run:`` fields.
+        This is **safe by construction** because that yaml is part of
+        the repository and is reviewed via standard PR / branch-
+        protection workflows alongside any other code change — i.e.
+        it is *trusted configuration*, not user-supplied input.  The
+        ``name:`` field is NOT interpolated into the executed command;
+        only ``run:`` is, and ``run:`` is what the corresponding GHA
+        runner would execute anyway.
+
+        Threat model: a malicious PR that modifies ``run:`` to inject
+        shellcode would equally affect the production CI run — there
+        is no privilege boundary this verifier crosses that GHA does
+        not.  ``shell=True`` is required because legitimate steps use
+        compound shell syntax (e.g. ``python a.py && python b.py``);
+        switching to ``shlex.split(run)`` would break those steps
+        without adding a meaningful security boundary.
+
+        DO NOT pass externally-sourced workflow yamls to this
+        function (e.g. yamls fetched from untrusted forks at runtime).
+        ``--full`` mode is intended for repository-local CI / pre-push
+        runs only.  ``--fast`` mode (which this gating-tool defaults
+        to in pre-commit) does NOT execute any CI steps and is safe
+        regardless."""
     with open(workflow_path, encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     steps = doc["jobs"]["test"]["steps"]
