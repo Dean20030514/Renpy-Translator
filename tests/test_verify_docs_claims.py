@@ -153,6 +153,159 @@ def test_count_test_files_zero_when_dir_empty():
 
 
 # ---------------------------------------------------------------------------
+# count_test_functions_in_module / derive_tests_total
+# ---------------------------------------------------------------------------
+
+
+def test_count_test_functions_in_module_counts_top_level_test_defs():
+    """AST count of ``def test_*`` at module level — covers the six
+    test files in this project that use Chinese summary lines instead
+    of ``ALL N PASSED`` (where the runtime parser would return 0)."""
+    from scripts.verify_docs_claims import count_test_functions_in_module
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "test_x.py"
+        p.write_text(
+            "import os\n"
+            "\n"
+            "def test_alpha():\n"
+            "    assert True\n"
+            "\n"
+            "def test_beta():\n"
+            "    assert True\n"
+            "\n"
+            "def helper_fn():\n"  # NOT counted (no test_ prefix)
+            "    pass\n"
+            "\n"
+            "async def test_async():\n"
+            "    assert True\n"
+            "\n"
+            "class TestX:\n"  # method-level not counted (top-level only)
+            "    def test_method(self):\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+        n = count_test_functions_in_module(p)
+    assert n == 3, f"expected 3 (alpha + beta + async), got {n}"
+    print("[OK] count_test_functions_in_module_counts_top_level_test_defs")
+
+
+def test_count_test_functions_in_module_returns_zero_on_syntax_error():
+    """Malformed Python returns 0 instead of crashing — fail-open
+    keeps the drift checker resilient to in-progress edits."""
+    from scripts.verify_docs_claims import count_test_functions_in_module
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "test_broken.py"
+        p.write_text("def test_x(:\n", encoding="utf-8")  # syntax error
+        n = count_test_functions_in_module(p)
+    assert n == 0, f"expected 0 on syntax error, got {n}"
+    print("[OK] count_test_functions_in_module_returns_zero_on_syntax_error")
+
+
+def test_derive_tests_total_sums_across_test_modules():
+    """Sums ``count_test_functions_in_module`` across every
+    ``test_*.py`` plus ``smoke_test.py``; ignores helpers / fixtures."""
+    from scripts.verify_docs_claims import derive_tests_total
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "test_a.py").write_text(
+            "def test_1():\n    pass\ndef test_2():\n    pass\n",
+            encoding="utf-8",
+        )
+        (td / "test_b.py").write_text("def test_3():\n    pass\n", encoding="utf-8")
+        (td / "smoke_test.py").write_text("def test_smoke():\n    pass\n", encoding="utf-8")
+        # Helpers / fixtures should not contribute.
+        (td / "helper.py").write_text("def test_helper():\n    pass\n", encoding="utf-8")
+        (td / "fixtures").mkdir()
+        (td / "fixtures" / "test_data.py").write_text(
+            "def test_fixture():\n    pass\n", encoding="utf-8"
+        )
+        n = derive_tests_total(td)
+    assert n == 4, f"expected 4 (test_a:2 + test_b:1 + smoke_test:1), got {n}"
+    print("[OK] derive_tests_total_sums_across_test_modules")
+
+
+# ---------------------------------------------------------------------------
+# derive_self_test_assertions / derive_assertion_points
+# ---------------------------------------------------------------------------
+
+
+def test_derive_self_test_assertions_parses_step_name_suffix():
+    """Sums the ``(N assertions)`` suffix on every step whose name
+    contains ``self-test`` (case-insensitive)."""
+    from scripts.verify_docs_claims import derive_self_test_assertions
+
+    with tempfile.TemporaryDirectory() as td:
+        wf = Path(td) / "test.yml"
+        wf.write_text(
+            textwrap.dedent(
+                """\
+                name: Tests
+                on: [push]
+                jobs:
+                  test:
+                    runs-on: ubuntu-latest
+                    steps:
+                      - name: Run foo (5 assertions)
+                        run: echo foo
+                      - name: tl_parser self-tests (75 assertions)
+                        run: echo tl
+                      - name: screen self-tests (51 assertions)
+                        run: echo screen
+                """
+            ),
+            encoding="utf-8",
+        )
+        n = derive_self_test_assertions(wf)
+    assert n == 75 + 51, (
+        f"expected 126 (75+51 from self-test rows; the 'Run foo' "
+        f"row's '(5 assertions)' must NOT count because no 'self-test' "
+        f"in its name), got {n}"
+    )
+    print("[OK] derive_self_test_assertions_parses_step_name_suffix")
+
+
+def test_derive_assertion_points_sums_tests_and_self_tests():
+    """``derive_assertion_points = tests_total + self-test (N)``."""
+    from scripts.verify_docs_claims import derive_assertion_points
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "tests").mkdir()
+        (td / ".github" / "workflows").mkdir(parents=True)
+        # 3 def test_* across 2 modules.
+        (td / "tests" / "test_a.py").write_text(
+            "def test_1():\n    pass\ndef test_2():\n    pass\n", encoding="utf-8"
+        )
+        (td / "tests" / "test_b.py").write_text(
+            "def test_3():\n    pass\n", encoding="utf-8"
+        )
+        # 2 self-test steps with 10 + 20 assertions.
+        (td / ".github" / "workflows" / "test.yml").write_text(
+            textwrap.dedent(
+                """\
+                name: Tests
+                on: [push]
+                jobs:
+                  test:
+                    runs-on: ubuntu-latest
+                    steps:
+                      - name: foo self-test (10 assertions)
+                        run: echo a
+                      - name: bar self-tests (20 assertions)
+                        run: echo b
+                """
+            ),
+            encoding="utf-8",
+        )
+        n = derive_assertion_points(td / "tests", td / ".github" / "workflows" / "test.yml")
+    assert n == 33, f"expected 33 (3 tests + 30 assertions), got {n}"
+    print("[OK] derive_assertion_points_sums_tests_and_self_tests")
+
+
+# ---------------------------------------------------------------------------
 # count_ci_steps
 # ---------------------------------------------------------------------------
 
@@ -298,25 +451,47 @@ def test_parse_claims_ignores_inline_comments():
 def _make_fixture_repo(td: Path, *,
                       ci_steps: int,
                       test_files: int,
-                      claim_ci: int,
-                      claim_test_files: int,
-                      claim_tests_total: int = 100,
-                      claim_assertion_points: int = 100,
+                      tests_per_file: int = 1,
+                      self_test_assertion_steps: tuple[int, ...] = (),
+                      claim_ci: int | None = None,
+                      claim_test_files: int | None = None,
+                      claim_tests_total: int | None = None,
+                      claim_assertion_points: int | None = None,
                       oversized_count: int = 0) -> None:
     """Build a synthetic repo tree under ``td`` so ``main()`` can run
-    against it via ``--repo-root``.  The four levers correspond to
-    the four drift dimensions verify_docs_claims checks."""
+    against it via ``--repo-root``.  The levers correspond to the
+    four drift dimensions verify_docs_claims checks.
+
+    ``tests_per_file`` controls how many ``def test_*`` functions go
+    into each synthetic test module so AST count matches.  Default
+    is 1 → ``tests_total = test_files``.
+
+    ``self_test_assertion_steps`` is a tuple of integers; one CI step
+    named ``Self-test FOO (N assertions)`` is created per entry.  Use
+    to exercise the assertion_points = tests_total + sum(N) contract.
+
+    Each ``claim_*`` defaults to the matching real value when ``None``,
+    so individual tests only specify the lever they want to drift."""
     (td / ".github" / "workflows").mkdir(parents=True)
     (td / "tests").mkdir()
     (td / "scripts").mkdir()
 
-    # tests/ — n placeholder test files
+    # tests/ — n synthetic test modules with K real def test_* each.
     for i in range(test_files):
-        (td / "tests" / f"test_synthetic_{i}.py").write_text("", encoding="utf-8")
+        bodies = "\n\n".join(
+            f"def test_{i}_{j}():\n    assert True"
+            for j in range(tests_per_file)
+        )
+        (td / "tests" / f"test_synthetic_{i}.py").write_text(
+            bodies + "\n", encoding="utf-8"
+        )
 
-    # .github/workflows/test.yml — n synthetic steps.  Build the yaml
-    # by hand (no textwrap.dedent) because yaml is column-sensitive and
-    # dedent's common-prefix logic mangles interpolated indented blocks.
+    # .github/workflows/test.yml — n synthetic test steps + optional
+    # self-test steps.  Total step count = ci_steps; the first
+    # ``len(self_test_assertion_steps)`` are self-test, the rest are
+    # plain ``Run *`` test steps so ``execute_all_ci_test_steps``
+    # can find them.  Build by hand — yaml is column-sensitive and
+    # textwrap.dedent's common-prefix logic mangles interpolated blocks.
     yaml_lines = [
         "name: Tests",
         "on: [push]",
@@ -325,16 +500,34 @@ def _make_fixture_repo(td: Path, *,
         "    runs-on: ubuntu-latest",
         "    steps:",
     ]
-    for i in range(ci_steps):
-        yaml_lines.append(f"      - name: Step {i}")
-        yaml_lines.append(f"        run: echo {i}")
+    self_steps = list(self_test_assertion_steps)
+    plain_steps = ci_steps - len(self_steps)
+    if plain_steps < 0:
+        raise ValueError("ci_steps must be >= len(self_test_assertion_steps)")
+    for k, n in enumerate(self_steps):
+        yaml_lines.append(f"      - name: Self-test FOO_{k} ({n} assertions)")
+        yaml_lines.append(f"        run: python -c \"pass\"")
+    for i in range(plain_steps):
+        yaml_lines.append(f"      - name: Run synthetic-{i}")
+        yaml_lines.append(f"        run: python -c \"pass\"")
     (td / ".github" / "workflows" / "test.yml").write_text(
         "\n".join(yaml_lines) + "\n",
         encoding="utf-8",
     )
 
-    # HANDOFF.md — fenced block with the *claimed* numbers (which may
-    # disagree with reality on purpose, depending on the test).
+    # HANDOFF.md — fenced block with the *claimed* numbers.  When a
+    # specific claim is None, default it to the real value so that
+    # only the lever explicitly varied by the caller drifts.
+    real_tests_total = test_files * tests_per_file
+    real_assertion_points = real_tests_total + sum(self_steps)
+    if claim_ci is None:
+        claim_ci = ci_steps
+    if claim_test_files is None:
+        claim_test_files = test_files
+    if claim_tests_total is None:
+        claim_tests_total = real_tests_total
+    if claim_assertion_points is None:
+        claim_assertion_points = real_assertion_points
     (td / "HANDOFF.md").write_text(
         textwrap.dedent(
             f"""\
@@ -436,26 +629,39 @@ def test_main_fast_path_fails_on_missing_handoff():
     print("[OK] main_fast_path_fails_on_missing_handoff")
 
 
-def test_main_fast_path_skips_test_total_and_assertion_points():
-    """``--fast`` mode does NOT verify ``tests_total`` /
-    ``assertion_points`` (those require running the suites,
-    deferred to ``--full``).  So a mismatch on those two keys
-    must NOT fail fast mode."""
+def test_main_fast_path_fails_on_tests_total_drift():
+    """Round 49 contract update: ``tests_total`` is derived statically
+    via AST (no subprocess), so ``--fast`` checks it just like the
+    other three keys.  Real synthetic = 3 tests (3 files × 1 each),
+    claim_tests_total = 99 → drift → exit 1."""
     from scripts.verify_docs_claims import main
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         _make_fixture_repo(td,
                            ci_steps=5, test_files=3,
-                           claim_ci=5, claim_test_files=3,
-                           claim_tests_total=99999,        # absurdly wrong
-                           claim_assertion_points=99999)    # absurdly wrong
+                           claim_tests_total=99)  # diverge only this lever
         rc = main(["--fast", "--repo-root", str(td)])
-    assert rc == 0, (
-        f"--fast must NOT cross-check tests_total / assertion_points "
-        f"(those need runtime), but got exit {rc}"
-    )
-    print("[OK] main_fast_path_skips_test_total_and_assertion_points")
+    assert rc == 1, f"expected exit 1 on tests_total drift, got {rc}"
+    print("[OK] main_fast_path_fails_on_tests_total_drift")
+
+
+def test_main_fast_path_fails_on_assertion_points_drift():
+    """``assertion_points = tests_total + self-test (N assertions)``.
+    Synthetic fixture: 2 self-test steps with 5 + 7 assertions and
+    3 plain tests → real = 3 + 12 = 15.  Claim = 999 → drift."""
+    from scripts.verify_docs_claims import main
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _make_fixture_repo(td,
+                           ci_steps=5,
+                           test_files=3,
+                           self_test_assertion_steps=(5, 7),
+                           claim_assertion_points=999)
+        rc = main(["--fast", "--repo-root", str(td)])
+    assert rc == 1, f"expected exit 1 on assertion_points drift, got {rc}"
+    print("[OK] main_fast_path_fails_on_assertion_points_drift")
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +698,11 @@ TESTS = [
     test_find_oversized_py_files_at_exact_boundary,
     test_count_test_files_counts_test_prefix_and_smoke,
     test_count_test_files_zero_when_dir_empty,
+    test_count_test_functions_in_module_counts_top_level_test_defs,
+    test_count_test_functions_in_module_returns_zero_on_syntax_error,
+    test_derive_tests_total_sums_across_test_modules,
+    test_derive_self_test_assertions_parses_step_name_suffix,
+    test_derive_assertion_points_sums_tests_and_self_tests,
     test_count_ci_steps_parses_named_and_anonymous_steps,
     test_count_ci_steps_raises_on_missing_test_job,
     test_parse_claims_reads_fenced_block,
@@ -502,7 +713,8 @@ TESTS = [
     test_main_fast_path_fails_on_test_file_count_drift,
     test_main_fast_path_fails_on_ci_steps_drift,
     test_main_fast_path_fails_on_missing_handoff,
-    test_main_fast_path_skips_test_total_and_assertion_points,
+    test_main_fast_path_fails_on_tests_total_drift,
+    test_main_fast_path_fails_on_assertion_points_drift,
     test_main_fast_path_zero_against_real_repo,
 ]
 

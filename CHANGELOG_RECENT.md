@@ -55,8 +55,7 @@
 - 第四十七轮：5 step 综合执行（A 方案 + 7 项决策 + 一并 push origin）— r43 detail 真实推 archive (按 round 顺序插入 _archive，CHANGELOG_RECENT 删 125 行 detail) / r45+r46 audit 7 LOW gap 全补（G1 边界×4 含 TOCTOU regression / G2 mixed×2 / G3 multibyte×2）+ **TOCTOU 升级 ACCEPTABLE doc → MITIGATED code**（csv_engine `os.fstat(f.fileno())` stat-after-open 二次校验，4 bypass vector 现 3 ACCEPTABLE + 1 MITIGATED）/ r47 三维度审计（连续 8 轮 0 CRITICAL；3 MEDIUM coverage 推 r48）/ test_translation_state.py 765 拆 progress_tracker_language (29→30 CI steps，r35 C1+r36 H1 4 tests 迁出) / docs sync；5 commits + 一并 push origin (10 commits r46+r47)；测试 419 → 427 (+8)
 - 第四十八轮：4 step 综合执行（D 方案深度优化 + 8 项决策 + 一并 push origin）— r47 audit 4 gap close（G1.1 cap±1 边界×2 + G2.1 normalization-dedup×1 + G3.1 newline-cap exact×2 + L1 csv.Error try/except 显式 catch + r47 print "ALL 53"→"ALL 55" cosmetic typo fix）/ **TOCTOU helper 抽取**到 `core/file_safety.py::check_fstat_size`（93 行 stdlib-only 模块）+ **扩展 TOCTOU defense** 从 csv-only 到 csv/jsonl/json 三个 extract methods（_extract_jsonl/_extract_json_or_jsonl 的 read_text→with open + helper + read 改造）+ 4 unit tests + 2 jsonl/json TOCTOU regression / r48 三维度审计 + **首次 security CRITICAL 同轮 fix**（r47 TOCTOU mock target `engines.csv_engine.os.fstat` 在 r48 helper 抽取后失效，spuriously pass，改为 `core.file_safety.os.fstat` + 加注释防 future 重演 + 1 MEDIUM coverage fix：file_safety helper 加 ValueError fail-open 配合新 unit test）/ docs sync；4 commits + 一并 push origin（5 commits r48）；测试 427 → 439 (+12)；CSV bypass vector 防御从 csv-only MITIGATED 扩展到 csv+jsonl+json **三 readers 全 MITIGATED**
 - 第四十八轮 · audit-tail（用户反馈触发的 800 行越限拆分 + 多轮 audit gap 教训）— 用户在 r48 末发现 `tests/test_engines.py` 1090 行 + `tests/test_custom_engine.py` 1020 行**远超 800 软限**，而 r45-r48 的 HANDOFF/CHANGELOG/CLAUDE 多次错误声称"all tests < 800 maintained"；同轮 fix 拆分两个文件（test_engines 1090→537 + 新 test_csv_engine 610/21 tests / test_custom_engine 1020→497 + 新 test_sandbox_response_cap 588/8 tests，byte-identical 拆分），CI workflow 31→33 steps，**所有 .py 现真正 < 800**；显式记录"跨 commit 累积测试增长无人盯"教训（同 r45 CI 覆盖 regression 性质）；2 commits（refactor 拆分 + docs amend）
-
-## 详细记录
+- 第四十九轮：r48 audit-tail 4 项 prevention 全部自动化（C1+C2 两 commits）— C1 (`f3dee81`) 加 `.git-hooks/pre-commit` 的 file-size guard（>800 行 .py 直接 block，即用户给的 awk pattern）+ 新 `scripts/verify_docs_claims.py`（stdlib + PyYAML，AST 静态推导 4 项 canonical 数字 / `--fast` pre-commit 用 ~1s / `--full` 额外实跑 CI test steps）+ 新 `tests/test_verify_docs_claims.py` 24 单元测试 + HANDOFF.md 顶部加 fenced `<!-- VERIFIED-CLAIMS-START -->` 块作单一声称源（CHANGELOG/CLAUDE/.cursorrules 引用而不再独立声称）/ C2（本）`.github/workflows/test.yml` 加 2 step（test_verify_docs_claims 单测 + verify_docs_claims `--full` 实跑 gate）+ 顺手修 r41 起 pre-existing CI bug（tl_parser self-test 行 `from translators.tl_parser import _run_self_tests` 实际函数在 `translators._tl_parser_selftest.run_self_tests` — 一个 audit 工具用上才出土的隐藏失败）+ docs sync (HANDOFF body / CHANGELOG / CLAUDE / .cursorrules)；测试 439→**463**（+24，全是 r49 的 verify_docs_claims unit tests）；assertion_points 565→**589**（+24）；CI workflow 33→**35** steps（+ test_verify_docs_claims + verify_docs_claims --full）；用户反馈循环从"独立验证 → 4 轮后 audit-tail"压缩为"commit 时立即失败"
 
 ## 详细记录
 
@@ -1057,6 +1056,154 @@ r47 audit 推迟的 3 MEDIUM optional + 1 LOW informational + r47 自身的 prin
 - r48 起始 audit (Step 3) 报"测试全 < 800 保持"是基于 r48 内部声称，未独立核查
 - r48 audit-tail（用户反馈触发）补齐了这一 audit gap
 - 体现"自审 + 用户反馈"双层保护价值
+
+
+### 第四十九轮：r48 audit-tail 4 项 prevention 全部自动化（C1+C2 两 commits）
+
+用户在 r48 末连续触发 4 次 docs claim drift 反馈循环（800 行越限 →
+audit-2 数字漂 → audit-3 HANDOFF 漏 sync → audit-4 又 5 项 drift），
+最后给出 4 项 r49 prevention 候选 + 用户在新 session 直接给出三 Open
+Question 决策（选项 C / 推荐做法 / 分 2 commits）+ "立即修"指令。
+本轮目标：把"docs claim vs reality"反馈循环从"用户独立验证 → 4 轮
+后 audit-tail"压缩为"commit 时立即失败"。
+
+**Commit 1 (`f3dee81`)：drift checker tool + extended pre-commit + HANDOFF 单一声称源**
+
+507. `scripts/verify_docs_claims.py` 新建（stdlib + PyYAML，与
+`scripts/verify_workflow.py` 共享 PyYAML 例外披露）：
+- `find_oversized_py_files(root, max_lines=800, ignore_path_parts=
+  (.git, _archive, __pycache__, output))` — 等价用户给的 awk
+  one-liner 但跨平台、newline 字节计数避免 read_text 解码开销
+- `count_test_files(tests_dir)` — `glob test_*.py + smoke_test.py`
+- `count_ci_steps(workflow_path)` — `len(jobs.test.steps)`
+- `parse_claims(handoff_path)` — fenced
+  `<!-- VERIFIED-CLAIMS-START --> ... <!-- END -->` 块解析；缺块抛
+  `ValueError` 让 setup error 浮面（silent pass 反而 defeat 防漂目的）
+- 初版 `run_full_test_sum` 通过 subprocess 跑 CI test steps + 解析
+  `ALL N PASSED` 求和；C1 时 fallback path 已就位但 r41 起 pre-existing
+  CI bug 让 --full 本地不可跑（C2 修），fast path 不受影响
+- `main(argv)` argparse `--fast` (默认) / `--full` / `--repo-root` /
+  `--max-lines`；返回 0/1 退出码
+508. `tests/test_verify_docs_claims.py` 新建 18 个单元测试（C2 重构后
+扩到 24）：file-size 4 testcase（含 800 边界 inclusive contract）+
+test_files glob 2 testcase + ci_steps yaml parse 2 testcase + parse_claims
+fenced block 3 testcase + main 6 testcase + real-repo smoke 1 testcase
+509. `.git-hooks/pre-commit` 4-step pipeline（py_compile 既有 + file-size
+guard 新 + meta-runner 既有 + verify_docs_claims --fast 新）；wall-time
+预算 7-12s，仍 <10-15s 软上限
+510. `.git-hooks/README.md` 改写记录 round 49 prevention 4 项 contract +
+prevention rule (c) 文档化（"never claim numbers without grep / wc / find /
+verify_docs_claims to ground-truth"）
+511. `HANDOFF.md` 顶部插入 `<!-- VERIFIED-CLAIMS-START -->` 块作 SINGLE
+SOURCE OF TRUTH（其它 docs 引用而不再独立声称）+ 4 项数字定义说明 +
+prevention rule (c) 文字
+512. 本地 smoke：`python tests/test_all.py` ALL 135 + `python tests/
+test_verify_docs_claims.py` ALL 18 + 手动 drift smoke (`test_files: 33→99`
+→ exit 1 / restore → exit 0 / commit `f3dee81` 触发 hook 全过)
+
+**C1 末 pre-existing bug 出土**：跑 `verify_docs_claims --full` 时
+`from translators.tl_parser import _run_self_tests` ImportError —
+实际函数在 `translators._tl_parser_selftest.run_self_tests`（无 underscore
+prefix）。从 `9fa85ee` (round 17 r-restructure) 起就错；commit message 当
+时声称"75 + 51 self-test assertions pass"显然没真跑。pre-existing CI
+bug，C1 范围内 hook 只用 --fast 不受影响，C2 修。
+
+**Commit 2（本）：CI workflow 接入 --full + tl_parser CI bug 修 + AST 重构 + docs sync**
+
+513. `.github/workflows/test.yml` 修 r17 起 pre-existing tl_parser self-
+test 行：`from translators.tl_parser import _run_self_tests` →
+`from translators._tl_parser_selftest import run_self_tests; run_self_tests()`；
+`screen` 行不变（`translators.screen._run_self_tests` 真实存在）
+514. `.github/workflows/test.yml` 加 2 step：
+- `Run verify_docs_claims unit tests` (跑 `tests/test_verify_docs_claims.py`)
+- `Run verify_docs_claims --full (cross-doc drift gate)` (跑
+  `scripts/verify_docs_claims.py --full` — 静态推导 + 实跑 CI test steps)
+- CI workflow 33 → **35** steps
+515. `scripts/verify_docs_claims.py` AST 重构 — 6 个 test 文件用中文
+`=== 全部 X 测试通过 ===` summary 不打 `ALL N` ⇒ 原 runtime ALL 解析
+返 0 与真实数字偏差大；改为 AST 静态计 `def test_*` (top-level + async)
+across `test_*.py + smoke_test.py`：
+- 新 `count_test_functions_in_module(file)` — AST 解析 + 语法错回 0
+  fail-open；只 count top-level（class method 内的 test 不计 — 项目无此
+  pattern；按需扩展）
+- 新 `derive_tests_total(tests_dir)` — sum across 模块
+- 新 `derive_self_test_assertions(workflow_path)` — parse step name
+  `(N assertions)` suffix where step name 含 `self-test`（case-insensitive
+  + word-boundary safe）
+- 新 `derive_assertion_points(tests_dir, workflow_path)` — `tests_total + self_test`
+- 重构 `run_full_test_sum` → `execute_all_ci_test_steps`（仅实跑 gate，
+  不返计数 — 计数全部静态来源）
+- `main()` 改为：`--fast` 即检查全部 4 项数字（之前 --fast 跳过
+  tests_total / assertion_points） + `--full` 额外做 `execute_all_ci_test_steps`
+516. `tests/test_verify_docs_claims.py` 同步重构：
+- `_make_fixture_repo` 写真实 `def test_synthetic_N()` 让 AST 计可计；
+  加 `tests_per_file` / `self_test_assertion_steps` 杠杆；`claim_*=None`
+  默认填 real value 让 test 只指定要漂移的那项
+- 删除 `test_main_fast_path_skips_test_total_and_assertion_points`（旧
+  contract 已废弃 — 新 contract --fast 检查全部 4 项）
+- 新增 5 helper 测试：`count_test_functions_in_module` × 2（top-level
+  pattern + 语法错 fail-open）+ `derive_tests_total` × 1 + `derive_self_test_assertions`
+  × 1 + `derive_assertion_points` × 1
+- 新增 2 main 测试：`fails_on_tests_total_drift` + `fails_on_assertion_points_drift`
+- 共 18 → 24 测试
+517. `HANDOFF.md`:
+- title 第 48 → 第 49（C1+C2 全部完成 → 第 50 起点）
+- VERIFIED-CLAIMS 块：tests_total 439→**463** / test_files 32→**33** /
+  ci_steps 33→**35** / assertion_points 565→**589**（all delta from
+  r49 自身的 24 + 24 self-test 等距未变）
+- 定义说明从"sum ALL N"改为"AST count def test_*"
+- 当前时间锚点 / r49 完成内容段：勾画 4 项 prevention 落地 + commit hash +
+  pre-existing CI bug 出土
+- 项目当前状态：去掉硬编码 "439 tests / 565 assertion_points" 改为引
+  用 VERIFIED-CLAIMS（首次"prose 不再独立重复声称"实施）
+518. `CHANGELOG_RECENT.md`：演进摘要 r49 一行 + 详细记录本段（新加）
+519. `CLAUDE.md` / `.cursorrules`：r49 一段（同 HANDOFF 同步）
+
+**测试 / CI / 断言点 计数 r48→r49 变化**
+
+| key | r48 末 | r49 末 | delta | 来源 |
+|------|-------|-------|-------|------|
+| tests_total | 439 | 463 | +24 | 24 个新 verify_docs_claims unit test |
+| test_files | 32 | 33 | +1 | 新 `test_verify_docs_claims.py` |
+| ci_steps | 33 | 35 | +2 | + Run verify_docs_claims unit tests + `--full` |
+| assertion_points | 565 | 589 | +24 | tests_total 同步（self-test 75+51 不变） |
+
+**关键设计决策**
+
+- **AST 静态 vs runtime 解析**：6 测试文件用中文 summary 不打 `ALL N`，
+  runtime 解析返 0；AST `def test_*` 100% 覆盖且更快（无 subprocess 启
+  动开销）。代价：class method 内的 test 不计（项目目前无此 pattern）
+- **VERIFIED-CLAIMS 单声称源**：CHANGELOG / CLAUDE / .cursorrules 引
+  用而不重复声称 → n 路 docs sync drift 表面塌缩为 1 路 grep 比对 →
+  pre-commit fast 路径秒级强制
+- **--fast vs --full 分工**：--fast (~1s) 在 pre-commit 跑 4 项静态
+  推导对账；--full 在 CI 额外实跑全部 CI test steps 做"通过性 gate"
+  （静态 count 即使全 OK，runtime suite 可能漂；--full 兜底）
+- **prevention rule (c) 文档而非工具化**：HANDOFF 写"never claim
+  numbers without grep/wc/find/verify_docs_claims"是对人 / AI 的提
+  醒；工具的强制力来自 (a)(b)(d)
+- **C1 / C2 切分**：减小 commit 体积；C1 落地工具与 hook（无 CI 改
+  动），C2 接入 CI + docs sync — 任一时刻 git bisect-safe
+
+**Pre-existing CI bug 出土记录**
+
+`verify_docs_claims --full` 跑第一次时 `python -c "from translators.tl_parser
+import _run_self_tests; ..."` ImportError — 检查 git log 发现 r17 (`9fa85ee`)
+"refactor: update build.py hidden_imports and CI paths" 起就错；commit
+message 当时声称"All 162 tests + 75 + 51 self-test assertions pass"显然没
+真跑（可能用 `--no-verify` 或本地 push pre-CI）。这是 audit 工具用上
+才出土的隐藏失败，**反向证明 r49 的工具价值**：r17 → r48 共 31 轮没
+人发现，因为没工具自动 verify CI step 的真实可执行性。C2 顺手 fix（一
+字之差：`tl_parser` → `_tl_parser_selftest`，函数名也 `_run_*` →
+`run_*` — 二者实际位置一致）。
+
+**审计连续性 r41 → r49**
+
+- 连续 9 轮 0 CRITICAL correctness 保持（r35 末 / r40 末 / r43 / r44 /
+  r45 / r41-r45 累计 / r46 / r47 / **r48**）— r49 没有起始 audit（这
+  轮专注 prevention 落地，不做新 audit）
+- r49 起的 verify_docs_claims --full 在 CI 接入意味着 r50 起的每个
+  PR 自动 catch CI step regression（如 r17→r48 的 tl_parser 死掉）
 
 ## 已回滚
 

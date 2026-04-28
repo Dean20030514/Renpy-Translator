@@ -166,10 +166,28 @@ jobs:
         run: python tests/test_ui_whitelist.py
 
       # Internal self-tests (embedded in the module)
+      # Round 49 C2: tl_parser self-test entry-point lives in
+      # ``translators._tl_parser_selftest`` (no underscore prefix);
+      # ``_run_self_tests`` was never re-exported from
+      # ``translators.tl_parser``.  Pre-r49 the wrong import slid past
+      # because no tool re-derived the assertion count — the round 49
+      # ``verify_docs_claims --full`` step below catches this kind of
+      # CI step regression at PR time.
       - name: Run tl_parser self-tests (75 assertions)
-        run: python -c "from translators.tl_parser import _run_self_tests; _run_self_tests()"
+        run: python -c "from translators._tl_parser_selftest import run_self_tests; run_self_tests()"
       - name: Run screen_translator self-tests (51 assertions)
         run: python -c "from translators.screen import _run_self_tests; _run_self_tests()"
+
+      # Round 49 C1+C2: docs-claim drift checker.  ``test_verify_docs_claims``
+      # exercises the helper functions; ``--full`` re-derives all four
+      # canonical numbers (tests_total / test_files / ci_steps /
+      # assertion_points) and compares them against the fenced
+      # ``VERIFIED-CLAIMS`` block in HANDOFF.md.  Catches the r45-r48
+      # class of multi-round drift before merge.
+      - name: Run verify_docs_claims unit tests
+        run: python tests/test_verify_docs_claims.py
+      - name: Run verify_docs_claims --full (cross-doc drift gate)
+        run: python scripts/verify_docs_claims.py --full
 
       - name: Verify zero third-party dependencies
         shell: bash

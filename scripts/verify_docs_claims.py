@@ -70,6 +70,7 @@ policy (production code stays stdlib-only; see CLAUDE.md).
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
@@ -97,10 +98,11 @@ DEFAULT_IGNORE_PATH_PARTS = (".git", "_archive", "__pycache__", "output")
 CLAIM_BLOCK_START = "<!-- VERIFIED-CLAIMS-START -->"
 CLAIM_BLOCK_END = "<!-- VERIFIED-CLAIMS-END -->"
 
-# Fast-path checks the keys that can be derived without running tests.
-FAST_KEYS = ("test_files", "ci_steps")
-# Full-path also checks these (require running suites).
-FULL_KEYS = ("tests_total", "assertion_points")
+# All four canonical claim keys are derived statically (AST + yaml) so
+# both ``--fast`` and ``--full`` can verify them without the 30-60s
+# subprocess sweep.  ``--full`` additionally executes every CI test
+# step as a passing-suite sanity check.
+ALL_CLAIM_KEYS = ("tests_total", "test_files", "ci_steps", "assertion_points")
 
 
 # ---------------------------------------------------------------------------
@@ -148,20 +150,61 @@ def find_oversized_py_files(
     return oversized
 
 
+def _is_test_module(entry: Path) -> bool:
+    """``test_*.py`` plus the legacy ``smoke_test.py`` (which doesn't
+    use the standard prefix but is part of the suite)."""
+    if not entry.is_file() or entry.suffix != ".py":
+        return False
+    name = entry.name
+    return name.startswith("test_") or name == "smoke_test.py"
+
+
 def count_test_files(tests_dir: Path) -> int:
-    """Count ``test_*.py`` plus ``smoke_test.py`` directly under
-    ``tests_dir`` (non-recursive — fixtures / artifacts subdirs do
-    not contribute to the suite count)."""
+    """Count test modules directly under ``tests_dir`` (non-recursive
+    — fixtures / artifacts subdirs do not contribute to the suite
+    count)."""
     if not tests_dir.is_dir():
         return 0
+    return sum(1 for entry in tests_dir.iterdir() if _is_test_module(entry))
+
+
+def count_test_functions_in_module(test_file: Path) -> int:
+    """AST-count top-level ``def test_*`` (and ``async def test_*``)
+    in ``test_file``.  This is the canonical per-file test count: it
+    does not require running the file, handles every test-naming
+    convention used in this project (``ALL N PASSED`` literal, Chinese
+    ``=== 全部 X 测试通过 ===`` literal, no terminal print at all),
+    and matches the way ``def test_*`` is registered in the per-file
+    ``TESTS = [...]`` registries.
+
+    Returns 0 on syntax error (the build hooks catch syntax errors
+    via ``py_compile`` upstream — this fail-open keeps the drift
+    checker resilient to in-progress edits)."""
+    try:
+        tree = ast.parse(test_file.read_text(encoding="utf-8"))
+    except (SyntaxError, OSError):
+        return 0
     n = 0
-    for entry in tests_dir.iterdir():
-        if not entry.is_file() or entry.suffix != ".py":
-            continue
-        name = entry.name
-        if name.startswith("test_") or name == "smoke_test.py":
-            n += 1
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name.startswith("test_"):
+                n += 1
     return n
+
+
+def derive_tests_total(tests_dir: Path) -> int:
+    """Sum ``count_test_functions_in_module`` across every test module
+    in ``tests_dir``.  Pre-r49 this lived as a runtime ``ALL N``
+    parser, but six suites in this project print Chinese summary
+    lines (``=== 全部 X 测试通过 ===``) instead of ``ALL N PASSED``,
+    so AST is the only universally-correct counter."""
+    if not tests_dir.is_dir():
+        return 0
+    total = 0
+    for entry in tests_dir.iterdir():
+        if _is_test_module(entry):
+            total += count_test_functions_in_module(entry)
+    return total
 
 
 def count_ci_steps(workflow_path: Path) -> int:
@@ -216,83 +259,83 @@ def parse_claims(handoff_path: Path) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Full-path runtime aggregation — runs each "Run *" step in the
-# workflow, parses ``ALL N`` from stdout, sums.
+# Assertion point derivation — assertion_points = tests_total +
+# self-test assertions parsed from CI step names.
 # ---------------------------------------------------------------------------
 
 
-_ALL_N_RE = re.compile(r"\bALL\s+(\d+)\b", re.IGNORECASE)
 _ASSERT_SUFFIX_RE = re.compile(r"\((\d+)\s+assertions?\)")
 
 
-def _run_step(step_run: str, repo_root: Path) -> int:
-    """Run a step's ``run:`` command, parse ``ALL N`` from stdout,
-    return N.  Returns 0 if no ``ALL N`` line found (which is the
-    normal case for non-test steps like py_compile).
-    """
-    proc = subprocess.run(
-        step_run,
-        shell=True,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc.returncode != 0:
-        # Test failure surfaces as a hard stop — drift is meaningless
-        # if the suites do not pass.
-        raise RuntimeError(
-            f"step failed (returncode={proc.returncode}):\n"
-            f"  cmd: {step_run.strip()[:120]}\n"
-            f"  stderr tail: {proc.stderr[-400:]}"
-        )
-    matches = _ALL_N_RE.findall(proc.stdout)
-    if not matches:
-        return 0
-    # Take the *last* ALL N — some test files print intermediate
-    # progress (e.g., ``ALL 5 FOO PASSED`` then ``ALL 10 BAR PASSED``)
-    # but the final summary always wins.  Most files emit exactly one.
-    return int(matches[-1])
+def derive_self_test_assertions(workflow_path: Path) -> int:
+    """Sum the ``(N assertions)`` suffix on every CI step whose name
+    contains ``self-test`` (case-insensitive).
+
+    Used by ``derive_assertion_points`` to add the embedded-selftest
+    contribution (currently ``tl_parser`` 75 + ``screen`` 51 = 126)
+    to the AST-derived ``tests_total``.
+
+    The convention pins the count to the step name itself, so adding
+    a new assertion to the underlying module requires bumping the
+    step name as well — that becomes the drift signal in CI."""
+    with open(workflow_path, encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    steps = doc["jobs"]["test"]["steps"]
+    total = 0
+    for step in steps:
+        name = step.get("name", "")
+        if "self-test" in name.lower():
+            m = _ASSERT_SUFFIX_RE.search(name)
+            if m:
+                total += int(m.group(1))
+    return total
 
 
-def run_full_test_sum(workflow_path: Path, repo_root: Path) -> tuple[int, int]:
-    """Run every ``- run: python tests/...`` and ``- run: python -c
-    "from translators..."`` step in the workflow, sum ``ALL N``.
+def derive_assertion_points(tests_dir: Path, workflow_path: Path) -> int:
+    """``tests_total + derive_self_test_assertions``."""
+    return derive_tests_total(tests_dir) + derive_self_test_assertions(workflow_path)
 
-    Returns ``(tests_total, assertion_points)`` where
-    ``assertion_points = tests_total + sum(self-test assertion counts
-    parsed from step names like "(75 assertions)")``.
-    """
+
+# ---------------------------------------------------------------------------
+# Full-mode runtime sanity check — execute every CI test step and
+# fail if any returns non-zero.  Does NOT contribute to the count
+# (counts are static); this is purely a "do the suites still pass?"
+# gate, run in CI / pre-push.
+# ---------------------------------------------------------------------------
+
+
+def execute_all_ci_test_steps(workflow_path: Path, repo_root: Path) -> None:
+    """Run every CI step whose ``name`` starts with ``Run `` (the
+    project convention for test steps) and whose ``run`` is non-empty.
+
+    Raises ``RuntimeError`` on the first failing step with the
+    command and stderr tail attached.  No return value — the count
+    of tests is derived statically by ``derive_tests_total``."""
     with open(workflow_path, encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     steps = doc["jobs"]["test"]["steps"]
 
-    tests_total = 0
-    self_test_assertions = 0
     for step in steps:
-        run = step.get("run", "")
         name = step.get("name", "")
-        if not run:
+        run = step.get("run", "")
+        if not run or not name.startswith("Run "):
             continue
-        # tl_parser / screen self-tests are the two ``python -c
-        # "from ... import _run_self_tests; _run_self_tests()"``
-        # steps.  They print self-test output but do not always
-        # emit ``ALL N`` (the modules' selftest functions print
-        # their own format).  We trust the step name's
-        # "(75 assertions)" suffix as the canonical count.
-        suffix_match = _ASSERT_SUFFIX_RE.search(name)
-        if suffix_match and "self-test" in name.lower():
-            self_test_assertions += int(suffix_match.group(1))
-            # Still execute it to verify it actually passes.
-            _run_step(run, repo_root)
-            continue
-        # Regular ``Run *`` test step — sum its ``ALL N``.
-        if name.startswith("Run "):
-            tests_total += _run_step(run, repo_root)
-
-    assertion_points = tests_total + self_test_assertions
-    return tests_total, assertion_points
+        proc = subprocess.run(
+            run,
+            shell=True,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"step failed (returncode={proc.returncode}):\n"
+                f"  name: {name}\n"
+                f"  cmd:  {run.strip()[:120]}\n"
+                f"  stderr tail: {proc.stderr[-400:]}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +379,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--full",
         action="store_true",
-        help="Fast checks + run all CI test steps to sum tests_total & assertion_points.",
+        help="Fast checks + execute every CI 'Run *' step as a passing-suite sanity gate.",
     )
     p.add_argument(
         "--repo-root",
@@ -387,53 +430,40 @@ def main(argv: list[str] | None = None) -> int:
                 rel = p
             issues.append(f"    {rel}  {n} lines")
 
-    # 3. test files
-    real_test_files = count_test_files(tests_dir)
-    # 4. ci steps
+    # 3-6. Derive all four canonical numbers statically.  Workflow yaml
+    # is required for ci_steps + assertion_points; surface yaml parse
+    # errors as setup failure rather than soft drift.
+    real: dict[str, int] = {}
     try:
-        real_ci_steps = count_ci_steps(workflow_path)
+        real["test_files"] = count_test_files(tests_dir)
+        real["ci_steps"] = count_ci_steps(workflow_path)
+        real["tests_total"] = derive_tests_total(tests_dir)
+        real["assertion_points"] = derive_assertion_points(tests_dir, workflow_path)
     except (FileNotFoundError, KeyError) as e:
         print(f"\n[setup error] workflow parse failed: {e}", file=sys.stderr)
         return 1
 
-    real_full: dict[str, int] = {}
+    # 7. (--full only) execute every CI test step as a runtime sanity
+    # gate.  Does NOT contribute to the count — counts are static.
     if full:
         try:
-            tt, ap = run_full_test_sum(workflow_path, repo_root)
+            execute_all_ci_test_steps(workflow_path, repo_root)
         except RuntimeError as e:
             print(f"\n[full mode] suite execution failed: {e}", file=sys.stderr)
             return 1
-        real_full["tests_total"] = tt
-        real_full["assertion_points"] = ap
 
-    # Drift comparison
+    # Drift comparison — print one row per claim key, then build the
+    # issue list from any disagreement.
     print()
-    print(_format_row("test_files", real_test_files, claims.get("test_files")))
-    print(_format_row("ci_steps", real_ci_steps, claims.get("ci_steps")))
-    if full:
-        print(_format_row("tests_total", real_full.get("tests_total"), claims.get("tests_total")))
-        print(_format_row("assertion_points", real_full.get("assertion_points"), claims.get("assertion_points")))
-    else:
-        print(_format_row("tests_total", None, claims.get("tests_total")) + "  [skipped — use --full]")
-        print(_format_row("assertion_points", None, claims.get("assertion_points")) + "  [skipped — use --full]")
+    for key in ALL_CLAIM_KEYS:
+        print(_format_row(key, real.get(key), claims.get(key)))
 
-    # Build issue list from drift.
-    fast_real = {"test_files": real_test_files, "ci_steps": real_ci_steps}
-    for key, real in fast_real.items():
+    for key in ALL_CLAIM_KEYS:
         claim = claims.get(key)
         if claim is None:
             issues.append(f"claim missing: {key}")
-        elif claim != real:
-            issues.append(f"{key} drift: claim={claim} real={real}")
-
-    if full:
-        for key in FULL_KEYS:
-            real = real_full.get(key)
-            claim = claims.get(key)
-            if claim is None:
-                issues.append(f"claim missing: {key}")
-            elif real != claim:
-                issues.append(f"{key} drift: claim={claim} real={real}")
+        elif claim != real.get(key):
+            issues.append(f"{key} drift: claim={claim} real={real.get(key)}")
 
     print()
     print("=" * 60)

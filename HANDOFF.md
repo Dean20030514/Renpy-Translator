@@ -1,10 +1,10 @@
-# 交接笔记（第 48 轮结束 → 第 49 轮起点）
+# 交接笔记（第 49 轮 C1+C2 结束 → 第 50 轮起点）
 
 <!-- VERIFIED-CLAIMS-START -->
-tests_total: 439
+tests_total: 463
 test_files: 33
-ci_steps: 33
-assertion_points: 565
+ci_steps: 35
+assertion_points: 589
 <!-- VERIFIED-CLAIMS-END -->
 
 > **The fenced block above is the SINGLE SOURCE OF TRUTH for declared
@@ -15,18 +15,24 @@ assertion_points: 565
 > source — any drift fails the commit. Update only this block, then
 > let prose around it stay generic ("see VERIFIED-CLAIMS").
 >
-> Definitions:
+> Definitions (all derived statically by `verify_docs_claims.py`):
 >
-> - `tests_total` — sum of `ALL N` across every CI `Run *` step in
->   `.github/workflows/test.yml` (verified by `--full`).
+> - `tests_total` — AST count of every top-level `def test_*` (and
+>   `async def test_*`) across `tests/test_*.py` + `tests/smoke_test.py`.
 > - `test_files` — count of `tests/test_*.py` plus `tests/smoke_test.py`.
 > - `ci_steps` — `len(jobs.test.steps)` in the workflow yaml.
-> - `assertion_points` — `tests_total + tl_parser self-tests (75) +
->   screen self-tests (51)`.
+> - `assertion_points` — `tests_total + sum((N assertions))` where
+>   the second term is parsed from CI step names whose label contains
+>   `self-test` (currently `tl_parser` 75 + `screen` 51 = 126).
+>
+> `--full` additionally executes every CI `Run *` step as a passing-
+> suite sanity gate; counts themselves are static.
 
 **目标读者**：下次新对话接手这个项目的 AI / 开发者
 
-**当前时间锚点**：第 48 轮 4 step + audit-tail 2 commits 全部完成（共 6 commits + Final push）。本地 main 与 origin/main 同步（r48 共 6 commits 已 push）。若您在新对话里看到这份文档，意味着上次工作结束于此处。
+**当前时间锚点**：第 49 轮 C1 + C2 全部完成（2 commits + 本地未 push）。第 48 轮 4 step + audit-tail + audit-2/3/4/5 共 9 commits 已在 r49 起点前 push 至 origin/main。若您在新对话里看到这份文档，意味着上次工作结束于此处，且 r49 两个 commit 仍待 push（用户控制 push 时机；agent 不自动 push）。
+
+**🟢 r49 完成内容**：r48 audit-tail 4 项 prevention 全部落地，把"docs claim vs reality 跨轮漂移"的反馈循环从"用户独立验证 → 4 轮后 audit-tail"压缩成"commit 时立即失败"。 (a) `.git-hooks/pre-commit` 加 file-size guard（>800 行 .py 直接 block）+ (b) `scripts/verify_docs_claims.py --fast` 静态 AST/yaml 推导 4 项 canonical 数字与 HANDOFF.md fenced `VERIFIED-CLAIMS` 块对照 + (c) prevention rule 文档化在 `.git-hooks/README.md` 与 `verify_docs_claims.py` docstring + (d) `scripts/verify_docs_claims.py` 独立工具（`--fast` 静态 / `--full` 额外实跑 CI test steps 做通过性 gate）。C1 commit `f3dee81` (tools + hook + tests + HANDOFF claim 块)；C2 commit (本) (CI workflow 加 verify_docs_claims `--full` step + tl_parser self-test pre-existing import bug 修 + docs sync)。新增 24 单元测试 (test_verify_docs_claims.py)，**连续 9 轮 0 CRITICAL correctness 保持**。
 
 **🔴 r48 末重要教训**：用户在 Step 5 docs sync push 完成后立即指出"我发现有多个文件超过 800 行了，你为什么没有提醒我"。核查发现 `tests/test_engines.py` 1090 + `tests/test_custom_engine.py` 1020 远超 800 软限，而 r45-r48 多次 HANDOFF/CHANGELOG/CLAUDE 错误声称"all tests < 800 maintained"。**根因**：每轮加 tests 后只看 `print("ALL N PASSED")` 验证未跑 `wc -l` 核查；HANDOFF 声称基于最近一次 split 状态未持续核查全部 directory。**audit-tail 同轮 fix**：拆分两个文件（test_engines→test_csv_engine + test_custom_engine→test_sandbox_response_cap，byte-identical），CI 31→33 steps，**所有 .py 现真正 < 800**。详见 [CHANGELOG_RECENT 第四十八轮 · audit-tail](CHANGELOG_RECENT.md)。
 
@@ -34,7 +40,7 @@ assertion_points: 565
 
 ## 项目当前状态（一句话）
 
-纯 Python 零依赖多引擎游戏汉化工具，**439 个自动化测试 + tl_parser 75 + screen 51 内建自测全绿**（共 565 断言点）。第 48 轮 Auto mode 下 4 step 综合执行（D 方案深度优化）：r47 audit 4 gap close（G1.1 cap±1 边界 + G2.1 normalization-dedup + G3.1 newline-cap exact + L1 csv.Error 显式 catch + r47 print typo fix）/ **TOCTOU helper 抽取**到 `core/file_safety.py` 并扩展 defense 到 csv+jsonl+json 三个 readers / r48 三维度审计 **首次 security CRITICAL 同轮 fix**（r47 TOCTOU mock target stale 修复 + 1 MEDIUM coverage ValueError fail-open）/ docs sync。**连续 9 轮 0 CRITICAL correctness**；CSV bypass vector 防御从 csv-only 扩展到 csv+jsonl+json **三 readers 全 MITIGATED**；CI workflow 30→**31** steps。
+纯 Python 零依赖多引擎游戏汉化工具（数字详见上方 `VERIFIED-CLAIMS` 块；prose 不再独立重复声称）。第 49 轮把 r48 audit-tail 总结的 4 项 prevention 全部落地：file-size guard + AST-based docs-claim drift checker（`scripts/verify_docs_claims.py`）+ pre-commit 接入 + CI workflow `--full` 实跑 gate；同步修了 r41 起 pre-existing 的 `tl_parser` self-test CI 导入路径 bug（用户 r48 末提的 4 项 prevention 顺手出土）。第 48 轮 Auto mode 下 4 step 综合执行（D 方案深度优化）：r47 audit 4 gap close + **TOCTOU helper 抽取**到 `core/file_safety.py` 并扩展 defense 到 csv+jsonl+json 三 readers + r48 三维度审计 **首次 security CRITICAL 同轮 fix**（mock target stale）+ docs sync。**连续 9 轮 0 CRITICAL correctness**；CSV bypass vector 防御 r48 末"csv+jsonl+json 三 readers 全 MITIGATED"。
 
 ---
 
