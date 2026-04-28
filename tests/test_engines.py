@@ -525,6 +525,49 @@ def test_csv_engine_rejects_oversized_json():
     print("[OK] csv_engine_rejects_oversized_json")
 
 
+def test_csv_engine_rejects_oversized_csv():
+    """Round 46 Step 4 (G1): CSVEngine._extract_csv skips operator-
+    supplied .csv / .tsv files above _MAX_CSV_JSON_SIZE (50 MB) with
+    a warning rather than streaming the whole file into the
+    accumulated units list.  The r44 audit-tail covered _extract_jsonl
+    and _extract_json_or_jsonl but missed _extract_csv; closed by the
+    round 45 audit's optional MEDIUM list.  Uses a 51 MB sparse file
+    so the test runs instantly without consuming disk."""
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        # Legitimate small file — must still be extracted
+        (Path(d) / "small.csv").write_text(
+            "original\nHello\n", encoding="utf-8",
+        )
+        # 51 MB sparse oversized .csv — must be skipped
+        big_csv = Path(d) / "big.csv"
+        with open(big_csv, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        # 51 MB sparse oversized .tsv — must be skipped
+        big_tsv = Path(d) / "big.tsv"
+        with open(big_tsv, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        units = engine.extract_texts(Path(d))
+        rel_files = {u.file_path for u in units}
+        assert "big.csv" not in rel_files, (
+            "oversized .csv must be skipped, got units: "
+            f"{[u.file_path for u in units]}"
+        )
+        assert "big.tsv" not in rel_files, (
+            "oversized .tsv must be skipped, got units: "
+            f"{[u.file_path for u in units]}"
+        )
+        assert len(units) == 1, (
+            f"expected 1 unit from small.csv, got {len(units)}: "
+            f"{[u.file_path for u in units]}"
+        )
+    print("[OK] csv_engine_rejects_oversized_csv")
+
+
 # ============================================================
 # generic_pipeline 测试
 # ============================================================
@@ -720,6 +763,8 @@ if __name__ == "__main__":
     test_csv_directory_scan()
     # Round 44 audit-tail: CSV/JSON 50 MB cap
     test_csv_engine_rejects_oversized_json()
+    # Round 46 Step 4 (G1): CSV/TSV 50 MB cap (audit-tail follow-up)
+    test_csv_engine_rejects_oversized_csv()
     # generic_pipeline
     test_build_generic_chunks_single()
     test_build_generic_chunks_split()
@@ -740,5 +785,5 @@ if __name__ == "__main__":
 
     print()
     print("=" * 40)
-    print("ALL 48 ENGINE TESTS PASSED")
+    print("ALL 49 ENGINE TESTS PASSED")
     print("=" * 40)

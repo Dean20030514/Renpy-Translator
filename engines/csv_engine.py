@@ -152,6 +152,24 @@ class CSVEngine(EngineBase):
         rel = filepath.name
         source_format = "tsv" if delimiter == "\t" else "csv"
 
+        # Round 46 Step 4 (G1): size cap matching _extract_jsonl /
+        # _extract_json_or_jsonl siblings.  ``csv.DictReader`` streams
+        # the file but a multi-GB CSV with millions of small rows would
+        # still consume large memory in the accumulated ``units`` list.
+        # 50 MB+ is almost certainly adversarial or misconfigured input.
+        # The r37-r44 size-cap sweep covered .jsonl / .json but missed
+        # .csv / .tsv; closed by the round 45 audit's optional MEDIUM.
+        try:
+            fsize = filepath.stat().st_size
+        except OSError:
+            fsize = 0
+        if fsize > _MAX_CSV_JSON_SIZE:
+            logger.warning(
+                f"[CSV] 跳过 {rel}: 文件 {fsize} 字节 "
+                f"超过 {_MAX_CSV_JSON_SIZE} 字节上限"
+            )
+            return units
+
         # 使用文件对象读取，正确处理多行带引号的 CSV 值
         with open(filepath, encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f, delimiter=delimiter)

@@ -568,6 +568,84 @@ def test_sandbox_oversize_response_line_char_semantics_multibyte():
     print("[OK] test_sandbox_oversize_response_line_char_semantics_multibyte")
 
 
+def test_sandbox_oversize_response_line_diverse_scripts():
+    """Round 46 Step 4 (G3): extend the r44 multibyte cap test from
+    Chinese-only ('你' × 2048) coverage to three additional UTF-8
+    script families with different byte widths:
+
+      - Japanese hiragana 'あ' (U+3042, 3 bytes UTF-8)
+      - Korean hangul     '한' (U+D55C, 3 bytes UTF-8)
+      - Emoji             '🎮' (U+1F3AE, 4 bytes UTF-8 — surrogate pair)
+
+    All three must trigger the cap at the same char count (1024) as
+    ASCII / CJK, regardless of byte width.  This proves the
+    char-not-byte contract holds across Asian scripts that rendering
+    pipelines occasionally treat as 2-byte (UCS-2 era) and across the
+    4-byte BMP-extension range where a few historical readers truncate
+    surrogates.  Closes the round 45 audit's optional MEDIUM gap.
+    """
+    from unittest import mock
+
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+
+        def readline(self, size: int = -1) -> str:
+            # Text-mode readline counts CHARS, not bytes.  Return
+            # exactly ``size`` chars of the payload so the caller sees
+            # the cap regardless of per-char byte width.
+            if size > 0:
+                return self._payload[:size]
+            return self._payload
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+    test_cases = [
+        ("あ", "Japanese hiragana 'あ' (3 bytes UTF-8)"),
+        ("한", "Korean hangul '한' (3 bytes UTF-8)"),
+        ("\U0001f3ae", "Emoji '🎮' U+1F3AE (4 bytes UTF-8)"),
+    ]
+
+    for char, label in test_cases:
+        # Fresh client per case so the cap-trip state from one case
+        # does not leak into the next.
+        client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+        client._timeout = 5.0
+
+        # Patch the cap to 1024 chars; payload is 2048 chars (well
+        # over the cap).  Byte size ranges from 6 KB (3-byte chars) to
+        # 8 KB (4-byte chars), but the cap fires at the char count.
+        with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+            client._proc = _FakeProc(char * 2048)
+            raised = False
+            msg = ""
+            try:
+                client._read_response_line(req_id=200)
+            except RuntimeError as e:
+                msg = str(e)
+                raised = "chars" in msg.lower() or "exceeded" in msg.lower()
+            assert raised, (
+                f"{label}: 2048 chars (> 1024 cap) without newline must "
+                f"raise RuntimeError mentioning 'chars' or 'exceeded'; "
+                f"got msg={msg!r}"
+            )
+    print("[OK] test_sandbox_oversize_response_line_diverse_scripts")
+
+
 def test_sandbox_close_idempotent():
     """Calling close() twice on a subprocess client is a no-op the second time."""
     config = APIConfig(
@@ -619,6 +697,8 @@ ALL_TESTS = [
     test_sandbox_rejects_oversize_response_line,
     # Round 44 audit-tail: cap is CHARS not BYTES — multibyte payload
     test_sandbox_oversize_response_line_char_semantics_multibyte,
+    # Round 46 Step 4 (G3): diverse scripts (ja hiragana / ko hangul / emoji)
+    test_sandbox_oversize_response_line_diverse_scripts,
 ]
 
 

@@ -292,6 +292,91 @@ def test_load_ui_button_whitelist_rejects_oversized_file():
     print("[OK] load_ui_button_whitelist_rejects_oversized_file")
 
 
+def test_load_ui_button_whitelist_mixed_directory():
+    """Round 46 Step 4 (G2): ``load_ui_button_whitelist`` with a mixed
+    list — small valid files + oversized rogue files — must load
+    entries from the small files while silently skipping the oversized
+    ones, rather than failing the whole batch.  Closes the round 45
+    audit's optional MEDIUM gap on per-file granularity guarantees
+    when an operator passes a directory containing both legitimate
+    small overrides and accidental large files.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        is_common_ui_button,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+
+        # Small legitimate .txt — should be loaded (2 valid tokens after
+        # blank/comment skip).
+        small_txt = td_path / "small.txt"
+        small_txt.write_text(
+            "round46_a\n# comment line\n\nround46_b\n",
+            encoding="utf-8",
+        )
+
+        # Small legitimate .json — should be loaded (1 valid string,
+        # non-string entries dropped per existing .json loader contract).
+        small_json = td_path / "small.json"
+        small_json.write_text(
+            _json.dumps(["round46_c", 42, None], ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        # Oversized .json (51 MB sparse) — must be skipped by size cap.
+        big_json = td_path / "big.json"
+        with open(big_json, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        # Oversized .txt (51 MB sparse) — must be skipped by size cap.
+        big_txt = td_path / "big.txt"
+        with open(big_txt, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+
+        # Mix the order to prove ordering does not influence per-file
+        # gating (small entries before / between / after oversized files).
+        added = load_ui_button_whitelist([
+            str(small_txt),
+            str(big_json),
+            str(small_json),
+            str(big_txt),
+        ])
+
+        # 3 valid tokens added: round46_a + round46_b (small.txt) +
+        # round46_c (small.json).  Oversized files contributed 0.
+        assert added == 3, (
+            f"expected 3 entries (2 from small.txt + 1 from small.json), "
+            f"got {added}; oversized .json/.txt should be silently "
+            f"skipped without aborting the batch"
+        )
+        # Per-file granularity: small entries are reachable.
+        assert is_common_ui_button("round46_a")
+        assert is_common_ui_button("round46_b")
+        assert is_common_ui_button("round46_c")
+        ext = get_ui_button_whitelist_extensions()
+        assert "round46_a" in ext
+        assert "round46_b" in ext
+        assert "round46_c" in ext
+        # No bytes from the oversized files leaked into extensions.
+        assert "\x00" not in "".join(ext), (
+            "oversized sparse-file null bytes must not pollute extensions"
+        )
+
+    clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_mixed_directory")
+
+
 ALL_TESTS = [
     # Round 31 Tier A-1
     test_is_common_ui_button,
@@ -303,6 +388,8 @@ ALL_TESTS = [
     test_ui_button_whitelist_rebinds_frozenset,
     # Round 44 audit-tail
     test_load_ui_button_whitelist_rejects_oversized_file,
+    # Round 46 Step 4 (G2): per-file granularity in mixed-directory load
+    test_load_ui_button_whitelist_mixed_directory,
 ]
 
 

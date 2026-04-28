@@ -421,6 +421,78 @@ def test_resolve_translation_field():
     print("[OK] resolve_translation_field")
 
 
+def test_resolve_translation_field_alias_priority_over_generic():
+    """Round 46 Step 4 (G4): alias priority over generic fallback.
+
+    When a response item contains BOTH a language-specific alias
+    (e.g. ``"ja"`` / ``"jp"`` for Japanese) AND a generic field name
+    (e.g. ``"translation"`` / ``"target"``), ``resolve_translation_field``
+    must return the alias value.  This is the documented contract per
+    ``core/lang_config.py:138-143`` (alias loop runs before generic
+    loop) but was not previously asserted by tests — closed by the
+    round 45 audit's optional MEDIUM list.
+
+    Real-world risk: an AI returning a malformed response with a
+    placeholder ``"translation": "<placeholder>"`` next to a correct
+    ``"ja": "real-japanese-text"`` would silently use the placeholder
+    if the priority were reversed, causing every entry to be lost.
+    """
+    from core.lang_config import resolve_translation_field, get_language_config
+
+    ja_cfg = get_language_config("ja")
+    zh_cfg = get_language_config("zh")
+    zh_tw_cfg = get_language_config("zh-tw")
+
+    # Direct alias wins over generic.
+    assert resolve_translation_field(
+        {"translation": "FALLBACK", "ja": "REAL"}, ja_cfg
+    ) == "REAL", "alias 'ja' must beat generic 'translation'"
+
+    # Aliases also win over the other two generic spellings.
+    assert resolve_translation_field(
+        {"target": "FALLBACK", "ja": "REAL"}, ja_cfg
+    ) == "REAL", "alias 'ja' must beat generic 'target'"
+    assert resolve_translation_field(
+        {"trans": "FALLBACK", "ja": "REAL"}, ja_cfg
+    ) == "REAL", "alias 'ja' must beat generic 'trans'"
+
+    # Secondary alias 'jp' also wins over generic when 'ja' absent.
+    assert resolve_translation_field(
+        {"translation": "FALLBACK", "jp": "REAL"}, ja_cfg
+    ) == "REAL", "secondary alias 'jp' must beat generic 'translation'"
+
+    # zh aliases similarly: 'zh' / 'chinese' beat 'translation'.
+    assert resolve_translation_field(
+        {"translation": "FALLBACK", "zh": "REAL"}, zh_cfg
+    ) == "REAL", "alias 'zh' must beat generic 'translation'"
+    assert resolve_translation_field(
+        {"translation": "FALLBACK", "chinese": "REAL"}, zh_cfg
+    ) == "REAL", "alias 'chinese' must beat generic 'translation'"
+
+    # zh-tw is deliberately separated from bare 'zh' (r43 audit-tail
+    # contract — Simplified vs Traditional must not collide), so a
+    # zh-tw config with a 'zh' generic-shaped key should NOT fall
+    # through alias lookup; assert that the actual zh-tw aliases
+    # still win over generic.
+    assert resolve_translation_field(
+        {"translation": "FALLBACK", "zh-tw": "REAL"}, zh_tw_cfg
+    ) == "REAL", "alias 'zh-tw' must beat generic 'translation'"
+
+    # Edge case: alias key exists but value is empty string.  The
+    # implementation returns the empty string (truthy presence-check
+    # via ``in``); generic fallback is NOT consulted.  This documents
+    # the present behaviour so a future change is forced to be
+    # intentional.
+    assert resolve_translation_field(
+        {"translation": "FALLBACK", "ja": ""}, ja_cfg
+    ) == "", (
+        "alias key with empty string value still wins over generic — "
+        "this is the documented behaviour of in-based key lookup"
+    )
+
+    print("[OK] resolve_translation_field_alias_priority_over_generic")
+
+
 def test_config_validation():
     """配置文件 schema 校验：类型/范围/未知键"""
     from pathlib import Path as _Path
@@ -571,6 +643,8 @@ def run_all() -> int:
         test_lang_config_detect,
         test_lang_config_lookup,
         test_resolve_translation_field,
+        # Round 46 Step 4 (G4): alias priority over generic fallback
+        test_resolve_translation_field_alias_priority_over_generic,
         test_config_validation,
         # Round 38 M2: 50 MB size-cap gates on user-supplied JSON paths
         test_config_file_rejects_oversized,
