@@ -840,6 +840,101 @@ def test_sandbox_oversize_response_line_with_newline_terminated_multibyte():
     print("[OK] test_sandbox_oversize_response_line_with_newline_terminated_multibyte")
 
 
+def test_sandbox_response_line_cap_minus_1_with_newline_passes():
+    """Round 48 Step 1 (G3.1 boundary expansion): 1023 chars + \\n
+    (cap-1 + newline) must NOT trigger cap.  The cap branch requires
+    BOTH ``len(line) >= cap`` AND ``not line.endswith('\\n')``.  At
+    cap-1 chars + newline, line len is 1024 (== cap, satisfies >= cap)
+    BUT ends with \\n → cap branch does not fire.  Pins the lower edge
+    of newline-terminated cap behaviour.
+    """
+    from unittest import mock
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+        def readline(self, size: int = -1) -> str:
+            if size <= 0:
+                return self._payload
+            up_to = self._payload[:size]
+            nl = up_to.find("\n")
+            return up_to[:nl + 1] if nl >= 0 else up_to
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+        def poll(self): return None
+        def kill(self): pass
+        def wait(self, timeout=None): pass
+
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        # 1023 chars + \n; readline(1024) returns 1024 chars ending
+        # with \n → len >= cap but endswith \n, cap branch skipped.
+        client._proc = _FakeProc("X" * 1023 + "\n")
+        cap_raised = False
+        try:
+            client._read_response_line(req_id=500)
+        except RuntimeError as e:
+            cap_raised = "chars" in str(e).lower() or "exceeded" in str(e).lower()
+        assert not cap_raised, (
+            "1023 chars + newline (well-formed at cap-1) must NOT trigger cap"
+        )
+    print("[OK] test_sandbox_response_line_cap_minus_1_with_newline_passes")
+
+
+def test_sandbox_response_line_cap_exact_with_newline_passes():
+    """Round 48 Step 1 (G3.1 boundary expansion): payload where the
+    \\n sits at position cap-1 (so readline returns exactly cap chars
+    ending in \\n) must NOT trigger cap.  Exercises the same cap +
+    newline guard as the test above but at the upper edge — anything
+    shorter still terminates correctly, anything longer would either
+    have \\n earlier (reading less than cap) or no \\n (triggers cap).
+    """
+    from unittest import mock
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+        def readline(self, size: int = -1) -> str:
+            if size <= 0:
+                return self._payload
+            up_to = self._payload[:size]
+            nl = up_to.find("\n")
+            return up_to[:nl + 1] if nl >= 0 else up_to
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+        def poll(self): return None
+        def kill(self): pass
+        def wait(self, timeout=None): pass
+
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        # \n at position 1023 (0-indexed); readline(1024) returns
+        # chars[0..1023] = 1023 'Y' chars + 1 '\n' = 1024 chars total
+        # ending with \n; "ignored" tail is irrelevant (readline stops
+        # at first \n within the size limit).
+        client._proc = _FakeProc("Y" * 1023 + "\n" + "ignored")
+        cap_raised = False
+        try:
+            client._read_response_line(req_id=501)
+        except RuntimeError as e:
+            cap_raised = "chars" in str(e).lower() or "exceeded" in str(e).lower()
+        assert not cap_raised, (
+            "1024 chars exact with \\n at pos 1023 (cap exact + newline) "
+            "must NOT trigger cap"
+        )
+    print("[OK] test_sandbox_response_line_cap_exact_with_newline_passes")
+
+
 def test_sandbox_close_idempotent():
     """Calling close() twice on a subprocess client is a no-op the second time."""
     config = APIConfig(
@@ -898,6 +993,9 @@ ALL_TESTS = [
     # Round 47 Step 2 (G3 LOW gap): 2-byte Latin + newline-terminated multibyte
     test_sandbox_oversize_response_line_2byte_latin,
     test_sandbox_oversize_response_line_with_newline_terminated_multibyte,
+    # Round 48 Step 1 (G3.1 audit gap): newline-cap exact boundary
+    test_sandbox_response_line_cap_minus_1_with_newline_passes,
+    test_sandbox_response_line_cap_exact_with_newline_passes,
 ]
 
 

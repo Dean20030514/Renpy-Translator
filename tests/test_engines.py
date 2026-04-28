@@ -674,6 +674,110 @@ def test_csv_engine_rejects_toctou_growth_attack():
     print("[OK] csv_engine_rejects_toctou_growth_attack")
 
 
+def test_csv_engine_accepts_cap_minus_1_csv():
+    """Round 48 Step 1 (G1.1 boundary expansion): file size = cap-1
+    must NOT trigger ``> cap``.  Together with r47's
+    ``test_csv_engine_accepts_exact_cap_csv`` (== cap) and the new
+    ``test_csv_engine_rejects_cap_plus_1_csv`` below, fully pins the
+    lower / equal / upper edges of the ``>`` operator contract."""
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        cm1_csv = Path(d) / "cap_minus_1.csv"
+        cm1_csv.write_text("original\nHello\n", encoding="utf-8")
+        size = cm1_csv.stat().st_size
+        # mock cap = size + 1 -> file_size = cap - 1
+        with mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", size + 1):
+            units = engine.extract_texts(Path(d))
+        originals = [u.original for u in units if u.file_path == "cap_minus_1.csv"]
+        assert "Hello" in originals, (
+            f"cap-1 file size must NOT trigger > cap; "
+            f"expected 'Hello' in extracted units, got {originals}"
+        )
+    print("[OK] csv_engine_accepts_cap_minus_1_csv")
+
+
+def test_csv_engine_rejects_cap_plus_1_csv():
+    """Round 48 Step 1 (G1.1 boundary expansion): file size = cap+1
+    MUST trigger ``> cap`` and reject.  The smallest size that should
+    be rejected — the upper edge of the ``>`` operator contract."""
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        cp1_csv = Path(d) / "cap_plus_1.csv"
+        cp1_csv.write_text("original\nHello\n", encoding="utf-8")
+        size = cp1_csv.stat().st_size
+        # mock cap = size - 1 -> file_size = cap + 1
+        with mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", size - 1):
+            units = engine.extract_texts(Path(d))
+        originals = [u.original for u in units if u.file_path == "cap_plus_1.csv"]
+        assert "Hello" not in originals, (
+            f"cap+1 file size must trigger > cap and reject; "
+            f"expected empty, got {originals}"
+        )
+    print("[OK] csv_engine_rejects_cap_plus_1_csv")
+
+
+def test_csv_engine_logs_csv_error_distinct_from_generic():
+    """Round 48 Step 1 (L1 informational): when csv.DictReader raises
+    csv.Error (typically on TOCTOU truncation or malformed CSV mid-
+    row), the explicit ``except csv.Error`` branch must catch it
+    BEFORE the generic ``except Exception`` falls through.  Verified
+    via mock injecting csv.Error and checking the operator-facing
+    log message uses "CSV 解析错误" (CSV-specific) rather than
+    "解析失败" (generic).  Closes the round 47 audit's 1 LOW
+    informational gap."""
+    import csv
+    import logging
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        target = Path(d) / "bad.csv"
+        target.write_text("original\nHello\n", encoding="utf-8")
+
+        # Patch _extract_csv to raise csv.Error (simulates DictReader
+        # crashing on a truncated row inside extract_texts try/except).
+        def _raise_csv_error(self, filepath, delimiter=","):
+            raise csv.Error("simulated truncation: line missing field")
+
+        with mock.patch.object(CSVEngine, "_extract_csv", _raise_csv_error):
+            # Capture logger output to verify the CSV-specific message
+            # branch fired (not the generic "解析失败" fallback).
+            captured: list[str] = []
+
+            class _CaptureHandler(logging.Handler):
+                def emit(self, record: logging.LogRecord) -> None:
+                    captured.append(record.getMessage())
+
+            handler = _CaptureHandler(level=logging.ERROR)
+            logger = logging.getLogger("renpy_translator")
+            logger.addHandler(handler)
+            try:
+                units = engine.extract_texts(Path(d))
+            finally:
+                logger.removeHandler(handler)
+
+        # No units extracted (csv.Error caught, return []).
+        assert not [u for u in units if u.file_path == "bad.csv"], (
+            "csv.Error must result in 0 units for the failing file"
+        )
+        # The CSV-specific log message branch fired.
+        csv_error_msgs = [m for m in captured if "CSV 解析错误" in m]
+        generic_fail_msgs = [m for m in captured if "解析失败" in m]
+        assert csv_error_msgs, (
+            f"csv.Error must trigger the explicit 'CSV 解析错误' branch; "
+            f"captured={captured}"
+        )
+        assert not generic_fail_msgs, (
+            f"csv.Error must NOT fall through to generic '解析失败' branch; "
+            f"captured={captured}"
+        )
+    print("[OK] csv_engine_logs_csv_error_distinct_from_generic")
+
+
 # ============================================================
 # generic_pipeline 测试
 # ============================================================
@@ -876,6 +980,10 @@ if __name__ == "__main__":
     test_csv_engine_handles_empty_csv()
     test_csv_engine_handles_stat_oserror_fail_open()
     test_csv_engine_rejects_toctou_growth_attack()
+    # Round 48 Step 1 (G1.1 boundary expansion + L1 csv.Error branch)
+    test_csv_engine_accepts_cap_minus_1_csv()
+    test_csv_engine_rejects_cap_plus_1_csv()
+    test_csv_engine_logs_csv_error_distinct_from_generic()
     # generic_pipeline
     test_build_generic_chunks_single()
     test_build_generic_chunks_split()
@@ -896,5 +1004,10 @@ if __name__ == "__main__":
 
     print()
     print("=" * 40)
-    print("ALL 53 ENGINE TESTS PASSED")
+    # Note: number = main block test_*() invocations (which equals
+    # the ``^def test_`` count in this file).  Round 47 had a brief
+    # +1 drift from r46 Step 4 baseline math (49 -> 53 was claimed,
+    # actually 48 -> 52 + 1 over-count); r48 Step 1 corrected here.
+    # See round 47 audit Correctness LOW finding.
+    print(f"ALL 55 ENGINE TESTS PASSED")
     print("=" * 40)

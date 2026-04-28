@@ -139,6 +139,17 @@ class CSVEngine(EngineBase):
                 return self._extract_jsonl(filepath)
             elif ext == ".json":
                 return self._extract_json_or_jsonl(filepath)
+        except csv.Error as e:
+            # Round 48 Step 1 (L1 informational): explicit catch for
+            # csv.DictReader errors before falling through to the
+            # generic Exception handler.  Most common trigger: a
+            # TOCTOU truncation between Path.stat() and open() leaves
+            # the file mid-row, so DictReader raises csv.Error on the
+            # malformed line.  Separating CSV-specific errors from
+            # generic IO failures gives clearer operator-facing logs
+            # ("CSV 解析错误" vs "解析失败").  Closes the round 47
+            # audit's 1 LOW informational gap.
+            logger.error(f"[CSV] CSV 解析错误 {rel}: {e}")
         except Exception as e:
             logger.error(f"[CSV] 解析失败 {rel}: {e}")
         return []

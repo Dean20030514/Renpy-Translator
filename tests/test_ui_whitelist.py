@@ -481,6 +481,73 @@ def test_load_ui_button_whitelist_dedupes_cross_files():
     print("[OK] load_ui_button_whitelist_dedupes_cross_files")
 
 
+def test_load_ui_button_whitelist_normalization_dedupes_cross_files():
+    """Round 48 Step 1 (G2.1): tokens varying only in case + whitespace
+    must be normalised (via ``_normalise_ui_button``: lower + strip +
+    whitespace-collapse) then deduplicated across files via frozenset
+    union.  Tests the interaction r47 audit identified as a coverage
+    gap — r47 G2 dedup test only used identical strings ('shared_token'),
+    not case/whitespace variations.
+
+    Tokens "Save", "save", "  Save  ", "Save Game", "save  game",
+    " Save Game " across 3 files all normalise to either "save" or
+    "save game" → final extension set has exactly 2 unique tokens.
+    """
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        is_common_ui_button,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        # 3 files with case + whitespace variations of 2 tokens
+        file_a = td_path / "a.txt"
+        file_a.write_text("Save\nSave Game\n", encoding="utf-8")
+        file_b = td_path / "b.txt"
+        file_b.write_text("save\n  Save  \n", encoding="utf-8")
+        file_c = td_path / "c.txt"
+        file_c.write_text("save  game\n Save Game \n", encoding="utf-8")
+
+        added = load_ui_button_whitelist([str(file_a), str(file_b), str(file_c)])
+
+        # Two distinct normalised tokens across the 6 raw input strings.
+        ext = get_ui_button_whitelist_extensions()
+        assert "save" in ext, (
+            f"normalised 'save' (from Save/save/  Save  ) must be in extensions: {ext}"
+        )
+        assert "save game" in ext, (
+            f"normalised 'save game' (from Save Game/save  game/ Save Game ) "
+            f"must be in extensions: {ext}"
+        )
+        assert len(ext) == 2, (
+            f"expected 2 unique normalised tokens (save + save game), "
+            f"got {len(ext)}: {ext}"
+        )
+        # added counter = 2 net new (case/whitespace variations all dedup
+        # to 2 normalised tokens; subsequent additions return 0)
+        assert added == 2, (
+            f"expected added=2 (case/whitespace all dedup), got {added}"
+        )
+
+        # All 6 raw variations resolve via is_common_ui_button (the
+        # lookup also normalises before checking, so case/whitespace
+        # variations of either stored token still match).
+        for variation in ("Save", "save", "  Save  ", "SAVE",
+                          "Save Game", "save  game", " Save Game ", "SAVE GAME"):
+            assert is_common_ui_button(variation), (
+                f"variation {variation!r} should match the normalised "
+                f"stored form via is_common_ui_button"
+            )
+
+    clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_normalization_dedupes_cross_files")
+
+
 ALL_TESTS = [
     # Round 31 Tier A-1
     test_is_common_ui_button,
@@ -497,6 +564,8 @@ ALL_TESTS = [
     # Round 47 Step 2 (G2 LOW gap): order invariance + cross-file dedup
     test_load_ui_button_whitelist_order_invariant,
     test_load_ui_button_whitelist_dedupes_cross_files,
+    # Round 48 Step 1 (G2.1 audit gap): normalization-dedup interaction
+    test_load_ui_button_whitelist_normalization_dedupes_cross_files,
 ]
 
 
