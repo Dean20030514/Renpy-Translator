@@ -145,6 +145,8 @@ jobs:
         run: python tests/test_tl_pipeline.py
       - name: Run runtime hook filter tests
         run: python tests/test_runtime_hook_filter.py
+      - name: Run runtime hook v2 schema tests
+        run: python tests/test_runtime_hook_v2_schema.py
       - name: Run translation_db language tests
         run: python tests/test_translation_db_language.py
       - name: Run multilang run tests
