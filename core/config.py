@@ -21,6 +21,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger("renpy_translator")
 
 # Round 38: reject renpy_translate.json config files above 50 MB to bound
@@ -123,7 +125,17 @@ class Config:
                     )
                     continue
                 try:
-                    data = json.loads(p.read_text(encoding="utf-8"))
+                    # Round 49 Step 2: TOCTOU defense via check_fstat_size.
+                    with open(p, encoding="utf-8") as f:
+                        ok, fsize2 = check_fstat_size(f, _MAX_CONFIG_FILE_SIZE)
+                        if not ok:
+                            logger.warning(
+                                f"[CONFIG] 配置文件 stat 后增长到 {fsize2} 字节"
+                                f"（疑似 TOCTOU 攻击），超过 "
+                                f"{_MAX_CONFIG_FILE_SIZE} 字节上限，跳过: {p}"
+                            )
+                            continue
+                        data = json.loads(f.read())
                     if isinstance(data, dict):
                         self._file_config = data
                         logger.info(f"[CONFIG] 已加载配置文件: {p}")

@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -572,7 +574,17 @@ def load_ui_button_whitelist(paths: Iterable[Union[str, Path]]) -> int:
             )
             continue
         try:
-            text = p.read_text(encoding="utf-8-sig")
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+            with open(p, encoding="utf-8-sig") as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_UI_WHITELIST_SIZE)
+                if not ok:
+                    logger.warning(
+                        "[UI-WHITELIST] 跳过 %s: 文件 stat 后增长到 %d 字节"
+                        "（疑似 TOCTOU 攻击），超过 %d 字节上限",
+                        p, fsize2, _MAX_UI_WHITELIST_SIZE,
+                    )
+                    continue
+                text = f.read()
         except OSError as e:
             logger.warning("[UI-WHITELIST] 读取失败，跳过 %s: %s", p, e)
             continue

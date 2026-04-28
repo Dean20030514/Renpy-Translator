@@ -35,6 +35,8 @@ import time
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
+from core.file_safety import check_fstat_size
+
 
 # Round 44 audit-tail: 50 MB cap on the config.json picked by the GUI
 # load dialog.  Missed by r37-r43 M2 phases (the GUI was added in r41
@@ -106,7 +108,17 @@ class AppDialogsMixin:
                     f"配置文件 {fsize} 字节超过 {_MAX_GUI_CONFIG_SIZE} 字节上限，拒绝加载",
                 )
                 return
-            data = json.loads(path_obj.read_text(encoding="utf-8"))
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size.
+            with open(path_obj, encoding="utf-8") as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_GUI_CONFIG_SIZE)
+                if not ok:
+                    messagebox.showerror(
+                        "加载失败",
+                        f"配置文件 stat 后增长到 {fsize2} 字节（疑似 TOCTOU 攻击），"
+                        f"超过 {_MAX_GUI_CONFIG_SIZE} 字节上限，拒绝加载",
+                    )
+                    return
+                data = json.loads(f.read())
             mapping = {
                 "provider": self.var_provider, "model": self.var_model,
                 "genre": self.var_genre, "rpm": self.var_rpm, "rps": self.var_rps,

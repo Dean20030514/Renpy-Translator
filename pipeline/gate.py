@@ -17,6 +17,7 @@ from translators.renpy_text_utils import (
 )
 
 from pipeline.helpers import list_rpy_files, _normalize_ws
+from core.file_safety import check_fstat_size
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,17 @@ def evaluate_gate(original_root: Path, translated_root: Path) -> dict:
                     f"glossary.json too large "
                     f"({glossary_size} bytes > {_MAX_GATE_GLOSSARY_SIZE} cap)"
                 )
-            data = json.loads(glossary_path.read_text(encoding="utf-8"))
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size.  Raises
+            # OSError on cap violation so the existing except branch downstream
+            # logs the gate degradation per the r26 H-4 contract.
+            with open(glossary_path, encoding="utf-8") as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_GATE_GLOSSARY_SIZE)
+                if not ok:
+                    raise OSError(
+                        f"glossary.json grew past cap after stat (TOCTOU?): "
+                        f"{fsize2} bytes > {_MAX_GATE_GLOSSARY_SIZE} cap"
+                    )
+                data = json.loads(f.read())
             glossary_terms = data.get("terms", {}) or None
             locked_list = data.get("locked_terms", [])
             no_trans_list = data.get("no_translate", [])

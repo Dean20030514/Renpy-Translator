@@ -10,6 +10,8 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,7 +111,20 @@ def load_font_config(config_path: "Path | None") -> dict:
         )
         return {}
     try:
-        return _json.loads(config_path.read_text(encoding="utf-8"))
+        # Round 49 Step 2: TOCTOU defense via core.file_safety.check_fstat_size.
+        # The path.stat() pre-check above is the fast path; this re-checks the
+        # size on the actual open fd to defeat the attacker-grow-between-stat-
+        # and-open race window.  Mirrors the pattern in engines/csv_engine.py.
+        with open(config_path, encoding="utf-8") as f:
+            ok, fsize2 = check_fstat_size(f, _MAX_FONT_CONFIG_SIZE)
+            if not ok:
+                logger.warning(
+                    f"font_config 文件 stat 后增长到 {fsize2} 字节"
+                    f"（疑似 TOCTOU 攻击），超过 {_MAX_FONT_CONFIG_SIZE} 字节上限，"
+                    f"跳过: {config_path}"
+                )
+                return {}
+            return _json.loads(f.read())
     except (OSError, _json.JSONDecodeError, ValueError) as e:
         logger.warning(f"font_config 加载失败: {e}")
         return {}

@@ -35,6 +35,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.file_safety import check_fstat_size
+
 
 class TranslationDB:
     """Lightweight JSON-based translation metadata store.
@@ -155,7 +157,24 @@ class TranslationDB:
                 self._dirty = False
                 return
             try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
+                # Round 49 Step 2: TOCTOU defense via check_fstat_size.  The
+                # path.stat() pre-check above is the fast path; this re-checks
+                # the size on the actual open fd to defeat the attacker-grow-
+                # between-stat-and-open race window.
+                with open(self.path, encoding="utf-8") as f:
+                    ok, fsize2 = check_fstat_size(f, self._MAX_DB_FILE_SIZE)
+                    if not ok:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "[DB] %s grew past cap after stat (TOCTOU?): "
+                            "%d bytes > %d-byte cap, refusing to load",
+                            self.path, fsize2, self._MAX_DB_FILE_SIZE,
+                        )
+                        self.entries = []
+                        self._index = {}
+                        self._dirty = False
+                        return
+                    data = json.loads(f.read())
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 # Corrupted or incompatible file; start fresh but do not overwrite immediately.
                 self.entries = []

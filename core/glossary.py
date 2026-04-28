@@ -13,6 +13,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +148,22 @@ class Glossary:
         actors_path = data_dir / "Actors.json"
         if actors_path.is_file() and not _json_file_too_large(actors_path):
             try:
-                actors = _json.loads(actors_path.read_text(encoding="utf-8"))
+                # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+                # _json_file_too_large above is the path-based fast path; this
+                # re-checks the size on the actual fd to defeat attacker-grow-
+                # between-stat-and-open.  ``actors = None`` on failure so the
+                # isinstance check below skips the loop without raising.
+                with open(actors_path, encoding="utf-8") as f:
+                    ok, fsize2 = check_fstat_size(f, _MAX_GLOSSARY_JSON_SIZE)
+                    if not ok:
+                        logger.warning(
+                            "[GLOSSARY] Actors.json grew past cap after stat "
+                            "(TOCTOU?): %d bytes > %d, skipping: %s",
+                            fsize2, _MAX_GLOSSARY_JSON_SIZE, actors_path,
+                        )
+                        actors = None
+                    else:
+                        actors = _json.loads(f.read())
                 if isinstance(actors, list):
                     with self._lock:
                         for actor in actors:
@@ -166,7 +183,18 @@ class Glossary:
         system_path = data_dir / "System.json"
         if system_path.is_file() and not _json_file_too_large(system_path):
             try:
-                system = _json.loads(system_path.read_text(encoding="utf-8"))
+                # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+                with open(system_path, encoding="utf-8") as f:
+                    ok, fsize2 = check_fstat_size(f, _MAX_GLOSSARY_JSON_SIZE)
+                    if not ok:
+                        logger.warning(
+                            "[GLOSSARY] System.json grew past cap after stat "
+                            "(TOCTOU?): %d bytes > %d, skipping: %s",
+                            fsize2, _MAX_GLOSSARY_JSON_SIZE, system_path,
+                        )
+                        system = {}
+                    else:
+                        system = _json.loads(f.read())
                 terms = system.get("terms") or {}
                 added = 0
                 with self._lock:
@@ -236,12 +264,22 @@ class Glossary:
         path = Path(filepath)
         if not path.exists():
             return
-        # Round 38 M2: size-cap before read.
+        # Round 38 M2: path-based size-cap fast path before read.
         if _json_file_too_large(path):
             return
 
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+            with open(path, encoding='utf-8') as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_GLOSSARY_JSON_SIZE)
+                if not ok:
+                    logger.warning(
+                        "[GLOSSARY] system terms JSON grew past cap after stat "
+                        "(TOCTOU?): %d bytes > %d, skipping: %s",
+                        fsize2, _MAX_GLOSSARY_JSON_SIZE, path,
+                    )
+                    return
+                data = json.loads(f.read())
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             logger.warning(f"系统 UI 术语表解析失败: {filepath}")
             return
@@ -261,10 +299,20 @@ class Glossary:
         path = Path(filepath)
         if not path.exists():
             return
-        # Round 38 M2: size-cap before read.
+        # Round 38 M2: path-based size-cap fast path before read.
         if _json_file_too_large(path):
             return
-        data = json.loads(path.read_text(encoding='utf-8'))
+        # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+        with open(path, encoding='utf-8') as f:
+            ok, fsize2 = check_fstat_size(f, _MAX_GLOSSARY_JSON_SIZE)
+            if not ok:
+                logger.warning(
+                    "[GLOSSARY] glossary JSON grew past cap after stat "
+                    "(TOCTOU?): %d bytes > %d, skipping: %s",
+                    fsize2, _MAX_GLOSSARY_JSON_SIZE, path,
+                )
+                return
+            data = json.loads(f.read())
         self.characters.update(data.get('characters', {}))
         self.terms.update(data.get('terms', {}))
         self.memory.update(data.get('memory', {}))

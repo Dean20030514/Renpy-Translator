@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, RPGMAKER_MV_PROFILE
+from core.file_safety import check_fstat_size
 
 logger = logging.getLogger("renpy_translator")
 
@@ -103,7 +104,16 @@ class RPGMakerMVEngine(EngineBase):
                 continue
 
             try:
-                data = json.loads(json_path.read_text(encoding="utf-8"))
+                # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+                with open(json_path, encoding="utf-8") as f:
+                    ok, fsize2 = check_fstat_size(f, _MAX_RPGM_JSON_SIZE)
+                    if not ok:
+                        logger.warning(
+                            f"[RPGM] 跳过 {filename}: 文件 stat 后增长到 {fsize2} 字节"
+                            f"（疑似 TOCTOU 攻击），超过 {_MAX_RPGM_JSON_SIZE} 字节上限"
+                        )
+                        continue
+                    data = json.loads(f.read())
             except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"[RPGM] 跳过 {filename}: {e}")
                 continue
@@ -425,7 +435,16 @@ class RPGMakerMVEngine(EngineBase):
                 continue
 
             try:
-                data = json.loads(src_path.read_text(encoding="utf-8"))
+                # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+                with open(src_path, encoding="utf-8") as f:
+                    ok, fsize2 = check_fstat_size(f, _MAX_RPGM_JSON_SIZE)
+                    if not ok:
+                        logger.warning(
+                            f"[RPGM] 回写跳过 {rel_path}: 文件 stat 后增长到 {fsize2} 字节"
+                            f"（疑似 TOCTOU 攻击），超过 {_MAX_RPGM_JSON_SIZE} 字节上限"
+                        )
+                        continue
+                    data = json.loads(f.read())
             except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"[RPGM] 读取失败 {rel_path}: {e}")
                 continue
