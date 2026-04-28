@@ -657,12 +657,19 @@ def test_csv_engine_rejects_toctou_growth_attack():
         # between Path.stat() and open()".  The real Path.stat() above
         # returns the actual small size (~ 15 bytes < 100 cap), so the
         # pre-open gate passes; the post-open fstat() now sees > cap.
+        # Round 48 audit-fix: namespace correction for r47 test after
+        # round 48 Step 2 helper extraction — the actual fstat call
+        # moved from `engines.csv_engine.os.fstat` (r47 inline) to
+        # `core.file_safety.os.fstat` (r48 helper).  The original mock
+        # target was r47-correct but r48-stale, causing this test to
+        # spuriously pass without actually intercepting fstat.
+        # Caught by round 48 Step 3 security audit.
         class _LargeStatResult:
             st_size = 99999  # > small_cap = 100
         def _patched_os_fstat(fd):
             return _LargeStatResult()
 
-        with mock.patch("engines.csv_engine.os.fstat", _patched_os_fstat), \
+        with mock.patch("core.file_safety.os.fstat", _patched_os_fstat), \
              mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", small_cap):
             units = engine.extract_texts(Path(d))
 

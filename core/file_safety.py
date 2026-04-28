@@ -59,13 +59,21 @@ def check_fstat_size(file_obj: IO, max_size: int) -> tuple[bool, int]:
         - ``within_limit`` is True if ``size <= max_size``, else False
         - ``observed_size`` is the byte count from os.fstat, or 0 on
           OSError (rare on a valid open fd)
-        - On OSError, returns ``(True, 0)`` — fail-open matching the
-          design choice across r37-r47 path-based stat() callers.
-          Rationale: stat failure on a successfully opened fd is
-          extremely rare; if it does happen, blocking the operation
-          risks more harm than letting it proceed (the surrounding
-          code paths have other guards — explicit cap pre-check
-          before open, generic Exception handler downstream).
+        - On OSError or ValueError, returns ``(True, 0)`` — fail-open
+          matching the design choice across r37-r47 path-based stat()
+          callers.  Rationale:
+          * OSError on a successfully opened fd is extremely rare
+            (filesystem errors, permission drop post-open).
+          * ValueError can be raised by ``fileno()`` if ``file_obj``
+            is a non-real-file object (e.g. ``io.StringIO``,
+            ``io.BytesIO``).  Real-file callers (the only intended
+            callers per r48 Step 2 design) won't hit this path, but
+            catching ValueError makes the helper safe to call from
+            arbitrary file-like wrappers without surprises.
+          If either fires, blocking the operation risks more harm
+          than letting it proceed (the surrounding code paths have
+          other guards — explicit cap pre-check before open, generic
+          Exception handler downstream).
 
     Examples
     --------
@@ -80,6 +88,6 @@ def check_fstat_size(file_obj: IO, max_size: int) -> tuple[bool, int]:
     """
     try:
         size = os.fstat(file_obj.fileno()).st_size
-    except OSError:
+    except (OSError, ValueError):
         return True, 0  # fail-open
     return size <= max_size, size

@@ -106,6 +106,39 @@ def test_check_fstat_size_fail_open_on_oserror():
     print("[OK] check_fstat_size_fail_open_on_oserror")
 
 
+def test_check_fstat_size_fail_open_on_valueerror():
+    """Round 48 Step 3 audit-fix (Coverage M1 + Correctness LOW):
+    when ``file_obj.fileno()`` raises ValueError (the contract for
+    non-real-file objects like ``io.StringIO`` / ``io.BytesIO``),
+    the helper must also return (True, 0) — fail-open with the same
+    rationale as OSError.  Closes the round 48 audit's coverage gap
+    where the helper was OSError-only and the contract was
+    incomplete for arbitrary file-like wrappers."""
+    import io
+    from core.file_safety import check_fstat_size
+
+    # io.BytesIO has no real fd — calling fileno() raises
+    # io.UnsupportedOperation, which inherits from ValueError.
+    bio = io.BytesIO(b"not-a-real-file")
+    ok, size = check_fstat_size(bio, max_size=100)
+    assert ok is True, (
+        f"ValueError fail-open (BytesIO has no fileno): must return "
+        f"True so caller proceeds; got ok={ok}"
+    )
+    assert size == 0, f"ValueError fail-open: size must be 0, got {size}"
+
+    # Same for StringIO.
+    sio = io.StringIO("not-a-real-file")
+    ok, size = check_fstat_size(sio, max_size=100)
+    assert ok is True, (
+        f"ValueError fail-open (StringIO has no fileno): must return "
+        f"True; got ok={ok}"
+    )
+    assert size == 0, f"ValueError fail-open: size must be 0, got {size}"
+
+    print("[OK] check_fstat_size_fail_open_on_valueerror")
+
+
 def run_all() -> int:
     """Run every check_fstat_size test in this module."""
     tests = [
@@ -113,6 +146,8 @@ def run_all() -> int:
         test_check_fstat_size_over_limit,
         test_check_fstat_size_at_cap_boundary,
         test_check_fstat_size_fail_open_on_oserror,
+        # Round 48 Step 3 audit-fix: ValueError fail-open coverage
+        test_check_fstat_size_fail_open_on_valueerror,
     ]
     for t in tests:
         t()
