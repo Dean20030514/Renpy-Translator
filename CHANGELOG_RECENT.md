@@ -53,6 +53,7 @@
 - 第四十五轮：11 项维护清算（test_file_processor 拆分 / .gitattributes / build --clean / pre-commit / constants 扩 / engine_guide / dataflow_translate / verify_workflow / rpyc cap / docs sync）+ r41-r45 累计审计 audit-tail（连续 6 轮 0 CRITICAL；首次发现 CI 覆盖 regression — Commit 1 拆 test_ui_whitelist 但 Commit 8 verify script 未同步 workflow，**ghost tests** in CI；同轮 fix +3 MEDIUM defense-in-depth：build symlink check / PyYAML disclosure / sandbox secure-by-default doc）；测试 413 保持
 - 第四十六轮：7 步综合执行（A 方案完整闭合 ~3-4h Auto mode）— r45 audit-tail typo 修复 / install_hooks.sh 启用 (pre-commit 现激活) / test_runtime_hook.py 794 拆 v2_schema (28→29 CI steps) / r45 audit 4 optional MEDIUM gap 全闭合（G1 csv_engine 真实代码加固 50 MB cap + 4 regression tests）/ r46 三维度审计 + 1 LOW + 2 MEDIUM 同轮 fix（连续 7 轮 0 CRITICAL）/ **真实桌面 GUI smoke via computer-use**（5 轮积压 UX 缺口闭合：r41 mixin split 端到端运行验证）/ docs sync；6 commits；测试 413 → 419 (+6)；OOM 防护 22/22 → 23/23 user-facing
 - 第四十七轮：5 step 综合执行（A 方案 + 7 项决策 + 一并 push origin）— r43 detail 真实推 archive (按 round 顺序插入 _archive，CHANGELOG_RECENT 删 125 行 detail) / r45+r46 audit 7 LOW gap 全补（G1 边界×4 含 TOCTOU regression / G2 mixed×2 / G3 multibyte×2）+ **TOCTOU 升级 ACCEPTABLE doc → MITIGATED code**（csv_engine `os.fstat(f.fileno())` stat-after-open 二次校验，4 bypass vector 现 3 ACCEPTABLE + 1 MITIGATED）/ r47 三维度审计（连续 8 轮 0 CRITICAL；3 MEDIUM coverage 推 r48）/ test_translation_state.py 765 拆 progress_tracker_language (29→30 CI steps，r35 C1+r36 H1 4 tests 迁出) / docs sync；5 commits + 一并 push origin (10 commits r46+r47)；测试 419 → 427 (+8)
+- 第四十八轮：4 step 综合执行（D 方案深度优化 + 8 项决策 + 一并 push origin）— r47 audit 4 gap close（G1.1 cap±1 边界×2 + G2.1 normalization-dedup×1 + G3.1 newline-cap exact×2 + L1 csv.Error try/except 显式 catch + r47 print "ALL 53"→"ALL 55" cosmetic typo fix）/ **TOCTOU helper 抽取**到 `core/file_safety.py::check_fstat_size`（80 行 stdlib-only 模块）+ **扩展 TOCTOU defense** 从 csv-only 到 csv/jsonl/json 三个 extract methods（_extract_jsonl/_extract_json_or_jsonl 的 read_text→with open + helper + read 改造）+ 4 unit tests + 2 jsonl/json TOCTOU regression / r48 三维度审计 + **首次 security CRITICAL 同轮 fix**（r47 TOCTOU mock target `engines.csv_engine.os.fstat` 在 r48 helper 抽取后失效，spuriously pass，改为 `core.file_safety.os.fstat` + 加注释防 future 重演 + 1 MEDIUM coverage fix：file_safety helper 加 ValueError fail-open 配合新 unit test）/ docs sync；4 commits + 一并 push origin（5 commits r48）；测试 427 → 440 (+13)；CSV bypass vector 防御从 csv-only MITIGATED 扩展到 csv+jsonl+json **三 readers 全 MITIGATED**
 
 ## 详细记录
 
@@ -803,6 +804,133 @@ D2 7 个 LOW regression test 全闭合：
 - A-H-3 Medium / Deep / S-H-4 Breaking
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - Round 48 起始审计（回溯验证 r47 5 commits）
+
+### 第四十八轮：4 step 综合执行（r47 audit 4 gap close / TOCTOU helper extract + jsonl/json 扩展 / r48 三维度审计 + CRITICAL+MEDIUM 同轮 fix / docs sync）
+
+**起因**：r47 末 HANDOFF "r48 候选" 列出 r47 audit 4 gap（3 MEDIUM optional + 1 LOW informational）+ r48 起始审计；用户 Auto Mode + 8 项决策选 D 方案深度优化（含 TOCTOU helper 抽取 + 扩展到 jsonl/json loaders）+ 一并 push origin。
+
+**Step 1（commit `60cdc72`）：r47 audit 4 gap close + r47 print 修正（D2 + D3 + L1）**
+
+r47 audit 推迟的 3 MEDIUM optional + 1 LOW informational + r47 自身的 print typo 一并修：
+
+- **G1.1 cap±1 boundary**（`tests/test_engines.py` +2）：
+  - `test_csv_engine_accepts_cap_minus_1_csv`：mock cap=size+1 → file_size = cap-1 → 不 trigger > cap
+  - `test_csv_engine_rejects_cap_plus_1_csv`：mock cap=size-1 → file_size = cap+1 → trigger > cap reject
+  - 与 r47 exact-cap test 配对，3 件套（cap-1 / == cap / cap+1）完整 pin `>` 操作符契约
+- **G2.1 normalization-dedup interaction**（`tests/test_ui_whitelist.py` +1）：
+  - `test_load_ui_button_whitelist_normalization_dedupes_cross_files`：6 raw input strings (Save / save / "  Save  " / Save Game / "save  game" / " Save Game ") 跨 3 文件 → `_normalise_ui_button`（lower + strip + whitespace-collapse）规范化为 2 unique tokens (save + save game) → frozenset union 自然 dedup
+- **G3.1 newline-cap exact boundary**（`tests/test_custom_engine.py` +2）：
+  - `test_sandbox_response_line_cap_minus_1_with_newline_passes`：1023 chars + \n → readline 返 1024 chars 含 \n，cap branch 需 `len >= cap AND not endswith('\n')`，第二条件失败，不 trigger
+  - `test_sandbox_response_line_cap_exact_with_newline_passes`：\n at pos 1023 → readline 返 1024 chars 末 \n，同样不 trigger
+- **L1 csv.Error explicit catch**（`engines/csv_engine.py` + `tests/test_engines.py` +1）：
+  - csv_engine.py `extract_texts` 在 generic `except Exception` 之前加 `except csv.Error as e:` 显式 catch + rationale 注释
+  - log message 用 "CSV 解析错误"（CSV-specific）vs generic "解析失败"，给 operator 更清晰的错误归类
+  - regression test mock _extract_csv 抛 csv.Error → 验证 logger 捕获 "CSV 解析错误" 而非 "解析失败"
+- **r47 print typo fix**（`tests/test_engines.py`）：
+  - r47 commit message "test_engines.py: 49 → 53 (+4)" 实际是 def 48 → 52 + 1 print over-count
+  - r48 Step 1 加 +3 def → 55 def → 改 print "ALL 53" → "ALL 55"，加注释说明 r47 drift + 不变式（main block 调用 = def count）
+
+测试 427 → **433** (+6)
+
+**Step 2（commit `321ab5d`）：TOCTOU helper extract + 扩展 jsonl/json loaders（D 方案 #8 选最优项）**
+
+**关键代码改动 — 新模块 + 重构 + 扩展 defense**：
+
+- **新建 `core/file_safety.py`**（~80 行 stdlib-only）：
+  - `check_fstat_size(file_obj, max_size) -> tuple[bool, int]` helper
+  - 返回 (within_limit, observed_size)；fail-open on OSError → (True, 0)
+  - 文档化与 r37-r47 path-based stat() 对齐的 fail-open 设计
+  - 零副作用（不 log，不 I/O 除 fstat）
+- **`engines/csv_engine.py` 三 extract methods 重构 + 扩展**：
+  - `_extract_csv` 重构 — r47 inline `os.fstat(f.fileno())` → `check_fstat_size(f, _MAX_CSV_JSON_SIZE)` helper 调用（行为 byte-equivalent）
+  - `_extract_jsonl` 加固 — `text = filepath.read_text(...)` → `with open(...) as f: ok, fsize2 = check_fstat_size(...); text = f.read()`，新加 TOCTOU defense
+  - `_extract_json_or_jsonl` 同样加固 — read_text → with open + helper + read
+- **新 `tests/test_file_safety.py`**（~135 行 / 4 unit tests）：
+  - within_limit / over_limit / at_cap_boundary（== max_size 通过 `<=`）/ fail_open_on_oserror
+- **`tests/test_engines.py` +2 TOCTOU regression**：
+  - `test_csv_engine_rejects_jsonl_toctou_growth_attack` — mock check_fstat_size 返 (False, 99999) → reject
+  - `test_csv_engine_rejects_json_toctou_growth_attack` — 同样
+- **CI workflow**：py_compile +`core/file_safety.py` + 新 step "Run file safety tests"（30 → **31** steps）
+
+**TOCTOU defense status update**：
+- r47 末：3 ACCEPTABLE + 1 MITIGATED（仅 csv_engine._extract_csv MITIGATED）
+- r48 末：3 ACCEPTABLE + 1 MITIGATED（**扩展到 csv_engine 三个 extract methods 全 MITIGATED**：csv / jsonl / json）via 共享 helper
+
+测试 433 → **439** (+6)
+
+**Step 3（commit `34d9707`）：r48 起始三维度审计 + CRITICAL + MEDIUM 同轮 fix**
+
+3 并行 Explore agent 审计 r47 4 commits + r48 Step 1-2：
+
+| 维度 | CRITICAL | HIGH | MEDIUM | LOW | 备注 |
+|------|----------|------|--------|-----|------|
+| Correctness | 0 | 0 | 0 | 1 | file_safety fileno() ValueError 文档化建议（与 Coverage M1 同根因） |
+| Coverage | 0 | 0 | **1** | 1 | M1: file_safety ValueError 路径未覆盖 / L1: Unicode normalization 设计文档化推 r49 |
+| Security | **1** | 0 | 0 | 1 | **CRITICAL：r47 TOCTOU mock target `engines.csv_engine.os.fstat` 在 r48 helper 抽取后失效，spuriously pass！** / L1: csv.Error explicit catch informational |
+
+**CRITICAL Security 同轮 fix**：
+- `tests/test_engines.py:665` mock target `engines.csv_engine.os.fstat` → `core.file_safety.os.fstat`
+- 加注释说明 namespace 修正 + 防 future refactoring 重演
+- 验证：ad-hoc mock-call counter 显示 helper 的 fstat 现在每次 check_fstat_size 调用都被精确拦截 1 次
+
+**MEDIUM Coverage + LOW Correctness 同轮 fix**（同根因）：
+- `core/file_safety.py` `except OSError` → `except (OSError, ValueError)` + docstring 更新（rationale：StringIO/BytesIO 等 file-like wrappers 的 fileno() 抛 io.UnsupportedOperation 继承自 ValueError；real-file 调用者不受影响，broader except 让 contract 完整）
+- `tests/test_file_safety.py` +1 test (`test_check_fstat_size_fail_open_on_valueerror`)：直接传入 io.BytesIO + io.StringIO 验证 ValueError fail-open 返 (True, 0)
+
+**审计结论**：
+- 连续 9 轮 0 CRITICAL **correctness** audit（r35 末 / r40 末 / r43 / r44 / r45 / r41-r45 累计 / r46 / r47 / **r48**）
+- r48 首次 security audit 报 CRITICAL — 但是测试 mock 失效（spuriously pass），不是真实代码 bug；同轮 fix
+- 体现"自审价值"模式（r45 audit-tail 也曾发现真实 issue）
+
+测试 439 → **440** (+1 ValueError fail-open)
+
+**Step 4（本 commit）：docs sync**
+
+- `CHANGELOG_RECENT.md`：演进摘要追加 r48 一行 + 加 r48 详细 section（本段）
+- `HANDOFF.md`：rewrite 为 r49 起点（r48 4 step 总览 + r49 候选 + 架构健康度更新 + CSV bypass vector 全 readers MITIGATED）
+- `CLAUDE.md` / `.cursorrules`：r48 累积特性段追加
+
+**结果汇总**：
+
+- **4 个 git commits**（Step 1 / 2 / 3 audit-fix / 4） + Final origin push
+- 测试 427 → **440** (+13 net：+6 Step 1 + +6 Step 2 + +1 Step 3)
+- CI workflow 30 → **31** steps（+ Run file safety tests）
+- 测试文件 26 → **27**（25 独立 suite + `test_all.py` meta；新 `test_file_safety.py` 是第 25 独立）+ tl_parser 75 + screen 51 = **566 断言点**
+- **真实代码加固**：
+  - **新模块 `core/file_safety.py`** 80 行 helper（DRY，可扩展）
+  - csv_engine.py 三 extract methods 全 MITIGATED TOCTOU（r47 仅 csv，r48 扩展 jsonl/json）
+  - csv.Error explicit catch（operator-facing log 优化）
+- 文件大小：所有源码 / 测试 < 800 保持
+- 审计连续性：**连续 9 轮 0 CRITICAL correctness**；r48 首次 security CRITICAL（test-mock-only，同轮 fix）
+- 4 bypass vector 安全态势：**3 ACCEPTABLE + 1 MITIGATED 扩展到 3 readers**（r47 仅 csv，r48 加 jsonl + json）
+- 开发者工具链：pre-commit hook 持续激活（每 r48 commit 自动跑 py_compile + meta-runner ~1s）
+
+**审计连续性统计**（连续 9 次 3 维度审计）：
+
+| 审计轮 | CRITICAL | HIGH | MEDIUM（已修） | LOW | 特点 |
+|-------|---------|------|------|-----|------|
+| r35 末 | 0 | 0 | 2 → r36 | 0 | 首次 3 维度 |
+| r40 末 | 0 | 0 | 2 → r41 | 1 | — |
+| r43 | 0 | 0 | 3 + 1 def → r43 | 1 | — |
+| r44 | 0 | 0 | 3 audit + 1 test gap → r44 | 0 | "21/21" claim |
+| r45 | 0 | 2 → r45 同轮 | 4 optional → r46 | — | "22/22" 验证 |
+| r41-r45 累计 | 1 → 同次 | 0 | 3 → 同次 | — | CI 覆盖 regression 首次 |
+| r46 | 0 | 0 | 2 coverage → r46 同轮 | 1 docstring + 1 sec info | GUI smoke 闭合 |
+| r47 | 0 | 0 | 3 optional → r48 | 2 cosmetic + 1 sec info | TOCTOU 升级 MITIGATED 代码加固 |
+| **r48** | **1 (Security, test-mock) → r48 同轮** | **0** | **1 (Coverage / Correctness 同根因) → r48 同轮** | **2 informational** | **TOCTOU defense 扩展到 jsonl/json + helper 抽取** |
+
+**趋势**：连续 9 轮 0 CRITICAL **correctness**；r48 首次 security CRITICAL（mock target 失效），同轮 fix；helper 抽取 + jsonl/json 扩展是 r48 最大产出。
+
+**本轮未做**（留给第 49+ 轮）：
+
+- **r48 audit 2 LOW informational**：
+  - Coverage L1: Unicode NFC/NFD normalization in `_normalise_ui_button` — 设计选择（UI 字段 ASCII-dominant），可选加 doc note
+  - Security L1: csv.Error explicit catch — informational only，不影响功能
+- **r49 候选扩展**：把 file_safety helper 应用到其他 22+ user-facing JSON loaders（rpgmaker_engine / generic_pipeline / pipeline/stages 等）— 一致性升级
+- **非中文目标语言端到端验证**（生产 ja / ko / zh-tw）— r39-r46 + r47 G3/G4 多层契约已锁死
+- A-H-3 Medium / Deep / S-H-4 Breaking
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- Round 49 起始审计
 
 ## 已回滚
 
