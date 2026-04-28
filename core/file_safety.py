@@ -87,13 +87,19 @@ def check_fstat_size(file_obj: IO, max_size: int) -> tuple[bool, int]:
 
     Examples
     --------
+    Both branches shown explicitly (Round 50 C2 Security LOW-2):
+
     >>> from pathlib import Path
     >>> _MAX_SIZE = 50 * 1024 * 1024  # 50 MB
     >>> with open(filepath, encoding="utf-8") as f:
     ...     ok, size = check_fstat_size(f, _MAX_SIZE)
     ...     if not ok:
-    ...         logger.warning(f"file grew past cap: {size} bytes")
+    ...         # ok=False branch: ``size`` IS reliable (real fstat result)
+    ...         logger.warning(f"file grew past cap: {size} bytes > {_MAX_SIZE}")
     ...         return []
+    ...     # ok=True branch: ``size`` may be 0 if fail-open fired (OSError /
+    ...     # ValueError on fileno).  DO NOT log size as ground-truth here —
+    ...     # use it only for audit context paired with ok=False above.
     ...     content = f.read()
     """
     try:

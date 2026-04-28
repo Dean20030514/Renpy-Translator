@@ -138,17 +138,37 @@ helper-level cap-1/cap-exact/cap+1 三件套 + site-level cap-exact 共
 覆盖每 site 的 boundary 接受 vs 拒绝两条路径。
 
 **Round 50 1f informational note — symlink TOCTOU defense-in-depth 候选**
-（closes r49 audit Security LOW 2）：当前 r49 fstat helper 把
-TOCTOU race window 收紧到 microsecond 级 fd-based fstat，但 POSIX
-``open(link)`` 在 t0 解析 → relink → fstat 在 t2 sees inode_B 的
-**path-swap symlink TOCTOU** 在理论上仍可触发（fd 已绑 inode_B 但
-logged path 名仍是 link）。**当前 codebase 无 exploit vector** —— 用
-户面 path 来自 ``Path.rglob()`` / ``Path(game_dir)`` 而非 user-supplied
-symlink；CLI 参数全是 directory / file 路径无 symlink 入口。Future
-hardening 候选：参考 r45 `build.py` 加 ``d.is_symlink()`` 检查模式
+（closes r49 audit Security LOW 2 + r50 C2 audit Security MEDIUM-1）：
+当前 r49 fstat helper 把 TOCTOU race window 收紧到 microsecond 级
+fd-based fstat，但 POSIX ``open(link)`` 在 t0 解析 → relink → fstat 在
+t2 sees inode_B 的 **path-swap symlink TOCTOU** 在理论上仍可触发
+（fd 已绑 inode_B 但 logged path 名仍是 link）。
+
+**CLI args 接受 path 的入口审计**（r50 C2 Security MEDIUM-1 closure）：
+
+| CLI flag | Source | Symlink guard? |
+|----------|--------|-----------------|
+| `--game-dir` | `main.py` argparse | ❌ 无 |
+| `--output-dir` | `main.py` argparse | ❌ 无 |
+| `--config` | `main.py` argparse | ❌ 无 |
+| `--font-file` | `main.py` argparse | ❌ 无 |
+| `--font-config` | `main.py` argparse | ❌ 无 |
+| `--ui-button-whitelist` | `main.py` argparse | ❌ 无 |
+| `--target-lang` (str) | `main.py` argparse | N/A (字符串) |
+| `--engine` (choice) | `main.py` argparse | N/A (枚举) |
+
+**当前实际威胁评估**：Renpy 翻译工具是 **本地单机工具**，CLI args
+由用户自己输入（typically 指向自己的游戏目录）。不存在 multi-tenant
+场景或 user-input-from-untrusted-source。即便 attacker 能创建 symlink
+到 `/etc/passwd` 等敏感文件并诱导用户用 `--config` 指向，攻击者已经
+有本地 RW 权限 — 比 symlink TOCTOU 严重得多。故 **当前 codebase 无
+realistic exploit vector**。
+
+**Future hardening 候选**（如未来场景变化，例如 server-side hosted
+版本接受多用户 path）：参考 r45 `build.py` 加 ``d.is_symlink()`` 检查模式
 （commit `bd9d6e1`）— 任何接受外部 path CLI 参数的入口点可加
-``Path.is_symlink()`` reject 防 path-swap。**不属于 r50+ 必做欠账**
-（informational watchlist）。
+``Path.is_symlink()`` reject 防 path-swap。**informational watchlist
+only**：本地工具威胁模型下 not actionable，故不属于欠账。
 
 ## 其他内存 / 资源上限
 

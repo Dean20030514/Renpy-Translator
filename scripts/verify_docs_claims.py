@@ -220,7 +220,7 @@ def count_ci_steps(workflow_path: Path) -> int:
     return len(steps)
 
 
-_CLAIM_LINE_RE = re.compile(r"^\s*([a-z_]+)\s*:\s*(\d+)\b")
+_CLAIM_LINE_RE = re.compile(r"^\s*([a-z_]+)\s*:\s*(\d+)\s*(?:#.*)?\s*$")
 
 
 def parse_claims(handoff_path: Path) -> dict[str, int]:
@@ -354,7 +354,15 @@ def execute_all_ci_test_steps(workflow_path: Path, repo_root: Path) -> None:
         # output file lock, and eventually fails with WinError 32.
         # The current --full invocation already covers everything that
         # step would re-do — re-executing it adds no signal.
-        if "verify_docs_claims" in run and "--full" in run:
+        #
+        # Round 50 C2 audit-fix (Security LOW-4): match step NAME
+        # explicitly instead of substring on `run` field.  Prior
+        # substring match on `run` was brittle: it would also skip
+        # ``echo verify_docs_claims --full`` (innocuous) or
+        # ``python verify_docs_claims_extended.py --full`` (different
+        # tool, should NOT skip).  Step names are stable repo-local
+        # config reviewed via PR, so name match is safer + clearer.
+        if name.startswith("Run verify_docs_claims --full"):
             continue
         proc = subprocess.run(
             run,

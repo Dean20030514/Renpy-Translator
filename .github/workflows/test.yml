@@ -199,16 +199,23 @@ jobs:
       # fails the build if any mock.patch on os.fstat targets a caller
       # module instead of core.file_safety, defeating the trap class
       # before a future maintainer hits it.
+      #
+      # Round 50 C2 audit-fix (Correctness LOW-2): regex extended to
+      # catch both syntactic forms — string-arg ``mock.patch("...os.fstat")``
+      # and object-arg ``patch.object(os, "fstat", ...)`` — since
+      # tests/test_api_client.py uses patch.object form for other
+      # mocks, future maintainers may use it for fstat mocks too.
       - name: Mock target consistency check (round 49 audit Security MEDIUM closure)
         shell: bash
         run: |
-          if grep -rn "mock\.patch.*os\.fstat" tests/*.py | grep -v "core\.file_safety"; then
+          if grep -rEn "(mock\.patch.*os\.fstat|patch\.object\s*\(\s*[a-zA-Z_.]*os\s*,\s*[\"']fstat[\"'])" tests/*.py | grep -v "core\.file_safety"; then
             echo "ERROR: stale mock target detected outside core.file_safety —"
             echo "see r48 Step 3 CRITICAL audit (commit 34d9707) for the trap."
-            echo "All mock.patch on os.fstat MUST target core.file_safety.os.fstat."
+            echo "All mock.patch / patch.object on os.fstat MUST target"
+            echo "core.file_safety.os.fstat."
             exit 1
           fi
-          echo "OK: all mock.patch on os.fstat correctly target core.file_safety"
+          echo "OK: all os.fstat mocks correctly target core.file_safety"
 
       - name: Verify zero third-party dependencies
         shell: bash

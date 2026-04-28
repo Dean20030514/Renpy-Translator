@@ -651,58 +651,55 @@ def test_main_fast_path_zero_against_real_repo():
     print("[OK] main_fast_path_zero_against_real_repo")
 
 
-def test_parse_claims_skips_malformed_line_silently():
-    """Round 50 1d: parse_claims silently skips malformed lines (e.g.
-    non-int value).  Pins backward-compat behavior — fail-open consistent
-    with helper module design.  Closes r49 audit Coverage LOW finding."""
+def test_parse_claims_skips_malformed_lines_silently_for_all_edge_cases():
+    """Round 50 C2 Coverage HIGH-1 + Correctness LOW-3: 5 malformed
+    scenarios silently skipped (backward-compat fail-open)."""
     import tempfile
-    from scripts.verify_docs_claims import (
-        parse_claims, CLAIM_BLOCK_START, CLAIM_BLOCK_END,
-    )
-    with tempfile.TemporaryDirectory() as td:
-        h = Path(td) / "HANDOFF.md"
-        h.write_text(
-            f"{CLAIM_BLOCK_START}\ntests_total: abc\nci_steps: 36\n{CLAIM_BLOCK_END}\n",
-            encoding="utf-8",
-        )
-        claims = parse_claims(h)
-    assert claims == {"ci_steps": 36}, (
-        f"malformed line must be silently skipped; got {claims!r}"
-    )
-    print("[OK] parse_claims_skips_malformed_line_silently")
+    from scripts.verify_docs_claims import parse_claims, CLAIM_BLOCK_START, CLAIM_BLOCK_END
+    for label, bad in [
+        ("non-int value", "tests_total: abc"),
+        ("missing colon", "tests_total 488"),
+        ("empty value", "tests_total: "),
+        ("embedded colon", "tests_total: 488: extra"),
+        ("trailing decimal (LOW-3 fix)", "tests_total: 419.5"),
+    ]:
+        with tempfile.TemporaryDirectory() as td:
+            h = Path(td) / "HANDOFF.md"
+            h.write_text(f"{CLAIM_BLOCK_START}\n{bad}\nci_steps: 36\n{CLAIM_BLOCK_END}\n",
+                         encoding="utf-8")
+            claims = parse_claims(h)
+        assert claims == {"ci_steps": 36}, f"{label}: {claims!r}"
+    print("[OK] parse_claims_skips_malformed_lines_silently_for_all_edge_cases")
 
 
 def test_parse_claims_returns_partial_dict_on_mixed_valid_invalid():
-    """Round 50 1d: 1 valid + 1 malformed → returns dict with valid only."""
+    """Round 50 1d: valid + unknown keys both kept (main reports MISS for required absent)."""
     import tempfile
-    from scripts.verify_docs_claims import (
-        parse_claims, CLAIM_BLOCK_START, CLAIM_BLOCK_END,
-    )
+    from scripts.verify_docs_claims import parse_claims, CLAIM_BLOCK_START, CLAIM_BLOCK_END
     with tempfile.TemporaryDirectory() as td:
         h = Path(td) / "HANDOFF.md"
         h.write_text(
-            f"{CLAIM_BLOCK_START}\ntests_total: 488\nbroken_line: not_a_number\n"
-            f"ci_steps: 36\n{CLAIM_BLOCK_END}\n",
+            f"{CLAIM_BLOCK_START}\ntests_total: 488\nunknown_key: 999\nci_steps: 36\n{CLAIM_BLOCK_END}\n",
             encoding="utf-8",
         )
         claims = parse_claims(h)
-    assert claims == {"tests_total": 488, "ci_steps": 36}, (
-        f"valid lines must parse despite malformed line; got {claims!r}"
-    )
+    assert claims == {"tests_total": 488, "unknown_key": 999, "ci_steps": 36}, f"got {claims!r}"
     print("[OK] parse_claims_returns_partial_dict_on_mixed_valid_invalid")
 
 
 def test_workflow_includes_mock_target_consistency_check_step():
-    """Round 50 1a: CI workflow must include 'Mock target consistency
-    check' step + actual grep pattern for stale mock targets outside
-    core.file_safety.  Closes round 49 audit Security MEDIUM."""
+    """Round 50 1a: CI workflow includes 'Mock target consistency check'
+    step + grep patterns covering both mock.patch + patch.object forms.
+    Closes round 49 audit Security MEDIUM + r50 C2 Correctness LOW-2."""
     import yaml
     wp = REPO_ROOT / ".github" / "workflows" / "test.yml"
     steps = yaml.safe_load(wp.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
     matches = [s for s in steps if "Mock target consistency" in s.get("name", "")]
     assert len(matches) == 1, f"must have 1 such step; got {len(matches)}"
     run = matches[0].get("run", "")
-    assert "mock\\.patch.*os\\.fstat" in run, "step must contain grep pattern"
+    # Must catch BOTH syntactic forms of os.fstat mocking:
+    assert "mock\\.patch.*os\\.fstat" in run, "step must catch mock.patch form"
+    assert "patch\\.object" in run and "fstat" in run, "step must catch patch.object form"
     assert "core\\.file_safety" in run, "step must filter for core.file_safety"
     print("[OK] workflow_includes_mock_target_consistency_check_step")
 
@@ -771,8 +768,9 @@ TESTS = [
     test_main_fast_path_fails_on_tests_total_drift,
     test_main_fast_path_fails_on_assertion_points_drift,
     test_main_fast_path_zero_against_real_repo,
-    # Round 50 1d: parse_claims malformed line edge case
-    test_parse_claims_skips_malformed_line_silently,
+    # Round 50 C2 Coverage HIGH-1 + Correctness LOW-3: 5 malformed scenarios
+    test_parse_claims_skips_malformed_lines_silently_for_all_edge_cases,
+    # Round 50 1d: parse_claims partial dict on mixed valid/unknown
     test_parse_claims_returns_partial_dict_on_mixed_valid_invalid,
     # Round 50 1a: mock target stale trap CLASS guard contract
     test_workflow_includes_mock_target_consistency_check_step,
