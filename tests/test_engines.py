@@ -778,6 +778,73 @@ def test_csv_engine_logs_csv_error_distinct_from_generic():
     print("[OK] csv_engine_logs_csv_error_distinct_from_generic")
 
 
+def test_csv_engine_rejects_jsonl_toctou_growth_attack():
+    """Round 48 Step 2 (D method scope expansion): jsonl extractor must
+    reject files that grew between Path.stat() and open() so the
+    post-open fstat sees > cap.  Mirrors r47 Step 2's csv TOCTOU test
+    but for the _extract_jsonl path (which reads entire file via
+    f.read() before splitting lines — without fstat re-check, attacker
+    can OOM the host with a sparse-then-grown file)."""
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        target_jsonl = Path(d) / "toctou.jsonl"
+        target_jsonl.write_text(
+            '{"original": "Hello"}\n', encoding="utf-8"
+        )
+        small_cap = 100  # mock cap
+
+        # Mock check_fstat_size to return (False, huge) — simulates
+        # "file grew between Path.stat and open" inside _extract_jsonl.
+        # Path.stat() above returns the actual small size, passing the
+        # pre-open gate; the post-open helper now sees > cap.
+        def _patched_check(file_obj, max_size):
+            return (False, 99999)  # ok=False, size=99999
+
+        with mock.patch("engines.csv_engine.check_fstat_size", _patched_check), \
+             mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", small_cap):
+            units = engine.extract_texts(Path(d))
+
+        originals = [u.original for u in units if u.file_path == "toctou.jsonl"]
+        assert "Hello" not in originals, (
+            "JSONL TOCTOU defense: file that grew past cap between stat "
+            f"and open must be rejected; got originals={originals}"
+        )
+    print("[OK] csv_engine_rejects_jsonl_toctou_growth_attack")
+
+
+def test_csv_engine_rejects_json_toctou_growth_attack():
+    """Round 48 Step 2 (D method scope expansion): .json dispatch must
+    reject files that grew between Path.stat() and open() so the
+    post-open fstat sees > cap.  The .json path reads the entire file
+    via f.read() before json.loads(); same TOCTOU surface as
+    _extract_jsonl, mitigated via the same helper."""
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        target_json = Path(d) / "toctou.json"
+        target_json.write_text(
+            '[{"original": "Hello"}]', encoding="utf-8"
+        )
+        small_cap = 100  # mock cap
+
+        def _patched_check(file_obj, max_size):
+            return (False, 99999)
+
+        with mock.patch("engines.csv_engine.check_fstat_size", _patched_check), \
+             mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", small_cap):
+            units = engine.extract_texts(Path(d))
+
+        originals = [u.original for u in units if u.file_path == "toctou.json"]
+        assert "Hello" not in originals, (
+            ".json TOCTOU defense: file that grew past cap between stat "
+            f"and open must be rejected; got originals={originals}"
+        )
+    print("[OK] csv_engine_rejects_json_toctou_growth_attack")
+
+
 # ============================================================
 # generic_pipeline 测试
 # ============================================================
@@ -984,6 +1051,9 @@ if __name__ == "__main__":
     test_csv_engine_accepts_cap_minus_1_csv()
     test_csv_engine_rejects_cap_plus_1_csv()
     test_csv_engine_logs_csv_error_distinct_from_generic()
+    # Round 48 Step 2 (D method scope expansion): TOCTOU defense for jsonl/json
+    test_csv_engine_rejects_jsonl_toctou_growth_attack()
+    test_csv_engine_rejects_json_toctou_growth_attack()
     # generic_pipeline
     test_build_generic_chunks_single()
     test_build_generic_chunks_split()
@@ -1009,5 +1079,5 @@ if __name__ == "__main__":
     # +1 drift from r46 Step 4 baseline math (49 -> 53 was claimed,
     # actually 48 -> 52 + 1 over-count); r48 Step 1 corrected here.
     # See round 47 audit Correctness LOW finding.
-    print(f"ALL 55 ENGINE TESTS PASSED")
+    print(f"ALL 57 ENGINE TESTS PASSED")
     print("=" * 40)

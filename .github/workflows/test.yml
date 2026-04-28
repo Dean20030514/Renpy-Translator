@@ -46,6 +46,7 @@ jobs:
           python -m py_compile core/api_client.py
           python -m py_compile core/api_plugin.py
           python -m py_compile core/config.py
+          python -m py_compile core/file_safety.py
           python -m py_compile core/font_patch.py
           python -m py_compile core/glossary.py
           python -m py_compile core/http_pool.py
@@ -149,6 +150,8 @@ jobs:
         run: python tests/test_runtime_hook_v2_schema.py
       - name: Run progress tracker language tests
         run: python tests/test_progress_tracker_language.py
+      - name: Run file safety tests
+        run: python tests/test_file_safety.py
       - name: Run translation_db language tests
         run: python tests/test_translation_db_language.py
       - name: Run multilang run tests

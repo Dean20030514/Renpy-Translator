@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.file_safety import check_fstat_size
 from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, CSV_PROFILE
 
 logger = logging.getLogger("renpy_translator")
@@ -195,19 +196,17 @@ class CSVEngine(EngineBase):
 
         # 使用文件对象读取，正确处理多行带引号的 CSV 值
         with open(filepath, encoding="utf-8-sig", newline="") as f:
-            # Round 47 Step 2 (D3 TOCTOU defense): re-check size after
-            # open via os.fstat() on the actual file descriptor.  If the
-            # file grew between the path.stat() above and this open() so
-            # that fstat now sees > cap, the file is adversarial — skip
-            # rather than stream the (now oversized) content into the
-            # accumulating units list.  Cost: one extra fstat() syscall
-            # on the open fd (microseconds).  Closes the r46 Step 5
-            # security audit's TOCTOU LOW-severity bypass vector.
-            try:
-                fsize2 = os.fstat(f.fileno()).st_size
-            except OSError:
-                fsize2 = 0
-            if fsize2 > _MAX_CSV_JSON_SIZE:
+            # Round 47 Step 2 (D3 TOCTOU defense) → Round 48 Step 2
+            # (helper extract): re-check size after open via
+            # ``check_fstat_size`` (delegates to os.fstat on the open
+            # fd, with intentional fail-open on OSError).  If fstat
+            # sees > cap, the file grew between the path.stat() above
+            # and this open() — adversarial, skip.  Cost: one extra
+            # fstat() syscall on the open fd (microseconds).  Closes
+            # the r46 Step 5 security audit's TOCTOU LOW-severity
+            # bypass vector.  See core/file_safety.py for the helper.
+            ok, fsize2 = check_fstat_size(f, _MAX_CSV_JSON_SIZE)
+            if not ok:
                 logger.warning(
                     f"[CSV] 跳过 {rel}: 文件在 stat 后增长到 {fsize2} 字节 "
                     f"（疑似 TOCTOU 攻击），超过 {_MAX_CSV_JSON_SIZE} 字节上限"
@@ -282,7 +281,21 @@ class CSVEngine(EngineBase):
                 f"超过 {_MAX_CSV_JSON_SIZE} 字节上限"
             )
             return units
-        text = filepath.read_text(encoding="utf-8-sig")
+        # Round 48 Step 2 (D method scope expansion): TOCTOU defense
+        # via fstat after open, mirroring r47 Step 2's csv defense.
+        # _extract_jsonl reads the entire file into memory via f.read();
+        # without fstat re-check, an attacker can grow the file between
+        # the Path.stat() above and the open() below to OOM the host.
+        # See core/file_safety.py for the shared helper.
+        with open(filepath, encoding="utf-8-sig") as f:
+            ok, fsize2 = check_fstat_size(f, _MAX_CSV_JSON_SIZE)
+            if not ok:
+                logger.warning(
+                    f"[JSONL] 跳过 {rel}: 文件在 stat 后增长到 {fsize2} 字节 "
+                    f"（疑似 TOCTOU 攻击），超过 {_MAX_CSV_JSON_SIZE} 字节上限"
+                )
+                return units
+            text = f.read()
 
         for idx, line in enumerate(text.splitlines(), 1):
             line = line.strip()
@@ -317,7 +330,20 @@ class CSVEngine(EngineBase):
                 f"超过 {_MAX_CSV_JSON_SIZE} 字节上限"
             )
             return []
-        text = filepath.read_text(encoding="utf-8-sig")
+        # Round 48 Step 2 (D method scope expansion): same TOCTOU
+        # defense as _extract_jsonl above; the .json dispatch reads
+        # the entire file via f.read() before json.loads(), and an
+        # attacker can grow the file between Path.stat() and open()
+        # to OOM the host.  See core/file_safety.py.
+        with open(filepath, encoding="utf-8-sig") as f:
+            ok, fsize2 = check_fstat_size(f, _MAX_CSV_JSON_SIZE)
+            if not ok:
+                logger.warning(
+                    f"[JSON] 跳过 {rel}: 文件在 stat 后增长到 {fsize2} 字节 "
+                    f"（疑似 TOCTOU 攻击），超过 {_MAX_CSV_JSON_SIZE} 字节上限"
+                )
+                return []
+            text = f.read()
 
         # 尝试 JSON 数组
         try:

@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Unit tests for ``core/file_safety.py`` — the TOCTOU-safe file size
+helper extracted in round 48 Step 2 from the inline pattern that
+round 47 Step 2 D3 added to ``engines/csv_engine.py::_extract_csv``.
+
+Covers the 3 contract scenarios for ``check_fstat_size``:
+
+1. Within limit — returns (True, observed_size)
+2. Over limit  — returns (False, observed_size)
+3. OSError fail-open — returns (True, 0)
+
+The fail-open scenario matches the design choice across r37-r47
+path-based stat() callers: stat failure on a successfully opened
+fd is extremely rare; if it does happen, blocking the operation
+risks more harm than letting it proceed.
+"""
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def test_check_fstat_size_within_limit():
+    """Round 48 Step 2: file under the cap returns (True, real_size).
+
+    Caller's downstream logic should proceed normally."""
+    import tempfile
+    from pathlib import Path
+    from core.file_safety import check_fstat_size
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "small.txt"
+        p.write_bytes(b"hello world")  # 11 bytes
+        with open(p, "rb") as f:
+            ok, size = check_fstat_size(f, max_size=100)
+        assert ok is True, f"11-byte file under 100-byte cap must return True, got ok={ok}"
+        assert size == 11, f"observed_size must be 11 bytes, got {size}"
+    print("[OK] check_fstat_size_within_limit")
+
+
+def test_check_fstat_size_over_limit():
+    """Round 48 Step 2: file at exactly cap+1 bytes returns (False,
+    cap+1).  Smallest size that should be rejected — matches the
+    ``size <= max_size`` (not ``<``) contract documented in
+    ``check_fstat_size`` docstring."""
+    import tempfile
+    from pathlib import Path
+    from core.file_safety import check_fstat_size
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "big.txt"
+        p.write_bytes(b"x" * 101)  # 101 bytes
+        with open(p, "rb") as f:
+            ok, size = check_fstat_size(f, max_size=100)
+        assert ok is False, (
+            f"101-byte file over 100-byte cap must return False, got ok={ok}"
+        )
+        assert size == 101, f"observed_size must be 101 bytes, got {size}"
+    print("[OK] check_fstat_size_over_limit")
+
+
+def test_check_fstat_size_at_cap_boundary():
+    """Round 48 Step 2: file at exactly cap bytes returns (True, cap).
+    Pins the ``size <= max_size`` boundary — exact match must pass.
+    Mirrors the >/>= operator-pinning tests for csv_engine cap (r47
+    G1 + r48 G1.1)."""
+    import tempfile
+    from pathlib import Path
+    from core.file_safety import check_fstat_size
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "exact.txt"
+        p.write_bytes(b"x" * 100)  # exactly 100 bytes
+        with open(p, "rb") as f:
+            ok, size = check_fstat_size(f, max_size=100)
+        assert ok is True, (
+            f"100-byte file at 100-byte cap must return True (<=); got ok={ok}"
+        )
+        assert size == 100, f"observed_size must be 100 bytes, got {size}"
+    print("[OK] check_fstat_size_at_cap_boundary")
+
+
+def test_check_fstat_size_fail_open_on_oserror():
+    """Round 48 Step 2: when os.fstat raises OSError (rare on a
+    valid open fd), the helper returns (True, 0) — fail-open
+    matching the design choice across r37-r47 path-based stat()
+    callers.  Verified via mock injecting OSError into os.fstat."""
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    from core import file_safety
+    from core.file_safety import check_fstat_size
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "any.txt"
+        p.write_bytes(b"any content")
+        with open(p, "rb") as f:
+            with mock.patch("core.file_safety.os.fstat",
+                            side_effect=OSError("simulated fstat failure")):
+                ok, size = check_fstat_size(f, max_size=100)
+        assert ok is True, (
+            f"OSError fail-open: must return True so caller proceeds; got ok={ok}"
+        )
+        assert size == 0, f"OSError fail-open: size must be 0, got {size}"
+    print("[OK] check_fstat_size_fail_open_on_oserror")
+
+
+def run_all() -> int:
+    """Run every check_fstat_size test in this module."""
+    tests = [
+        test_check_fstat_size_within_limit,
+        test_check_fstat_size_over_limit,
+        test_check_fstat_size_at_cap_boundary,
+        test_check_fstat_size_fail_open_on_oserror,
+    ]
+    for t in tests:
+        t()
+    return len(tests)
+
+
+if __name__ == "__main__":
+    n = run_all()
+    print()
+    print("=" * 40)
+    print(f"ALL {n} FILE SAFETY TESTS PASSED")
+    print("=" * 40)
