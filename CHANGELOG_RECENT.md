@@ -54,7 +54,7 @@
 - 第四十六轮：7 步综合执行（A 方案完整闭合 ~3-4h Auto mode）— r45 audit-tail typo 修复 / install_hooks.sh 启用 (pre-commit 现激活) / test_runtime_hook.py 794 拆 v2_schema (28→29 CI steps) / r45 audit 4 optional MEDIUM gap 全闭合（G1 csv_engine 真实代码加固 50 MB cap + 4 regression tests）/ r46 三维度审计 + 1 LOW + 2 MEDIUM 同轮 fix（连续 7 轮 0 CRITICAL）/ **真实桌面 GUI smoke via computer-use**（5 轮积压 UX 缺口闭合：r41 mixin split 端到端运行验证）/ docs sync；6 commits；测试 413 → 419 (+6)；OOM 防护 22/22 → 23/23 user-facing
 - 第四十七轮：5 step 综合执行（A 方案 + 7 项决策 + 一并 push origin）— r43 detail 真实推 archive (按 round 顺序插入 _archive，CHANGELOG_RECENT 删 125 行 detail) / r45+r46 audit 7 LOW gap 全补（G1 边界×4 含 TOCTOU regression / G2 mixed×2 / G3 multibyte×2）+ **TOCTOU 升级 ACCEPTABLE doc → MITIGATED code**（csv_engine `os.fstat(f.fileno())` stat-after-open 二次校验，4 bypass vector 现 3 ACCEPTABLE + 1 MITIGATED）/ r47 三维度审计（连续 8 轮 0 CRITICAL；3 MEDIUM coverage 推 r48）/ test_translation_state.py 765 拆 progress_tracker_language (29→30 CI steps，r35 C1+r36 H1 4 tests 迁出) / docs sync；5 commits + 一并 push origin (10 commits r46+r47)；测试 419 → 427 (+8)
 - 第四十八轮：4 step 综合执行（D 方案深度优化 + 8 项决策 + 一并 push origin）— r47 audit 4 gap close（G1.1 cap±1 边界×2 + G2.1 normalization-dedup×1 + G3.1 newline-cap exact×2 + L1 csv.Error try/except 显式 catch + r47 print "ALL 53"→"ALL 55" cosmetic typo fix）/ **TOCTOU helper 抽取**到 `core/file_safety.py::check_fstat_size`（93 行 stdlib-only 模块）+ **扩展 TOCTOU defense** 从 csv-only 到 csv/jsonl/json 三个 extract methods（_extract_jsonl/_extract_json_or_jsonl 的 read_text→with open + helper + read 改造）+ 4 unit tests + 2 jsonl/json TOCTOU regression / r48 三维度审计 + **首次 security CRITICAL 同轮 fix**（r47 TOCTOU mock target `engines.csv_engine.os.fstat` 在 r48 helper 抽取后失效，spuriously pass，改为 `core.file_safety.os.fstat` + 加注释防 future 重演 + 1 MEDIUM coverage fix：file_safety helper 加 ValueError fail-open 配合新 unit test）/ docs sync；4 commits + 一并 push origin（5 commits r48）；测试 427 → 439 (+12)；CSV bypass vector 防御从 csv-only MITIGATED 扩展到 csv+jsonl+json **三 readers 全 MITIGATED**
-- 第四十八轮 · audit-tail（用户反馈触发的 800 行越限拆分 + 多轮 audit gap 教训）— 用户在 r48 末发现 `tests/test_engines.py` 1090 行 + `tests/test_custom_engine.py` 1020 行**远超 800 软限**，而 r45-r48 的 HANDOFF/CHANGELOG/CLAUDE 多次错误声称"all tests < 800 maintained"；同轮 fix 拆分两个文件（test_engines 1090→537 + 新 test_csv_engine 610/21 tests / test_custom_engine 1020→497 + 新 test_sandbox_response_cap 588/8 tests，byte-identical 拆分），CI workflow 31→32 steps，**所有 .py 现真正 < 800**；显式记录"跨 commit 累积测试增长无人盯"教训（同 r45 CI 覆盖 regression 性质）；2 commits（refactor 拆分 + docs amend）
+- 第四十八轮 · audit-tail（用户反馈触发的 800 行越限拆分 + 多轮 audit gap 教训）— 用户在 r48 末发现 `tests/test_engines.py` 1090 行 + `tests/test_custom_engine.py` 1020 行**远超 800 软限**，而 r45-r48 的 HANDOFF/CHANGELOG/CLAUDE 多次错误声称"all tests < 800 maintained"；同轮 fix 拆分两个文件（test_engines 1090→537 + 新 test_csv_engine 610/21 tests / test_custom_engine 1020→497 + 新 test_sandbox_response_cap 588/8 tests，byte-identical 拆分），CI workflow 31→33 steps，**所有 .py 现真正 < 800**；显式记录"跨 commit 累积测试增长无人盯"教训（同 r45 CI 覆盖 regression 性质）；2 commits（refactor 拆分 + docs amend）
 
 ## 详细记录
 
@@ -966,8 +966,8 @@ r47 audit 推迟的 3 MEDIUM optional + 1 LOW informational + r47 自身的 prin
 - sed 批量替换 4 docs（CLAUDE.md / .cursorrules / HANDOFF.md / CHANGELOG_RECENT.md）：
   - 440 → 439（多处："440 个自动化测试" / "测试 427 → 440" / "测试数 440 保持" 等）
   - 566 断言点 → 565 断言点
-  - 29 测试文件 → 31 测试文件
-  - 33 steps → 32 steps（CI workflow 真实数）
+  - 29 测试文件 → 32 测试文件（含 smoke_test.py，audit-2 改 "31" 仍漏 1）
+  - 33 steps → 33 steps（CI workflow 真实数；verify_workflow.py 权威）
   - 80 行 → 93 行（file_safety.py 真实大小）
   - "+13 net" → "+12 net"（r48 累计真实净增量）
 - 加本 audit-2 子段记录这次"跨 commit 累积 claim 传递"教训
@@ -1029,7 +1029,7 @@ r47 audit 推迟的 3 MEDIUM optional + 1 LOW informational + r47 自身的 prin
    - 新 `tests/test_sandbox_response_cap.py` 588 行 / 8 tests
    - 内容：r43 初始 cap + r44 CHARS rename + r46 diverse scripts + r46 exact boundary + r47 2-byte Latin + r47 newline multibyte + r48 cap-1+\n + r48 cap exact+\n
    - 主文件保留：plugin loading + APIConfig + r28 sandbox basic (roundtrip / request_id / exception / path traversal / missing module / timeout / stderr cap / close idempotent) (20 tests)
-3. **CI workflow 31 → 32 steps**：+ Run engine tests (CSV/JSONL/JSON) + Run sandbox response cap tests
+3. **CI workflow 31 → 33 steps**：+ Run engine tests (CSV/JSONL/JSON) + Run sandbox response cap tests
 4. **测试数 byte-identical**：57+28 = 85 → 36+21+20+8 = 85（拆前=拆后）
 5. **总测试数 439 保持**
 
