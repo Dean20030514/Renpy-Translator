@@ -33,6 +33,8 @@ from translators._screen_extract import (
     _RE_TEXTBUTTON,
 )
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 
@@ -326,7 +328,16 @@ def _load_progress(progress_path: Path) -> dict:
             )
             return {"completed_texts": {}, "completed_chunks": [], "stats": {}}
         try:
-            data = json.loads(progress_path.read_text(encoding="utf-8"))
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+            with open(progress_path, encoding="utf-8") as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_PROGRESS_JSON_SIZE)
+                if not ok:
+                    logger.warning(
+                        f"[SCREEN] 进度文件 {progress_path} stat 后增长到 "
+                        f"{fsize2} 字节（疑似 TOCTOU 攻击），视为损坏重置"
+                    )
+                    return {"completed_texts": {}, "completed_chunks": [], "stats": {}}
+                data = json.loads(f.read())
             if isinstance(data, dict):
                 data.setdefault("completed_texts", {})
                 data.setdefault("completed_chunks", [])

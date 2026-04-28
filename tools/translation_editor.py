@@ -43,6 +43,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 # Round 37 M2 + Round 38: 50 MB cap applied to every user-supplied JSON
@@ -141,7 +143,17 @@ def _extract_from_db(
             "refusing to load", db_path, file_size, _MAX_EDITOR_INPUT_SIZE,
         )
         return []
-    data = json.loads(db_path.read_text(encoding="utf-8"))
+    # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+    with open(db_path, encoding="utf-8") as f:
+        ok, fsize2 = check_fstat_size(f, _MAX_EDITOR_INPUT_SIZE)
+        if not ok:
+            logger.warning(
+                "[DB-EXPORT] %s grew past cap after stat (TOCTOU?): "
+                "%d bytes > %d, refusing to load",
+                db_path, fsize2, _MAX_EDITOR_INPUT_SIZE,
+            )
+            return []
+        data = json.loads(f.read())
     if isinstance(data, dict) and data.get("_schema_version") == 2:
         return _extract_from_v2_envelope(data, db_path, lang=v2_lang)
     raw_entries = data.get("entries", []) if isinstance(data, dict) else []
@@ -334,7 +346,17 @@ def import_edits(
             "refusing to load", edits_path, file_size, _MAX_EDITOR_INPUT_SIZE,
         )
         return {"applied": 0, "skipped": 0, "files_modified": 0}
-    edits = json.loads(edits_path.read_text(encoding="utf-8"))
+    # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+    with open(edits_path, encoding="utf-8") as f:
+        ok, fsize2 = check_fstat_size(f, _MAX_EDITOR_INPUT_SIZE)
+        if not ok:
+            logger.warning(
+                "[IMPORT] %s grew past cap after stat (TOCTOU?): "
+                "%d bytes > %d, refusing to load",
+                edits_path, fsize2, _MAX_EDITOR_INPUT_SIZE,
+            )
+            return {"applied": 0, "skipped": 0, "files_modified": 0}
+        edits = json.loads(f.read())
     if not edits:
         return {"applied": 0, "skipped": 0, "files_modified": 0}
 
@@ -562,7 +584,18 @@ def _apply_v2_edits(
             skipped += len(path_edits)
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+            with open(path, encoding="utf-8") as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_V2_APPLY_SIZE)
+                if not ok:
+                    logger.warning(
+                        "[V2-EDIT] %s grew past cap after stat (TOCTOU?): "
+                        "%d bytes > %d, skipping %d edits",
+                        path, fsize2, _MAX_V2_APPLY_SIZE, len(path_edits),
+                    )
+                    skipped += len(path_edits)
+                    continue
+                data = json.loads(f.read())
         except (OSError, ValueError) as e:
             logger.warning("[V2-EDIT] cannot read %s: %s", path, e)
             skipped += len(path_edits)

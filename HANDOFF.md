@@ -1,10 +1,10 @@
 # 交接笔记（第 49 轮 C1+C2 结束 → 第 50 轮起点）
 
 <!-- VERIFIED-CLAIMS-START -->
-tests_total: 476
-test_files: 33
-ci_steps: 35
-assertion_points: 602
+tests_total: 487
+test_files: 34
+ci_steps: 36
+assertion_points: 613
 <!-- VERIFIED-CLAIMS-END -->
 
 > **The fenced block above is the SINGLE SOURCE OF TRUTH for declared

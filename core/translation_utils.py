@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger("renpy_translator")
 
 # Round 42 M2 phase-3: 50 MB cap on the ProgressTracker JSON reader.
@@ -162,7 +164,17 @@ class ProgressTracker:
                 self.data = {}
             else:
                 try:
-                    self.data = json.loads(self.path.read_text(encoding='utf-8'))
+                    # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+                    with open(self.path, encoding='utf-8') as f:
+                        ok, fsize2 = check_fstat_size(f, _MAX_PROGRESS_JSON_SIZE)
+                        if not ok:
+                            logger.warning(
+                                f"[PROGRESS] 进度文件 {self.path} stat 后增长到 "
+                                f"{fsize2} 字节（疑似 TOCTOU 攻击），视为损坏重置"
+                            )
+                            self.data = {}
+                        else:
+                            self.data = json.loads(f.read())
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"[PROGRESS] 进度文件损坏，已重置: {e}")
                     self.data = {}

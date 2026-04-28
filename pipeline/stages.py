@@ -14,6 +14,7 @@ from file_processor import read_file
 from core.translation_db import TranslationDB
 from core.lang_config import get_language_config
 from core.font_patch import resolve_font, apply_font_patch, default_resources_fonts_dir
+from core.file_safety import check_fstat_size
 
 from pipeline.helpers import (
     _print,
@@ -230,8 +231,20 @@ def _run_tl_mode_phase(
             }
         else:
             try:
-                tl_report_data = json.loads(tl_report_path.read_text(encoding="utf-8"))
-                report["stages"]["tl_mode"] = tl_report_data
+                # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+                with open(tl_report_path, encoding="utf-8") as f:
+                    ok, fsize2 = check_fstat_size(f, _MAX_REPORT_JSON_SIZE)
+                    if not ok:
+                        report["stages"]["tl_mode"] = {
+                            "error": (
+                                f"tl_mode_report.json stat 后增长到 {fsize2} 字节"
+                                f"（疑似 TOCTOU 攻击），超过 "
+                                f"{_MAX_REPORT_JSON_SIZE} 字节上限"
+                            )
+                        }
+                    else:
+                        tl_report_data = json.loads(f.read())
+                        report["stages"]["tl_mode"] = tl_report_data
             except (OSError, json.JSONDecodeError) as e:
                 report["stages"]["tl_mode"] = {"error": f"无法读取 tl_mode_report.json: {e}"}
     else:
@@ -406,7 +419,16 @@ def _run_full_translation_phase(
                     f"full report.json 过大 ({full_size} > "
                     f"{_MAX_REPORT_JSON_SIZE})，视为损坏跳过"
                 )
-            full_report = json.loads(full_report_path.read_text(encoding="utf-8"))
+            # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+            with open(full_report_path, encoding="utf-8") as f:
+                ok, fsize2 = check_fstat_size(f, _MAX_REPORT_JSON_SIZE)
+                if not ok:
+                    raise ValueError(
+                        f"full report.json stat 后增长到 {fsize2} 字节"
+                        f"（疑似 TOCTOU 攻击），超过 "
+                        f"{_MAX_REPORT_JSON_SIZE} 字节上限"
+                    )
+                full_report = json.loads(f.read())
             report["stages"]["full"]["checker_dropped"] = int(full_report.get("total_checker_dropped", 0))
             report["stages"]["full"]["chunk_stats"] = full_report.get("chunk_stats", {})
         else:

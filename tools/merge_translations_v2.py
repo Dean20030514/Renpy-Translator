@@ -40,6 +40,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 # Round 37 M2: reject v2 envelope input files above 50 MB to bound memory
@@ -76,7 +78,15 @@ def _load_v2_envelope(path: Path) -> dict:
             "before merging."
         )
     try:
-        text = path.read_text(encoding="utf-8")
+        # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+        with open(path, encoding="utf-8") as f:
+            ok, fsize2 = check_fstat_size(f, _MAX_V2_ENVELOPE_SIZE)
+            if not ok:
+                raise MergeError(
+                    f"{path} grew past cap after stat (TOCTOU?): "
+                    f"{fsize2} bytes > {_MAX_V2_ENVELOPE_SIZE} byte cap"
+                )
+            text = f.read()
     except OSError as e:
         raise MergeError(f"cannot read {path}: {e}") from e
     try:

@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger("renpy_translator")
 
 # Round 42 M2 phase-3: 50 MB cap on the progress.json reader.  Typical
@@ -165,7 +167,16 @@ def _load_progress(progress_path: Path) -> set[int]:
         )
         return set()
     try:
-        data = json.loads(progress_path.read_text(encoding="utf-8"))
+        # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+        with open(progress_path, encoding="utf-8") as f:
+            ok, fsize2 = check_fstat_size(f, _MAX_PROGRESS_JSON_SIZE)
+            if not ok:
+                logger.warning(
+                    f"[PIPELINE] 进度文件 {progress_path} stat 后增长到 "
+                    f"{fsize2} 字节（疑似 TOCTOU 攻击），视为损坏重置"
+                )
+                return set()
+            data = json.loads(f.read())
         return set(data.get("completed_chunks", []))
     except (OSError, json.JSONDecodeError, TypeError):
         return set()

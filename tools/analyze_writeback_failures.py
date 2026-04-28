@@ -19,6 +19,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from core.file_safety import check_fstat_size
+
 logger = logging.getLogger(__name__)
 
 # Round 39 M2 phase-2: reject translation_db.json inputs above 50 MB
@@ -55,7 +57,17 @@ def analyze(db_path: Path) -> dict:
             "refusing to load", db_path, file_size, _MAX_ANALYSIS_DB_SIZE,
         )
         return {"total": 0, "by_type": {}, "samples": {}}
-    data = json.loads(db_path.read_text(encoding="utf-8"))
+    # Round 49 Step 2: TOCTOU defense via check_fstat_size on the open fd.
+    with open(db_path, encoding="utf-8") as f:
+        ok, fsize2 = check_fstat_size(f, _MAX_ANALYSIS_DB_SIZE)
+        if not ok:
+            logger.warning(
+                "[ANALYSIS] %s grew past cap after stat (TOCTOU?): "
+                "%d bytes > %d, refusing to load",
+                db_path, fsize2, _MAX_ANALYSIS_DB_SIZE,
+            )
+            return {"total": 0, "by_type": {}, "samples": {}}
+        data = json.loads(f.read())
     entries = data.get("entries", []) if isinstance(data, dict) else []
 
     # 筛选回写失败条目
