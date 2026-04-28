@@ -1,5 +1,29 @@
 # 交接笔记（第 48 轮结束 → 第 49 轮起点）
 
+<!-- VERIFIED-CLAIMS-START -->
+tests_total: 439
+test_files: 33
+ci_steps: 33
+assertion_points: 565
+<!-- VERIFIED-CLAIMS-END -->
+
+> **The fenced block above is the SINGLE SOURCE OF TRUTH for declared
+> numbers.** Every other doc (`CHANGELOG_RECENT.md` / `CLAUDE.md` /
+> `.cursorrules`) may reference these numbers in prose but MUST NOT
+> re-declare them. `scripts/verify_docs_claims.py` is wired into the
+> pre-commit hook (round 49 prevention) and re-derives each value from
+> source — any drift fails the commit. Update only this block, then
+> let prose around it stay generic ("see VERIFIED-CLAIMS").
+>
+> Definitions:
+>
+> - `tests_total` — sum of `ALL N` across every CI `Run *` step in
+>   `.github/workflows/test.yml` (verified by `--full`).
+> - `test_files` — count of `tests/test_*.py` plus `tests/smoke_test.py`.
+> - `ci_steps` — `len(jobs.test.steps)` in the workflow yaml.
+> - `assertion_points` — `tests_total + tl_parser self-tests (75) +
+>   screen self-tests (51)`.
+
 **目标读者**：下次新对话接手这个项目的 AI / 开发者
 
 **当前时间锚点**：第 48 轮 4 step + audit-tail 2 commits 全部完成（共 6 commits + Final push）。本地 main 与 origin/main 同步（r48 共 6 commits 已 push）。若您在新对话里看到这份文档，意味着上次工作结束于此处。

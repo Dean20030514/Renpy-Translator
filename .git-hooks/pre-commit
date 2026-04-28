@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
 # Round 45 Commit 5: pre-commit hook for the Ren'Py 汉化 project.
+# Round 49: extended with file-size + docs-claim drift checks (see
+# below) so the r45-r48 multi-round drift class of issue fails fast
+# at commit time instead of being caught by the user 4 rounds later.
 #
 # Runs fast sanity checks before letting a commit proceed:
 #   1. py_compile smoke on every staged .py file (catches syntax errors)
-#   2. meta-runner tests (tests/test_all.py — ~150 tests, ~5s)
+#   2. file-size guard: any .py > 800 lines fails the commit
+#      (round 49 prevention (a) — direct port of the user's awk pattern)
+#   3. meta-runner tests (tests/test_all.py — ~150 tests, ~5s)
+#   4. scripts/verify_docs_claims.py --fast — cross-checks
+#      HANDOFF.md VERIFIED-CLAIMS block against reality for
+#      test_files / ci_steps drift (round 49 prevention (b)+(d))
 #
-# Expected wall time: 5-10 seconds.  Does NOT run the full 23-file
-# independent-suite sweep (~30-60s) — that is reserved for CI.
+# Expected wall time: 7-12 seconds.  Does NOT run the full 23-file
+# independent-suite sweep (~30-60s) — that is reserved for CI, where
+# verify_docs_claims --full also runs to catch tests_total /
+# assertion_points drift.
+#
+# Round 49 reminder (prevention (c)): NEVER claim numbers (test count
+# / file count / CI step / line count / assertion count) in HANDOFF /
+# CHANGELOG / CLAUDE / .cursorrules without first running grep / wc /
+# find / verify_docs_claims to ground-truth.  HANDOFF.md's fenced
+# VERIFIED-CLAIMS block is the single declaration site; everything
+# else references it.
 #
 # Install with:
 #     scripts/install_hooks.sh
@@ -22,6 +39,9 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+# -----------------------------------------------------------------
+# Step 1: py_compile staged .py files.
+# -----------------------------------------------------------------
 echo "[pre-commit] py_compile sanity check..."
 # Only check staged .py files so unrelated work-in-progress does not
 # block commits.  Using --diff-filter=ACMR (Added/Copied/Modified/
@@ -49,6 +69,33 @@ else
     echo "[pre-commit] py_compile OK ($(echo "$staged_py" | wc -l) files)."
 fi
 
+# -----------------------------------------------------------------
+# Step 2: file-size guard (round 49 prevention (a)).
+# -----------------------------------------------------------------
+# Every .py outside .git / _archive / __pycache__ / output must be
+# <= 800 lines.  Direct port of the user-supplied awk pattern from
+# the r48 audit-tail incident.  awk's `END {exit failed}` exits 0
+# when failed is unset (no oversized files) and 1 when set.
+echo "[pre-commit] file-size check (>800 lines blocks commit)..."
+oversize_report=$(find . -name "*.py" \
+    -not -path "./.git/*" \
+    -not -path "./_archive/*" \
+    -not -path "*/__pycache__/*" \
+    -not -path "./output/*" \
+    -print0 \
+    | xargs -0 wc -l 2>/dev/null \
+    | awk '$1>800 && $2!="total" {print}')
+if [ -n "$oversize_report" ]; then
+    echo "[pre-commit] FAIL: the following .py files exceed 800 lines:" >&2
+    echo "$oversize_report" >&2
+    echo "[pre-commit] Split them into smaller modules, or bypass with 'git commit --no-verify'." >&2
+    exit 1
+fi
+echo "[pre-commit] file-size OK."
+
+# -----------------------------------------------------------------
+# Step 3: meta-runner tests.
+# -----------------------------------------------------------------
 echo "[pre-commit] running meta-runner (tests/test_all.py)..."
 if ! python tests/test_all.py > /tmp/pre-commit-tests.log 2>&1; then
     echo "[pre-commit] meta-runner FAILED. Commit blocked." >&2
@@ -59,4 +106,23 @@ if ! python tests/test_all.py > /tmp/pre-commit-tests.log 2>&1; then
     exit 1
 fi
 echo "[pre-commit] meta-runner OK."
+
+# -----------------------------------------------------------------
+# Step 4: docs-claim drift (round 49 prevention (b)+(d)).
+# -----------------------------------------------------------------
+# Re-derive test_files + ci_steps from source-of-truth and compare
+# against HANDOFF.md VERIFIED-CLAIMS block.  Cheap (~1s) — the
+# expensive tests_total / assertion_points re-derivation is gated
+# behind --full and runs in CI only.
+echo "[pre-commit] verify_docs_claims --fast..."
+if ! python scripts/verify_docs_claims.py --fast > /tmp/pre-commit-claims.log 2>&1; then
+    echo "[pre-commit] verify_docs_claims FAILED. Commit blocked." >&2
+    echo "[pre-commit] Tail of report:" >&2
+    tail -20 /tmp/pre-commit-claims.log >&2
+    echo "[pre-commit] Update HANDOFF.md VERIFIED-CLAIMS block to match reality," >&2
+    echo "[pre-commit] or bypass with 'git commit --no-verify'." >&2
+    exit 1
+fi
+echo "[pre-commit] verify_docs_claims OK."
+
 echo "[pre-commit] all checks passed — proceeding with commit."
