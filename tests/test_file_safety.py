@@ -260,7 +260,13 @@ def test_load_config_file_rejects_toctou_growth_attack():
 
 def test_glossary_actors_json_rejects_toctou_growth_attack():
     """Round 49 Step 2 (C4 site 4/12): TOCTOU regression for
-    core.glossary.Glossary.scan_game_directory Actors.json branch.
+    core.glossary.Glossary.scan_rpgmaker_database Actors.json branch.
+
+    Round 50 1b method-name bug fix: r49 C4 wrote ``scan_game_directory``
+    which is the Ren'Py .rpy character-define scanner — it does NOT
+    read Actors.json.  Actors.json is handled by ``scan_rpgmaker_database``.
+    Original test passed for the wrong reason (terms/characters empty
+    because the wrong method was called; mock fstat never invoked).
     """
     import json as _json
     import tempfile
@@ -283,7 +289,7 @@ def test_glossary_actors_json_rejects_toctou_growth_attack():
         g = Glossary()
         with mock.patch("core.file_safety.os.fstat",
                         lambda fd: FakeStat()):
-            g.scan_game_directory(str(game_dir))
+            g.scan_rpgmaker_database(str(game_dir))
 
         assert g.characters == {}, (
             f"TOCTOU > cap must skip Actors.json; got characters="
@@ -294,7 +300,10 @@ def test_glossary_actors_json_rejects_toctou_growth_attack():
 
 def test_glossary_system_json_rejects_toctou_growth_attack():
     """Round 49 Step 2 (C4 site 5/12): TOCTOU regression for
-    core.glossary.Glossary.scan_game_directory System.json branch.
+    core.glossary.Glossary.scan_rpgmaker_database System.json branch.
+
+    Round 50 1b method-name bug fix: was scan_game_directory (wrong);
+    correct method is scan_rpgmaker_database.
     """
     import json as _json
     import tempfile
@@ -321,7 +330,7 @@ def test_glossary_system_json_rejects_toctou_growth_attack():
         before = dict(g.terms)
         with mock.patch("core.file_safety.os.fstat",
                         lambda fd: FakeStat()):
-            g.scan_game_directory(str(game_dir))
+            g.scan_rpgmaker_database(str(game_dir))
 
         assert g.terms == before, (
             f"TOCTOU > cap must skip System.json; terms changed: "
@@ -390,6 +399,126 @@ def test_glossary_load_rejects_toctou_growth_attack():
             f"{g.characters!r}, terms={g.terms!r}"
         )
     print("[OK] glossary_load_rejects_toctou_growth_attack")
+
+
+def test_glossary_actors_json_accepts_size_at_cap_boundary():
+    """Round 50 1b: TOCTOU success-path — file at cap exactly (≤ cap)
+    must be accepted; characters dict populated normally (not fallback)."""
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    from core.glossary import Glossary, _MAX_GLOSSARY_JSON_SIZE
+
+    with tempfile.TemporaryDirectory() as td:
+        game_dir = Path(td)
+        data_dir = game_dir / "data"
+        data_dir.mkdir()
+        actors_path = data_dir / "Actors.json"
+        actors_path.write_text(_json.dumps([
+            {"name": "Hero", "nickname": "H"},
+        ]), encoding="utf-8")
+
+        class FakeStat:
+            st_size = _MAX_GLOSSARY_JSON_SIZE  # exactly at cap
+
+        g = Glossary()
+        with mock.patch("core.file_safety.os.fstat",
+                        lambda fd: FakeStat()):
+            g.scan_rpgmaker_database(str(game_dir))
+
+        assert "hero" in g.characters and g.characters["hero"] == "Hero", (
+            f"size == cap must allow load; got characters={g.characters!r}"
+        )
+    print("[OK] glossary_actors_json_accepts_size_at_cap_boundary")
+
+
+def test_glossary_system_json_accepts_size_at_cap_boundary():
+    """Round 50 1b: TOCTOU success-path for System.json branch."""
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    from core.glossary import Glossary, _MAX_GLOSSARY_JSON_SIZE
+
+    with tempfile.TemporaryDirectory() as td:
+        game_dir = Path(td)
+        data_dir = game_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "Actors.json").write_text(_json.dumps([]), encoding="utf-8")
+        system_path = data_dir / "System.json"
+        system_path.write_text(_json.dumps({
+            "terms": {"basic": ["Attack", "Defend"]},
+        }), encoding="utf-8")
+
+        class FakeStat:
+            st_size = _MAX_GLOSSARY_JSON_SIZE  # exactly at cap
+
+        g = Glossary()
+        with mock.patch("core.file_safety.os.fstat",
+                        lambda fd: FakeStat()):
+            g.scan_rpgmaker_database(str(game_dir))
+
+        assert "Attack" in g.terms and "Defend" in g.terms, (
+            f"size == cap must allow load; got terms={g.terms!r}"
+        )
+    print("[OK] glossary_system_json_accepts_size_at_cap_boundary")
+
+
+def test_glossary_load_system_terms_accepts_size_at_cap_boundary():
+    """Round 50 1b: TOCTOU success-path for load_system_terms."""
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    from core.glossary import Glossary, _MAX_GLOSSARY_JSON_SIZE
+
+    with tempfile.TemporaryDirectory() as td:
+        st = Path(td) / "system_terms.json"
+        st.write_text(_json.dumps({"Save": "存档", "Load": "读档"}),
+                      encoding="utf-8")
+
+        class FakeStat:
+            st_size = _MAX_GLOSSARY_JSON_SIZE  # exactly at cap
+
+        g = Glossary()
+        with mock.patch("core.file_safety.os.fstat",
+                        lambda fd: FakeStat()):
+            g.load_system_terms(str(st))
+
+        assert g.terms == {"Save": "存档", "Load": "读档"}, (
+            f"size == cap must allow load; got terms={g.terms!r}"
+        )
+    print("[OK] glossary_load_system_terms_accepts_size_at_cap_boundary")
+
+
+def test_glossary_load_accepts_size_at_cap_boundary():
+    """Round 50 1b: TOCTOU success-path for Glossary.load."""
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from unittest import mock
+    from core.glossary import Glossary, _MAX_GLOSSARY_JSON_SIZE
+
+    with tempfile.TemporaryDirectory() as td:
+        gp = Path(td) / "glossary.json"
+        gp.write_text(_json.dumps({
+            "characters": {"hero": "英雄"},
+            "terms": {"hp": "生命值"},
+        }), encoding="utf-8")
+
+        class FakeStat:
+            st_size = _MAX_GLOSSARY_JSON_SIZE  # exactly at cap
+
+        g = Glossary()
+        with mock.patch("core.file_safety.os.fstat",
+                        lambda fd: FakeStat()):
+            g.load(str(gp))
+
+        assert g.characters == {"hero": "英雄"} and g.terms == {"hp": "生命值"}, (
+            f"size == cap must allow load; got characters={g.characters!r}, terms={g.terms!r}"
+        )
+    print("[OK] glossary_load_accepts_size_at_cap_boundary")
 
 
 def test_gate_glossary_uses_check_fstat_size_pattern():
@@ -638,6 +767,11 @@ def run_all() -> int:
         test_glossary_system_json_rejects_toctou_growth_attack,
         test_glossary_load_system_terms_rejects_toctou_growth_attack,
         test_glossary_load_rejects_toctou_growth_attack,
+        # Round 50 1b: TOCTOU success-path regressions (glossary 4 callers)
+        test_glossary_actors_json_accepts_size_at_cap_boundary,
+        test_glossary_system_json_accepts_size_at_cap_boundary,
+        test_glossary_load_system_terms_accepts_size_at_cap_boundary,
+        test_glossary_load_accepts_size_at_cap_boundary,
         test_gate_glossary_uses_check_fstat_size_pattern,
         test_rpgmaker_extract_texts_rejects_toctou_growth_attack,
         test_rpgmaker_write_back_rejects_toctou_growth_attack,

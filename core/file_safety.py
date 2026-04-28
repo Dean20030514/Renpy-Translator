@@ -75,6 +75,16 @@ def check_fstat_size(file_obj: IO, max_size: int) -> tuple[bool, int]:
           other guards — explicit cap pre-check before open, generic
           Exception handler downstream).
 
+    Caller contract (Round 50 1e — closes r49 audit Security LOW 1):
+        Callers MUST treat ``(ok=True, size=0)`` as "we don't know
+        yet, but proceeding anyway" — observed_size is NOT reliable
+        when ok=True after a fail-open path.  Real-file callers (the
+        only intended consumers) will never see this; non-real-file
+        wrappers (StringIO/BytesIO) will, and the helper proceeds
+        rather than block.  Do not log ``observed_size`` as a
+        ground-truth file-size metric to operators; use it only as
+        an audit hint when paired with the ok=False branch.
+
     Examples
     --------
     >>> from pathlib import Path

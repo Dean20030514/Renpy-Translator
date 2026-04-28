@@ -132,6 +132,24 @@ helper signature。理由 (i) 与 csv_engine pattern byte-equivalent (ii) 保
 lightweight test (gate / gui_dialogs / stages × 2) 因 e2e fixture 太重，
 用 import + constant + active_src filter（过滤 `#` 注释行）source-grep。
 
+**Round 50 1b 扩展 success-path coverage（closes r49 audit Coverage MEDIUM 1）**：
+8 个 expansion sites 加 ≤ cap 接受路径 regression（cap-exact mock）；
+helper-level cap-1/cap-exact/cap+1 三件套 + site-level cap-exact 共
+覆盖每 site 的 boundary 接受 vs 拒绝两条路径。
+
+**Round 50 1f informational note — symlink TOCTOU defense-in-depth 候选**
+（closes r49 audit Security LOW 2）：当前 r49 fstat helper 把
+TOCTOU race window 收紧到 microsecond 级 fd-based fstat，但 POSIX
+``open(link)`` 在 t0 解析 → relink → fstat 在 t2 sees inode_B 的
+**path-swap symlink TOCTOU** 在理论上仍可触发（fd 已绑 inode_B 但
+logged path 名仍是 link）。**当前 codebase 无 exploit vector** —— 用
+户面 path 来自 ``Path.rglob()`` / ``Path(game_dir)`` 而非 user-supplied
+symlink；CLI 参数全是 directory / file 路径无 symlink 入口。Future
+hardening 候选：参考 r45 `build.py` 加 ``d.is_symlink()`` 检查模式
+（commit `bd9d6e1`）— 任何接受外部 path CLI 参数的入口点可加
+``Path.is_symlink()`` reject 防 path-swap。**不属于 r50+ 必做欠账**
+（informational watchlist）。
+
 ## 其他内存 / 资源上限
 
 | 常量 | 位置 | 默认值 | 说明 |

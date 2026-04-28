@@ -2,24 +2,9 @@
 # -*- coding: utf-8 -*-
 """Round 49 prevention: unit tests for ``scripts/verify_docs_claims.py``
 — the multi-dimensional drift checker that breaks the r45-r48
-"docs claim vs reality" cycle.
-
-The drift incidents in r45-r48 (CI step count / test file count /
-test total / line counts in HANDOFF / CHANGELOG / CLAUDE) shared
-one root cause: each round's docs sync used the *previous round's
-claim* as a baseline and incremented blindly, instead of running
-independent ``find/wc/grep`` to ground-truth.
-
-``scripts/verify_docs_claims.py`` provides a single entry-point
-that re-derives the four canonical numbers from source-of-truth
-files and compares them against the fenced ``VERIFIED-CLAIMS``
-block in ``HANDOFF.md``.  This test file pins the contract for
-each helper plus the ``main(...)`` exit-code matrix.
-
-Stdlib-only.  No pytest, no third-party deps.  Mirrors the
-``def test_X / run_all -> int / ALL N PASSED`` idiom used by
-the other 31 test_*.py files in this project.
-"""
+"docs claim vs reality" cycle.  See ``scripts/verify_docs_claims.py``
+docstring + r49 prelude commits (f3dee81 / 33687da) for full design
+rationale.  Stdlib-only; no pytest dependency."""
 
 from __future__ import annotations
 
@@ -233,8 +218,7 @@ def test_derive_tests_total_sums_across_test_modules():
 
 
 def test_derive_self_test_assertions_parses_step_name_suffix():
-    """Sums the ``(N assertions)`` suffix on every step whose name
-    contains ``self-test`` (case-insensitive)."""
+    """Sum ``(N assertions)`` suffix on steps with ``self-test`` (case-insensitive)."""
     from scripts.verify_docs_claims import derive_self_test_assertions
 
     with tempfile.TemporaryDirectory() as td:
@@ -311,9 +295,7 @@ def test_derive_assertion_points_sums_tests_and_self_tests():
 
 
 def test_count_ci_steps_parses_named_and_anonymous_steps():
-    """``count_ci_steps`` returns ``len(jobs.test.steps)`` — every
-    list entry counts, including anonymous ``- uses:`` checkout.
-    Matches the user-visible "33 CI steps" count for this project."""
+    """``count_ci_steps`` returns ``len(jobs.test.steps)`` (every entry counts)."""
     from scripts.verify_docs_claims import count_ci_steps
 
     with tempfile.TemporaryDirectory() as td:
@@ -363,13 +345,7 @@ def test_count_ci_steps_raises_on_missing_test_job():
 
 
 def test_parse_claims_reads_fenced_block():
-    """The fenced ``<!-- VERIFIED-CLAIMS-START -->...END -->`` block
-    is the canonical declaration of declared numbers.  All other docs
-    (CHANGELOG / CLAUDE / .cursorrules) reference it but do not
-    declare independently — this is the r48 audit-2/3/4 fix.
-
-    Block format: ``key: value`` per line, ints only, ``#`` comments
-    after value tolerated."""
+    """Parse fenced VERIFIED-CLAIMS block: ``key: value`` per line, ints only."""
     from scripts.verify_docs_claims import parse_claims
 
     with tempfile.TemporaryDirectory() as td:
@@ -404,9 +380,7 @@ def test_parse_claims_reads_fenced_block():
 
 
 def test_parse_claims_raises_when_block_missing():
-    """Missing fenced block raises ``ValueError`` — without claims
-    the verifier cannot do its job, callers must surface this as a
-    setup error (not a drift)."""
+    """Missing fenced block raises ``ValueError`` (setup error, not drift)."""
     from scripts.verify_docs_claims import parse_claims
 
     with tempfile.TemporaryDirectory() as td:
@@ -422,8 +396,7 @@ def test_parse_claims_raises_when_block_missing():
 
 
 def test_parse_claims_ignores_inline_comments():
-    """``key: 33   # comment`` parses to ``33`` — the right-hand-side
-    is split on the first ``#`` and the int side is taken."""
+    """``key: 33   # comment`` parses to int 33 (split on first ``#``)."""
     from scripts.verify_docs_claims import parse_claims
 
     with tempfile.TemporaryDirectory() as td:
@@ -458,20 +431,12 @@ def _make_fixture_repo(td: Path, *,
                       claim_tests_total: int | None = None,
                       claim_assertion_points: int | None = None,
                       oversized_count: int = 0) -> None:
-    """Build a synthetic repo tree under ``td`` so ``main()`` can run
-    against it via ``--repo-root``.  The levers correspond to the
-    four drift dimensions verify_docs_claims checks.
-
-    ``tests_per_file`` controls how many ``def test_*`` functions go
-    into each synthetic test module so AST count matches.  Default
-    is 1 → ``tests_total = test_files``.
-
-    ``self_test_assertion_steps`` is a tuple of integers; one CI step
-    named ``Self-test FOO (N assertions)`` is created per entry.  Use
-    to exercise the assertion_points = tests_total + sum(N) contract.
-
-    Each ``claim_*`` defaults to the matching real value when ``None``,
-    so individual tests only specify the lever they want to drift."""
+    """Build synthetic repo under ``td`` so ``main()`` runs via
+    ``--repo-root``.  Levers map to the 4 drift dimensions; each
+    ``claim_*`` defaults to the matching real value (drift only on
+    explicit override).  ``tests_per_file`` × ``test_files`` controls
+    AST tests_total; ``self_test_assertion_steps`` adds CI steps
+    named ``Self-test FOO (N assertions)`` for assertion_points."""
     (td / ".github" / "workflows").mkdir(parents=True)
     (td / "tests").mkdir()
     (td / "scripts").mkdir()
@@ -686,17 +651,66 @@ def test_main_fast_path_zero_against_real_repo():
     print("[OK] main_fast_path_zero_against_real_repo")
 
 
+def test_parse_claims_skips_malformed_line_silently():
+    """Round 50 1d: parse_claims silently skips malformed lines (e.g.
+    non-int value).  Pins backward-compat behavior — fail-open consistent
+    with helper module design.  Closes r49 audit Coverage LOW finding."""
+    import tempfile
+    from scripts.verify_docs_claims import (
+        parse_claims, CLAIM_BLOCK_START, CLAIM_BLOCK_END,
+    )
+    with tempfile.TemporaryDirectory() as td:
+        h = Path(td) / "HANDOFF.md"
+        h.write_text(
+            f"{CLAIM_BLOCK_START}\ntests_total: abc\nci_steps: 36\n{CLAIM_BLOCK_END}\n",
+            encoding="utf-8",
+        )
+        claims = parse_claims(h)
+    assert claims == {"ci_steps": 36}, (
+        f"malformed line must be silently skipped; got {claims!r}"
+    )
+    print("[OK] parse_claims_skips_malformed_line_silently")
+
+
+def test_parse_claims_returns_partial_dict_on_mixed_valid_invalid():
+    """Round 50 1d: 1 valid + 1 malformed → returns dict with valid only."""
+    import tempfile
+    from scripts.verify_docs_claims import (
+        parse_claims, CLAIM_BLOCK_START, CLAIM_BLOCK_END,
+    )
+    with tempfile.TemporaryDirectory() as td:
+        h = Path(td) / "HANDOFF.md"
+        h.write_text(
+            f"{CLAIM_BLOCK_START}\ntests_total: 488\nbroken_line: not_a_number\n"
+            f"ci_steps: 36\n{CLAIM_BLOCK_END}\n",
+            encoding="utf-8",
+        )
+        claims = parse_claims(h)
+    assert claims == {"tests_total": 488, "ci_steps": 36}, (
+        f"valid lines must parse despite malformed line; got {claims!r}"
+    )
+    print("[OK] parse_claims_returns_partial_dict_on_mixed_valid_invalid")
+
+
+def test_workflow_includes_mock_target_consistency_check_step():
+    """Round 50 1a: CI workflow must include 'Mock target consistency
+    check' step + actual grep pattern for stale mock targets outside
+    core.file_safety.  Closes round 49 audit Security MEDIUM."""
+    import yaml
+    wp = REPO_ROOT / ".github" / "workflows" / "test.yml"
+    steps = yaml.safe_load(wp.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
+    matches = [s for s in steps if "Mock target consistency" in s.get("name", "")]
+    assert len(matches) == 1, f"must have 1 such step; got {len(matches)}"
+    run = matches[0].get("run", "")
+    assert "mock\\.patch.*os\\.fstat" in run, "step must contain grep pattern"
+    assert "core\\.file_safety" in run, "step must filter for core.file_safety"
+    print("[OK] workflow_includes_mock_target_consistency_check_step")
+
+
 def test_execute_all_ci_test_steps_skips_verify_docs_claims_full_self_step():
     """Round 49 C7 audit-tail: ``execute_all_ci_test_steps`` MUST skip
-    any CI step whose ``run`` invokes ``verify_docs_claims --full``,
-    to prevent infinite self-recursion when --full is wired into CI
-    as its own gate.
-
-    Without the skip, --full invokes itself, which recurses into
-    --full again, which holds output file locks (Windows WinError 32
-    on tempdir cleanup) and eventually fails with a confusing error.
-    See the rationale comment at the top of the function body.
-    """
+    CI steps invoking ``verify_docs_claims --full`` to prevent self-
+    recursion (Windows WinError 32 file lock).  Pin the guard."""
     import tempfile
     from pathlib import Path
     from scripts.verify_docs_claims import execute_all_ci_test_steps
@@ -757,6 +771,11 @@ TESTS = [
     test_main_fast_path_fails_on_tests_total_drift,
     test_main_fast_path_fails_on_assertion_points_drift,
     test_main_fast_path_zero_against_real_repo,
+    # Round 50 1d: parse_claims malformed line edge case
+    test_parse_claims_skips_malformed_line_silently,
+    test_parse_claims_returns_partial_dict_on_mixed_valid_invalid,
+    # Round 50 1a: mock target stale trap CLASS guard contract
+    test_workflow_includes_mock_target_consistency_check_step,
     # Round 49 C7 audit-tail: self-recursion guard
     test_execute_all_ci_test_steps_skips_verify_docs_claims_full_self_step,
 ]
