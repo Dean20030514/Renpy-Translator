@@ -52,6 +52,7 @@
 - 第四十四轮：10 项综合清算（r43 审计 + 3 漏网 JSON cap + r43 audit fix + 4 docs + CI Windows + PyInstaller smoke）— Security agent 发现 1 CRITICAL：r43 `_MAX_PLUGIN_RESPONSE_BYTES` 语义歧义（Popen text=True 下 N 是 chars 不是 bytes，CJK 响应 cap 实际 ~150 MB）→ rename `_BYTES`→`_CHARS`；3 漏网 JSON loader（csv 2 + gui_dialogs + checker UI whitelist）补 cap；CI 扩双 OS matrix；PyInstaller build 33.9 MB exe smoke 通过；测试 409→413
 - 第四十五轮：11 项维护清算（test_file_processor 拆分 / .gitattributes / build --clean / pre-commit / constants 扩 / engine_guide / dataflow_translate / verify_workflow / rpyc cap / docs sync）+ r41-r45 累计审计 audit-tail（连续 6 轮 0 CRITICAL；首次发现 CI 覆盖 regression — Commit 1 拆 test_ui_whitelist 但 Commit 8 verify script 未同步 workflow，**ghost tests** in CI；同轮 fix +3 MEDIUM defense-in-depth：build symlink check / PyYAML disclosure / sandbox secure-by-default doc）；测试 413 保持
 - 第四十六轮：7 步综合执行（A 方案完整闭合 ~3-4h Auto mode）— r45 audit-tail typo 修复 / install_hooks.sh 启用 (pre-commit 现激活) / test_runtime_hook.py 794 拆 v2_schema (28→29 CI steps) / r45 audit 4 optional MEDIUM gap 全闭合（G1 csv_engine 真实代码加固 50 MB cap + 4 regression tests）/ r46 三维度审计 + 1 LOW + 2 MEDIUM 同轮 fix（连续 7 轮 0 CRITICAL）/ **真实桌面 GUI smoke via computer-use**（5 轮积压 UX 缺口闭合：r41 mixin split 端到端运行验证）/ docs sync；6 commits；测试 413 → 419 (+6)；OOM 防护 22/22 → 23/23 user-facing
+- 第四十七轮：5 step 综合执行（A 方案 + 7 项决策 + 一并 push origin）— r43 detail 真实推 archive (按 round 顺序插入 _archive，CHANGELOG_RECENT 删 125 行 detail) / r45+r46 audit 7 LOW gap 全补（G1 边界×4 含 TOCTOU regression / G2 mixed×2 / G3 multibyte×2）+ **TOCTOU 升级 ACCEPTABLE doc → MITIGATED code**（csv_engine `os.fstat(f.fileno())` stat-after-open 二次校验，4 bypass vector 现 3 ACCEPTABLE + 1 MITIGATED）/ r47 三维度审计（连续 8 轮 0 CRITICAL；3 MEDIUM coverage 推 r48）/ test_translation_state.py 765 拆 progress_tracker_language (29→30 CI steps，r35 C1+r36 H1 4 tests 迁出) / docs sync；5 commits + 一并 push origin (10 commits r46+r47)；测试 419 → 427 (+8)
 
 ## 详细记录
 
@@ -704,6 +705,104 @@ r45 Commit 1 新 suite）— 独立 grep + 跨 commit 审计依然找到真实 i
 - A-H-3 Medium / Deep / S-H-4 Breaking
 - RPG Maker Plugin Commands / 加密 RPA / RGSS
 - Round 47 起始审计（回溯验证 r46 GUI smoke + Step 5 fixes）
+
+### 第四十七轮：5 step 综合执行（r43 archive push / r45+r46 audit 7 LOW gap + TOCTOU 加固代码 / r47 三维度审计 / test_translation_state 拆分 / docs sync）
+
+**起因**：r46 末 HANDOFF "r47 候选" 列出 5 项工作；用户 Auto Mode + 7 项决策选 A 方案完整执行 + (b) TOCTOU 加固**代码**（升级 ACCEPTABLE doc 为 MITIGATED code）+ 按 round 顺序插 archive + 一并 push origin。
+
+**Step 1（commit `9b2e83c`）：r43 detail archive push（D1）**
+
+- awk 提取 CHANGELOG_RECENT 行 64-188（r43 完整 detail，125 行）→ append 到 `_archive/CHANGELOG_FULL.md` "## 关键发现与经验" 之前（按 r13 → r43 时间顺序插入）
+- sed 删除 RECENT 行 64-188（保留 r43 标题 + r46 Step 7 加的摘要 + archive 引用）
+- `_archive/CHANGELOG_FULL.md` 1130 → 1260 行（+130：r43 detail + ## header + 分隔符）
+- `CHANGELOG_RECENT.md` 现 ~835 → 710 行（仅 r44/r45/audit-tail/r46 详细，符合 r46 Step 6 决策"只保 r44-r46 详细"）
+
+**Step 2（commit `0341c08`）：r45+r46 audit 7 LOW gap + TOCTOU 加固代码（D2+D3）**
+
+D3 真实加固（**关键代码改动**）：
+- `engines/csv_engine.py` 加 `import os` + `_extract_csv::with open(...) as f:` 后加 `os.fstat(f.fileno()).st_size` 二次校验
+- 升级 r46 Step 5 的"ACCEPTABLE 文档化"为"**MITIGATED 代码加固**"
+- 4 个 bypass vector 现状：symlink MITIGATED / OSError fail-open ACCEPTABLE / units 累积 ACCEPTABLE / **TOCTOU 现 MITIGATED**（3 ACCEPTABLE + 1 MITIGATED）
+- 成本：每个 csv 文件多 1 个 fstat() syscall（微秒级）；合法 < 50 MB CSV 完全不受影响
+
+D2 7 个 LOW regression test 全闭合：
+- **G1 boundary × 4**（`tests/test_engines.py` 49 → 53）：
+  - `test_csv_engine_accepts_exact_cap_csv`：mock `_MAX_CSV_JSON_SIZE` 到 file_size，验证 `>` 操作符（== 不 trigger）
+  - `test_csv_engine_handles_empty_csv`：0 字节空 CSV 不 crash
+  - `test_csv_engine_handles_stat_oserror_fail_open`：selective mock Path.stat 抛 OSError → fail-open 路径
+  - `test_csv_engine_rejects_toctou_growth_attack`：mock `os.fstat` 大于 cap → 拒绝（验证 D3 defense）
+- **G2 mixed × 2**（`tests/test_ui_whitelist.py` 8 → 10）：
+  - `test_load_ui_button_whitelist_order_invariant`：3 排列 (forward/backward/big-first) 产生相同 extension set
+  - `test_load_ui_button_whitelist_dedupes_cross_files`：shared_token 跨文件 dedup（frozenset union 自然 dedup）
+- **G3 multibyte × 2**（`tests/test_custom_engine.py` 24 → 26）：
+  - `test_sandbox_oversize_response_line_2byte_latin`：ñ + ü（2-byte UTF-8）触发 1024 char cap
+  - `test_sandbox_oversize_response_line_with_newline_terminated_multibyte`：100 CJK + \n（well-formed）NOT trigger（readline 提前停在 \n）
+
+测试 419 → **427** (+8)
+
+**Step 3（无 commit，验证记录）：r47 起始三维度审计（D5）**
+
+3 并行 Explore agent 审计 r46 5 commits + r47 Step 1-2：
+
+| 维度 | CRITICAL | HIGH | MEDIUM | LOW | 备注 |
+|------|----------|------|--------|-----|------|
+| Correctness | 0 | 0 | 0 | 2 | commit message def-count vs print-count cosmetic（49→53 vs 48→52，main block 调用 vs def 数差异）+ TOCTOU 验证 PASS |
+| Coverage | 0 | 0 | **3 optional** | 0 | G1 cap±1 边界 / G2 normalization-with-dedup / G3 newline-cap exact boundary — **推 r48** |
+| Security | 0 | 0 | 0 | 1 | informational：DictReader 读截断 CSV 异常处理可文档化；TOCTOU 加固代码**确认有效**（4 bypass vector 全 cover） |
+
+**审计结论**：连续 8 轮 0 CRITICAL（r35 末 / r40 末 / r43 / r44 / r45 / r41-r45 累计 / r46 / **r47**）；3 MEDIUM coverage gap 推 r48（cosmetic / optional 性质）；不需 commit fix。
+
+**Step 4（commit `12286c1`）：test_translation_state.py 预防性拆分（D4）**
+
+- `tests/test_translation_state.py` 765 → **599** 行（删 165 行 = 4 language tests body + 之间空行）
+- 新 `tests/test_progress_tracker_language.py` 215 行 / 4 tests（byte-identical 迁出 r35 C1 + r36 H1 4 个 ProgressTracker language-aware tests）
+- 主文件 run_all 删 4 个 language tests 引用 + 加注释指向新 suite
+- CI workflow 29 → **30** steps（+ "Run progress tracker language tests"）
+- meta-runner 139 → **135**（-4 因 language tests 从 focused-6 之一移到独立 suite）
+- 总测试 **427 保持**
+- 测试文件 25 → **26**（24 独立 suite + `test_all.py` meta；新 suite 是第 24 独立）
+
+**Step 5（本 commit）：docs sync**
+
+- `CHANGELOG_RECENT.md`：演进摘要追加 r47 一行 + 加 r47 详细 section（本段）
+- `HANDOFF.md`：rewrite 为 r48 起点（r47 5 step 总览 + r48 候选 + 架构健康度更新）
+- `CLAUDE.md` / `.cursorrules`：r47 累积特性段追加
+
+**结果汇总**：
+
+- **5 个 git commits**（Step 1 / 2 / 4 / 5 — Step 3 audit 无 fix 需 commit）+ Final origin push
+- 测试 419 → **427** (+8)
+- CI workflow 29 → **30** steps
+- 测试文件 25 → **26**（24 独立 suite + meta；新 `test_progress_tracker_language.py` 是第 24 独立）+ tl_parser 75 + screen 51 = **553 断言点**
+- **真实代码加固**：1 处（csv_engine TOCTOU MITIGATED 升级）
+- 文件大小：所有源码 / 测试 < 800 保持（`test_translation_state.py` 765 → 599 / `test_runtime_hook.py` 589 仍最大测试）
+- 审计连续性：**连续 8 轮 0 CRITICAL correctness**
+- 4 bypass vector 安全态势：**3 ACCEPTABLE + 1 MITIGATED**（r46 末是 4 ACCEPTABLE + 0 MITIGATED with TOCTOU rated LOW）
+- 开发者工具链：pre-commit hook 持续激活（每 r47 commit 自动跑 py_compile + meta-runner ~1s）
+
+**审计连续性统计**（连续 8 次 3 维度审计）：
+
+| 审计轮 | CRITICAL | HIGH | MEDIUM（已修） | LOW | 特点 |
+|-------|---------|------|------|-----|------|
+| r35 末 | 0 | 0 | 2 → r36 | 0 | 首次 3 维度 |
+| r40 末 | 0 | 0 | 2 → r41 | 1 | — |
+| r43 | 0 | 0 | 3 + 1 def → r43 | 1 | — |
+| r44 | 0 | 0 | 3 audit + 1 test gap → r44 | 0 | "21/21" claim |
+| r45 | 0 | 2 → r45 同轮 | 4 optional → r46 | — | "22/22" 验证 |
+| r41-r45 累计 | 1 → 同次 | 0 | 3 → 同次 | — | CI 覆盖 regression 首次 |
+| r46 | 0 | 0 | 2 coverage → r46 同轮 | 1 docstring + 1 sec info | GUI smoke 闭合 |
+| **r47** | **0** | **0** | **3 optional → r48** | **2 cosmetic + 1 sec info** | **TOCTOU 升级 MITIGATED 代码加固** |
+
+**趋势**：连续 8 轮 0 CRITICAL；r47 审计找到的 3 MEDIUM 全是 optional / boundary expansion，无紧迫；推 r48 处理。
+
+**本轮未做**（留给第 48+ 轮）：
+
+- **r47 audit 3 MEDIUM optional**：G1 cap±1 边界（cap-1 应通过 / cap+1 应拒绝）/ G2 case+whitespace normalization 与 dedup 交互 / G3 newline-terminated multibyte 在 cap exact / cap-1 边界
+- **r47 1 LOW informational**：csv DictReader 读截断 CSV 异常处理文档化（可选，不影响功能）
+- 非中文目标语言端到端验证（生产 ja / ko / zh-tw）— r39-r46 + r47 G3/G4 多层契约已锁死，需真实 API + 游戏跑
+- A-H-3 Medium / Deep / S-H-4 Breaking
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- Round 48 起始审计（回溯验证 r47 5 commits）
 
 ## 已回滚
 
