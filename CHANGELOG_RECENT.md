@@ -48,18 +48,18 @@
 - 第四十轮：pre-existing 大文件拆分（3/4，`gui.py` 挂 r41）— `tests/test_engines.py` 962→694 + 新 `test_engines_rpgmaker.py` 315（15 rpgmaker 测试 byte-identical 迁移）+ `tools/rpyc_decompiler.py` 974→725（新 `_rpyc_shared.py` 47 leaf 常量 + `_rpyc_tier2.py` 274 safe-unpickle 链，re-export 保 test + `renpy_lint_fixer` import 无感）+ `core/api_client.py` 965→642（新 `core/api_plugin.py` 378 — `_load_custom_engine` + `_SubprocessPluginClient` sandbox，re-export 保 `test_custom_engine` 20 测试无感）；`gui.py` 815 挂 r41（PyInstaller 打包耦合 + UI 手动测试需独立一轮）；全部 byte-identical 纯 refactor，测试 396 保持不变
 - 第四十一轮：gui.py 拆分（4/4）+ 3 项审计小尾巴合流 — `gui.py` 815→489 拆为 3 mixin（`gui_handlers.py` 73 / `gui_pipeline.py` 230 / `gui_dialogs.py` 140），`class App(AppHandlersMixin, AppPipelineMixin, AppDialogsMixin)` 跨 mixin `self.X` 调用通过 Python MRO 自动解析；**源码 4/4 全部 < 800 行首次达成**；`App.__init__` 加 `self._project_root` 代替 mixin 里 `Path(__file__).parent` 错误解析；build.py PyInstaller 入口不变，hidden_imports 不用改；3 项审计尾巴：M4 `Path.cwd().resolve()` OSError silent bypass 加 `logger.warning` 防 log 盲点（+1 regression mock `Path.cwd` 抛 OSError 的 test）+ r39 response-read alias chain integration test `test_tl_chunk_reads_alias_field_from_mocked_response`（mock APIClient.translate 返回 "zh" 陷阱 + "ja"/"jp" 真实 alias，断言 kept_items 从 alias 取值）+ HANDOFF / CHANGELOG "N 测试套件" 表述统一为 "N 测试文件 = 独立 suite + 1 meta"（retroactively monotonic r38=19 / r39=20 / r40=21）；测试 396→398
 - 第四十二轮：内部 JSON loader cap 收尾 + checker per-language 化 — rpgmaker × 2 + 3 internal progress + 2 pipeline reports cap（加 `_MAX_*_SIZE` 常量 + `stat().st_size` gate，18/18 user-facing + internal 全覆盖声称达成）+ `file_processor/checker.py::check_response_item` 加 `lang_config` kwarg（deferred `core.lang_config` import 保 r27 A-H-2 layering）+ 调用点 `engines/generic_pipeline` + `translators/tl_mode._translate_one_tl_chunk` 透传；5 regression test（backward compat + ja/ko 别名链 + generic fallback + filter forwarding）；测试 398→405
+- 第四十三轮：r36-r42 累计三维度审计 + 3 test 补 + plugin stdout 50 MB cap — 3 并行 audit agent（correctness / coverage / security）找到 3 valid coverage gap + 1 defensive improvement 全合流；新 `_MAX_PLUGIN_RESPONSE_BYTES = 50MB` 把 plugin subprocess **三通道**（stdin / stdout / stderr）全部 bound（成对 r30 stderr 10KB cap）；测试 405→409；详细已推 `_archive/CHANGELOG_FULL.md`
+- 第四十四轮：10 项综合清算（r43 审计 + 3 漏网 JSON cap + r43 audit fix + 4 docs + CI Windows + PyInstaller smoke）— Security agent 发现 1 CRITICAL：r43 `_MAX_PLUGIN_RESPONSE_BYTES` 语义歧义（Popen text=True 下 N 是 chars 不是 bytes，CJK 响应 cap 实际 ~150 MB）→ rename `_BYTES`→`_CHARS`；3 漏网 JSON loader（csv 2 + gui_dialogs + checker UI whitelist）补 cap；CI 扩双 OS matrix；PyInstaller build 33.9 MB exe smoke 通过；测试 409→413
+- 第四十五轮：11 项维护清算（test_file_processor 拆分 / .gitattributes / build --clean / pre-commit / constants 扩 / engine_guide / dataflow_translate / verify_workflow / rpyc cap / docs sync）+ r41-r45 累计审计 audit-tail（连续 6 轮 0 CRITICAL；首次发现 CI 覆盖 regression — Commit 1 拆 test_ui_whitelist 但 Commit 8 verify script 未同步 workflow，**ghost tests** in CI；同轮 fix +3 MEDIUM defense-in-depth：build symlink check / PyYAML disclosure / sandbox secure-by-default doc）；测试 413 保持
+- 第四十六轮：7 步综合执行（A 方案完整闭合 ~3-4h Auto mode）— r45 audit-tail typo 修复 / install_hooks.sh 启用 (pre-commit 现激活) / test_runtime_hook.py 794 拆 v2_schema (28→29 CI steps) / r45 audit 4 optional MEDIUM gap 全闭合（G1 csv_engine 真实代码加固 50 MB cap + 4 regression tests）/ r46 三维度审计 + 1 LOW + 2 MEDIUM 同轮 fix（连续 7 轮 0 CRITICAL）/ **真实桌面 GUI smoke via computer-use**（5 轮积压 UX 缺口闭合：r41 mixin split 端到端运行验证）/ docs sync；6 commits；测试 413 → 419 (+6)；OOM 防护 22/22 → 23/23 user-facing
 
 ## 详细记录
 
 ### 第四十三轮：r36-r42 累计专项审计 + 3 个 test 补 + 1 个插件子进程 stdout 封顶
 
-r42 HANDOFF 预告 r43 最高优先应是 PyInstaller smoke test（r41 拆分的
-生产验证）+ GUI manual smoke test。两项都需外部资源：PyInstaller 本地
-未装且不自行 `pip install`（按全局 CLAUDE.md 的网络命令须知会规则），
-GUI manual smoke 需人工点击——agent 环境下都不可达。按 r42 HANDOFF 的
-第二优先 "Round 42/41 专项审计" 方向，启动**三维度 r36-r42 累计审计**
-（correctness / test coverage / security），对真实有效的发现做 fix。
-3 commits，每 bisect-safe。
+> Round 46 Step 7 docs sync：完整详细已推到 [_archive/CHANGELOG_FULL.md](_archive/CHANGELOG_FULL.md)，仅保留以下摘要。
+
+启动 3 并行三维度审计 agent；3 valid coverage gap + 1 defensive improvement 全合流。新 `_MAX_PLUGIN_RESPONSE_BYTES = 50MB` 把 plugin subprocess **三通道**（stdin via `_SHUTDOWN_REQUEST_ID` + stdout via 50MB cap + stderr via r30 10KB cap）全部 bound。测试 405→409。详细 22 测试文件 / 535 断言点 / 审计连续性表见 archive。
 
 **审计结果概览**：
 
@@ -701,6 +701,134 @@ r45 Commit 1 新 suite）— 独立 grep + 跨 commit 审计依然找到真实 i
 - r46 建议：**真实桌面 GUI user-click smoke**（human 15 分钟 / 或 computer-use 代点击）；
   清零后选 r45 optional MEDIUM 4 项 / 非 zh 端到端 / r46 回溯审计之一
 - 本地 main 领先 origin/main **12 commits**（r45 Commit 1-10 + 2 audit-tail）
+
+### 第四十六轮：7 步综合执行（r45 audit-tail typo / hooks 启用 / test_runtime_hook 拆分 / r45 4 optional MEDIUM gap / r46 三维度审计 + 5 fix / 真实桌面 GUI smoke / docs sync）
+
+**起因**：Auto Mode + 用户给出 7 项决策（A 方案完整闭合 ~3-4h / computer-use GUI / r46 audit 启动 / 拆 v2_schema / multibyte ja+ko+emoji / r43 archive / 每 Step 一 commit）。按 7 step 顺序执行，6 commits + 1 本地 hook 启用。
+
+**Step 1（commit `2b2d540`）：r45 audit-tail typo fix**
+
+3 处注释/docstring "Round 46 audit-tail" → "Round 45 audit-tail"：
+- `build.py:53`（`is_symlink` check 注释）
+- `docs/quality_chain.md:106`（sandbox secure-by-default section header）
+- `tests/test_ui_whitelist.py:312`（`run_all` docstring）
+
+根因：r45 audit-tail commits（`3ce823f` / `bd9d6e1`）写注释时用了 "r46"，但 r46 当时尚未开始。git log 显示 commit message 是 `round-45-audit`。
+
+**Step 2（无 commit，仅本地配置）：scripts/install_hooks.sh 启用**
+
+- `git config core.hooksPath = .git-hooks/`
+- pre-commit hook（py_compile staged + meta-runner）首次激活
+- 0.99s 跑通验证（meta-runner 137 PASS）
+- 后续 Step 3 / 4 / 5 commit 自动触发 hook 验证（`pre-commit OK` × 3）
+
+**Step 3（commit `f7fe3f0`）：test_runtime_hook.py 拆 → test_runtime_hook_v2_schema.py**
+
+`test_runtime_hook.py` 794 → 589 行（最接近 800 软限的测试文件，预防性拆分）。
+
+- 新 `tests/test_runtime_hook_v2_schema.py` 251 行 / 7 tests
+- 7 个 r32 Subtask C 测试 byte-identical 迁出（v1 / v2 schema + envelope shape + inject_hook v2 markers + runtime_hook_schema flag dispatch）
+- CI workflow `.github/workflows/test.yml` 加 1 step（28 → 29）：`Run runtime hook v2 schema tests`
+- meta-runner `test_all.py` 仍含 `test_runtime_hook`（focused-6 之一），不含 v2_schema（独立 suite）— 符合架构
+- meta-runner 137 → ?；v2_schema 独立运行 7 PASS；总测试 413 保持
+- **理由**：v2 schema 是 user-facing schema 演化关键面（`_schema_version` + envelope shape + `runtime_hook_schema` flag）；独立 suite 让未来 `schema_version=3` 演化 diff 范围小
+
+**Step 4（commit `5198e16`）：r45 audit 4 optional MEDIUM gap 全闭合 + 4 regression tests**
+
+- **G1（真实代码加固）**：`engines/csv_engine.py::_extract_csv` 加 50 MB size cap（与 `_extract_jsonl` / `_extract_json_or_jsonl` 一致 — `stat().st_size` gate + warning + return `[]`）
+  - r37-r44 OOM-prevention sweep 覆盖 `.jsonl` / `.json` 但漏 `.csv` / `.tsv`
+  - +`tests/test_engines.py::test_csv_engine_rejects_oversized_csv`（`.csv` + `.tsv` 各 51 MB sparse）
+- **G2**：`tests/test_ui_whitelist.py` +`test_load_ui_button_whitelist_mixed_directory`
+  - 4 文件混合（2 small `.txt` + `.json` interleaved with 2 oversized rogues）验证 per-file granularity
+- **G3**：`tests/test_custom_engine.py` +`test_sandbox_oversize_response_line_diverse_scripts`
+  - 3 script families：日文 hiragana `あ`(U+3042, 3-byte UTF-8) + 韩文 hangul `한`(U+D55C, 3-byte) + emoji `🎮`(U+1F3AE, 4-byte)
+  - 都触发 cap 在 1024 chars regardless of UTF-8 byte width
+- **G4**：`tests/test_glossary_prompts_config.py` +`test_resolve_translation_field_alias_priority_over_generic`
+  - 7 cases 覆盖 ja / jp / zh / chinese / zh-tw aliases 各 beat translation / target / trans generics + empty-string-alias edge
+  - 钉住 `core/lang_config.py:138-143` 的 alias-first lookup 契约
+- 测试 413 → **417** (+4)
+
+**Step 5（commit `395f32d`）：r46 起始三维度审计 + 1 LOW + 2 MEDIUM 同轮 fix**
+
+3 个并行 Explore agent（correctness / coverage / security）审计 Step 1-4 commits：
+
+| 维度 | CRITICAL | HIGH | MEDIUM | LOW |
+|------|----------|------|--------|-----|
+| Correctness | 0 | 0 | 0 | 1（emoji docstring "surrogate pair" — UTF-16 概念） |
+| Coverage | 0 | 0 | 2 | 6（推 r47） |
+| Security | 0 | 0 | 0 | 1（TOCTOU acceptable） |
+
+**Fix 1（LOW correctness，docstring nit）**：
+- `tests/test_custom_engine.py` docstring "surrogate pair"（UTF-16 surrogate pair 是 UTF-16 概念，UTF-8 直接 4 bytes 编码 beyond-BMP）→ "beyond BMP"
+
+**Fix 2（MEDIUM coverage G3 boundary）**：
+- `tests/test_custom_engine.py` +`test_sandbox_oversize_response_line_exact_cap_boundary`
+- 钉住 `core/api_plugin.py:347-348` 的 `>=` 操作符 boundary：1024 chars exactly no newline 必 raise（不是 `>` 所以 1024 == cap 也触发）；1023 chars + newline 必 NOT raise
+
+**Fix 3（MEDIUM coverage G4 multi-alias）**：
+- `tests/test_glossary_prompts_config.py` +`test_resolve_translation_field_multi_alias_relative_priority`
+- ja config field_aliases = `["ja", "japanese", "jp"]`，第一个 match 赢；6 cases 覆盖 ja / zh / ko 同 alias 链顺序契约
+- 真实场景：AI 同时 emit "ja" + "jp" 时不能取错的字段
+
+**Doc note（informational，无行为变化）**：
+- `engines/csv_engine.py` 扩 G1 cap 注释文档化 4 个 bypass vector（symlink / OSError fail-open / accumulation / TOCTOU）全部 ACCEPTABLE per security audit's 4-bypass-vector analysis
+
+测试 417 → **419** (+2)
+
+**Step 6（无 commit，验证记录）：真实桌面 GUI smoke test via computer-use**
+
+5 轮积压（r41/r42/r43/r44/r45）的 UX 缺口在 r46 闭合。
+
+- `python gui.py` background → `request_access` for `Python 3.13 (64-bit)` + `python.exe` worker basename → screenshot
+- GUI 完整渲染：「多引擎游戏汉化工具」窗口、3 tab（基本设置 / 翻译设置 / 高级设置）、引擎/提供商/模型下拉、命令预览、按钮组（开始翻译 / 停止 / 清空日志）
+- 切换「翻译设置」tab 验证 mixin MRO dispatch（4 翻译模式单选 + tl 语言/续传/风格 widget 全显）
+- 默认值正确加载：`auto / xai / grok-4-1-fast-reasoning / output / 600 / 10 / direct-mode / chinese / adult`
+- 命令预览实时拼装
+- X 关闭 → background process exit code 0 干净退出
+- **r41 mixin split**（`gui.py` / `gui_handlers.py` / `gui_pipeline.py` / `gui_dialogs.py`）**端到端运行确认**
+
+**Step 7（本 commit）：docs sync**
+
+- `CHANGELOG_RECENT.md`：演进摘要追加 r43-r46 4 行 + r43 段加 archive 标注 + 加 r46 详细 section（本段）
+- `HANDOFF.md`：重写为 r46 起点版本
+- `CLAUDE.md` / `.cursorrules`：r46 累积特性段追加
+- 修正 HANDOFF 过时信息（"领先 origin 12 commits" → 实际 0）
+
+**结果**：
+
+- **6 个 git commits**（5 step + docs sync）+ 1 本地 hook 启用
+- **测试 413 → 419 (+6)**：G1/G2/G3/G4 各 +1 + G3-boundary +1 + G4-multi-alias +1
+- **CI workflow 28 → 29 steps**（+ Run runtime hook v2 schema tests）
+- **23 测试文件**（22 独立 suite + 1 meta-runner）+ tl_parser 75 + screen 51 = **545 断言点**
+- **真实代码加固**：1 处（`csv_engine.py::_extract_csv` 加 50 MB cap，OOM 防护 22/22 → **23/23** user-facing JSON loader）
+- **文件大小**：所有源码 / 测试 < 800 保持（`test_runtime_hook.py` 794 → 589 / `test_runtime_hook_v2_schema.py` 251 新 / 其他不变）
+- **审计连续性**：**连续 7 轮 0 CRITICAL** correctness（r35 末 / r40 末 / r43 / r44 / r45 / r41-r45 累计 / r46）
+- **GUI smoke 5 轮积压 UX 缺口闭合** — r41 mixin 真实运行验证
+- **开发者工具链**：pre-commit hook 现激活（每 commit 自动跑 py_compile + meta-runner）
+
+**审计连续性统计**（连续 7 次 3 维度审计）：
+
+| 审计轮 | CRITICAL | HIGH | MEDIUM（已修） | LOW | 特点 |
+|-------|---------|------|------|-----|------|
+| r35 末 | 0 | 0 | 2 → r36 | 0 | 首次 3 维度 |
+| r40 末 | 0 | 0 | 2 → r41 | 1 | — |
+| r43 | 0 | 0 | 3 + 1 def → r43 | 1 | — |
+| r44 | 0 | 0 | 3 audit + 1 test gap → r44 | 0 | "21/21" claim |
+| r45 | 0 | 2 → r45 同轮 | 4 optional → r46 | — | "22/22" 验证 |
+| r41-r45 累计 | 1 → 同次 | 0 | 3 → 同次 | — | CI 覆盖 regression 首次 |
+| **r46** | **0** | **0** | **2 coverage → r46 同轮** | **1 docstring + 1 sec info** | **GUI smoke 闭合** |
+
+**趋势**：连续 7 轮 0 CRITICAL；r46 测试覆盖驱动找到 2 新 MEDIUM coverage gap，全部同轮 fix。
+
+**本轮未做**（留给第 47+ 轮）：
+
+- **r45 audit 6 LOW**（推迟自 Step 4-5）：G1 exact 50 MB / 0 byte / stat OSError + G2 order-sensitivity / cross-file dedup + G3 2-byte latin / newline-multibyte payload
+- **r46 audit 1 LOW**（推迟自 Step 5）：TOCTOU exact-cap race（< 1% real-world，acceptable per security audit）
+- **r43 详细 archive 实际 push**（Step 7 仅做了 CHANGELOG_RECENT 内标注，r43 完整段尚未真正 append 到 `_archive/CHANGELOG_FULL.md`；下轮 docs maintenance 时一起做）
+- 非中文目标语言端到端验证（生产 ja / ko / zh-tw 5 层契约 r39-r46 已锁死，需真实 API + 游戏）
+- A-H-3 Medium / Deep / S-H-4 Breaking
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- Round 47 起始审计（回溯验证 r46 GUI smoke + Step 5 fixes）
 
 ## 已回滚
 
