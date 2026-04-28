@@ -548,6 +548,79 @@ def test_load_ui_button_whitelist_normalization_dedupes_cross_files():
     print("[OK] load_ui_button_whitelist_normalization_dedupes_cross_files")
 
 
+def test_normalise_ui_button_does_not_apply_unicode_nfc_nfd_normalisation():
+    """Round 49 Step 1 (r48 audit LOW Coverage closure): pin the
+    ASCII-dominant design choice for ``_normalise_ui_button``.
+
+    The normaliser is documented as case-fold + whitespace-collapse only;
+    it deliberately does NOT apply Unicode NFC/NFD/NFKC/NFKD normalisation.
+    Regression: precomposed and decomposed forms of the same logical
+    character must remain DISTINCT tokens.  If a future refactor adds
+    ``unicodedata.normalize(...)``, this test will fail and the change
+    must be reviewed against the design rationale in the checker
+    docstring before merging.
+
+    Cross-script / accent-fuzz alias resolution belongs in
+    ``core.lang_config.resolve_translation_field`` via
+    ``lang_config.field_aliases``, not in the button-name normaliser.
+    Operators needing NFC/NFD interop must pre-normalise their input
+    before calling ``add_ui_button_whitelist``.
+    """
+    from file_processor.checker import _normalise_ui_button
+    from file_processor import (
+        is_common_ui_button,
+        add_ui_button_whitelist,
+        clear_ui_button_whitelist,
+    )
+
+    # NFC: precomposed "é" as the single codepoint U+00E9.
+    nfc_form = "café"
+    # NFD: decomposed "é" as e (U+0065) + combining acute accent (U+0301).
+    nfd_form = "café"
+
+    # Test fixture sanity: visually identical but codepoint-distinct.
+    assert nfc_form != nfd_form, (
+        "test fixture: NFC and NFD strings must differ at codepoint level"
+    )
+    assert len(nfc_form) == 4 and len(nfd_form) == 5, (
+        f"test fixture: NFC len should be 4 and NFD len should be 5, "
+        f"got {len(nfc_form)} / {len(nfd_form)}"
+    )
+
+    # Core assertion: normaliser does NOT collapse NFC and NFD to the
+    # same token (which Unicode normalisation would).
+    nfc_normalised = _normalise_ui_button(nfc_form)
+    nfd_normalised = _normalise_ui_button(nfd_form)
+    assert nfc_normalised != nfd_normalised, (
+        f"_normalise_ui_button must NOT apply Unicode normalisation; "
+        f"NFC {nfc_normalised!r} and NFD {nfd_normalised!r} should differ "
+        f"(see _normalise_ui_button docstring: ASCII-dominant by design)"
+    )
+
+    # End-to-end: storing NFC form must NOT match a lookup of NFD form.
+    clear_ui_button_whitelist()
+    try:
+        added = add_ui_button_whitelist([nfc_form])
+        assert added == 1, (
+            f"NFC token should be added as 1 new entry, got added={added}"
+        )
+
+        # NFC lookup hits the stored NFC token.
+        assert is_common_ui_button(nfc_form), (
+            f"NFC form {nfc_form!r} must match its own stored entry"
+        )
+
+        # NFD lookup of the same visual character does NOT hit (deliberate).
+        assert not is_common_ui_button(nfd_form), (
+            f"NFD {nfd_form!r} must NOT match stored NFC {nfc_form!r} — "
+            f"operator must pre-normalise input if NFC/NFD interop is needed"
+        )
+    finally:
+        clear_ui_button_whitelist()
+
+    print("[OK] normalise_ui_button_does_not_apply_unicode_nfc_nfd_normalisation")
+
+
 ALL_TESTS = [
     # Round 31 Tier A-1
     test_is_common_ui_button,
@@ -566,6 +639,8 @@ ALL_TESTS = [
     test_load_ui_button_whitelist_dedupes_cross_files,
     # Round 48 Step 1 (G2.1 audit gap): normalization-dedup interaction
     test_load_ui_button_whitelist_normalization_dedupes_cross_files,
+    # Round 49 Step 1 (r48 audit LOW Coverage closure): NFC/NFD design choice
+    test_normalise_ui_button_does_not_apply_unicode_nfc_nfd_normalisation,
 ]
 
 

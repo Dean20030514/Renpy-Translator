@@ -458,6 +458,19 @@ def _normalise_ui_button(text: str) -> str:
     """Lower-case + collapse-whitespace rule shared by ``is_common_ui_button``
     and the ``add_ui_button_whitelist`` loader so lookups and inserts stay
     aligned.  Returns an empty string for non-strings or all-whitespace input.
+
+    ASCII-dominant by design — case fold + whitespace collapse only.  Does
+    NOT apply Unicode NFC/NFD/NFKC/NFKD normalisation: precomposed ``é``
+    (U+00E9) and decomposed ``é`` (U+0065 + U+0301) remain distinct tokens.
+    Rationale: the whitelist is overwhelmingly ASCII Ren'Py button labels
+    (Save / Load / Quit / ...) plus operator-supplied CJK extensions like
+    ``存档`` / ``读档`` where NFC/NFD has no meaningful effect on the hot
+    path.  Cross-script fuzzy matching is the job of
+    ``core.lang_config.resolve_translation_field`` via
+    ``lang_config.field_aliases`` (round 39+), not this normaliser.
+    Operators needing NFC/NFD interop must pre-normalise their input
+    before calling ``add_ui_button_whitelist``.  This design choice is
+    documented as the round 48 audit LOW Coverage closure (round 49 Step 1).
     """
     if not isinstance(text, str):
         return ""
