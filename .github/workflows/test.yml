@@ -120,6 +120,8 @@ jobs:
         run: python tests/test_engines.py
       - name: Run engine tests (RPG Maker)
         run: python tests/test_engines_rpgmaker.py
+      - name: Run engine tests (CSV/JSONL/JSON)
+        run: python tests/test_csv_engine.py
       - name: Run smoke tests
         run: python tests/smoke_test.py
       - name: Run batch-1 tests
@@ -132,6 +134,8 @@ jobs:
         run: python tests/test_merge_translations_v2.py
       - name: Run custom engine tests
         run: python tests/test_custom_engine.py
+      - name: Run sandbox response cap tests
+        run: python tests/test_sandbox_response_cap.py
       - name: Run tl_dedup tests
         run: python tests/test_tl_dedup.py
       - name: Run RPA unpacker tests
