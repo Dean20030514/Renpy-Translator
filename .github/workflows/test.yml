@@ -205,17 +205,28 @@ jobs:
       # and object-arg ``patch.object(os, "fstat", ...)`` — since
       # tests/test_api_client.py uses patch.object form for other
       # mocks, future maintainers may use it for fstat mocks too.
+      #
+      # Round 50 C4 deep-audit fix (Security MEDIUM): filter relaxed
+      # from "core\.file_safety" to "file_safety" to handle the
+      # ``from core import file_safety; patch.object(file_safety.os,
+      # "fstat", ...)`` qualified-but-not-fully-dotted form.  Old
+      # filter incorrectly flagged this CORRECT mock as stale (false
+      # positive).  New filter still catches stale mocks targeting
+      # caller modules (engines.csv_engine.os.fstat etc) — those
+      # lines do not contain "file_safety" anywhere.
       - name: Mock target consistency check (round 49 audit Security MEDIUM closure)
         shell: bash
         run: |
-          if grep -rEn "(mock\.patch.*os\.fstat|patch\.object\s*\(\s*[a-zA-Z_.]*os\s*,\s*[\"']fstat[\"'])" tests/*.py | grep -v "core\.file_safety"; then
-            echo "ERROR: stale mock target detected outside core.file_safety —"
+          if grep -rEn "(mock\.patch.*os\.fstat|patch\.object\s*\(\s*[a-zA-Z_.]*os\s*,\s*[\"']fstat[\"'])" tests/*.py | grep -v "file_safety"; then
+            echo "ERROR: stale mock target detected outside file_safety module —"
             echo "see r48 Step 3 CRITICAL audit (commit 34d9707) for the trap."
             echo "All mock.patch / patch.object on os.fstat MUST target"
-            echo "core.file_safety.os.fstat."
+            echo "core.file_safety.os.fstat (any qualification: bare /"
+            echo "module-attribute / dotted-attribute is fine as long as"
+            echo "'file_safety' appears in the line)."
             exit 1
           fi
-          echo "OK: all os.fstat mocks correctly target core.file_safety"
+          echo "OK: all os.fstat mocks correctly target file_safety module"
 
       - name: Verify zero third-party dependencies
         shell: bash

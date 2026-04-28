@@ -688,19 +688,21 @@ def test_parse_claims_returns_partial_dict_on_mixed_valid_invalid():
 
 
 def test_workflow_includes_mock_target_consistency_check_step():
-    """Round 50 1a: CI workflow includes 'Mock target consistency check'
-    step + grep patterns covering both mock.patch + patch.object forms.
-    Closes round 49 audit Security MEDIUM + r50 C2 Correctness LOW-2."""
+    """Round 50 1a + C4 deep-audit Security MEDIUM fix: CI step
+    catches both mock.patch + patch.object forms; filter 'file_safety'
+    (not 'core\\.file_safety') to handle qualified forms."""
     import yaml
     wp = REPO_ROOT / ".github" / "workflows" / "test.yml"
     steps = yaml.safe_load(wp.read_text(encoding="utf-8"))["jobs"]["test"]["steps"]
     matches = [s for s in steps if "Mock target consistency" in s.get("name", "")]
     assert len(matches) == 1, f"must have 1 such step; got {len(matches)}"
     run = matches[0].get("run", "")
-    # Must catch BOTH syntactic forms of os.fstat mocking:
-    assert "mock\\.patch.*os\\.fstat" in run, "step must catch mock.patch form"
-    assert "patch\\.object" in run and "fstat" in run, "step must catch patch.object form"
-    assert "core\\.file_safety" in run, "step must filter for core.file_safety"
+    assert "mock\\.patch.*os\\.fstat" in run, "must catch mock.patch form"
+    assert "patch\\.object" in run and "fstat" in run, "must catch patch.object form"
+    assert 'grep -v "file_safety"' in run, "filter must be 'file_safety' (r50 C4 fix)"
+    assert 'grep -v "core\\.file_safety"' not in run, (
+        "filter must NOT be 'core\\.file_safety' — false-positives on qualified forms"
+    )
     print("[OK] workflow_includes_mock_target_consistency_check_step")
 
 
