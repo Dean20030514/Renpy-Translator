@@ -493,6 +493,63 @@ def test_resolve_translation_field_alias_priority_over_generic():
     print("[OK] resolve_translation_field_alias_priority_over_generic")
 
 
+def test_resolve_translation_field_multi_alias_relative_priority():
+    """Round 46 Step 5 audit-fix (G4 coverage MEDIUM): when an item
+    contains multiple alias keys from the SAME lang_config (e.g. both
+    "ja" and "jp" for Japanese), the FIRST alias in
+    ``lang_config.field_aliases`` order must win, not the last.
+
+    The implementation in core/lang_config.py:138-140 iterates aliases
+    in declared order and returns at the first match; this test pins
+    that contract so a future re-ordering of the loop, switch to a
+    set/dict, or swap to "longest match wins" cannot silently change
+    which alias contributes.
+
+    Real-world scenario: an AI plugin that emits both "ja" (canonical)
+    and "jp" (legacy alias) keys with different content — typically
+    "ja" is the corrected translation and "jp" is the raw output.
+    Returning "jp" instead of "ja" would silently regress quality.
+
+    Round 45 audit-tail flagged this as a coverage gap; closed here.
+    """
+    from core.lang_config import resolve_translation_field, get_language_config
+
+    ja_cfg = get_language_config("ja")
+    zh_cfg = get_language_config("zh")
+    ko_cfg = get_language_config("ko")
+
+    # ja field_aliases = ["ja", "japanese", "jp"] — first wins.
+    assert resolve_translation_field(
+        {"ja": "WIN_JA", "japanese": "lose1", "jp": "lose2"}, ja_cfg
+    ) == "WIN_JA", "first alias 'ja' must win over 'japanese' + 'jp'"
+
+    assert resolve_translation_field(
+        {"japanese": "WIN_JAPANESE", "jp": "lose"}, ja_cfg
+    ) == "WIN_JAPANESE", (
+        "'japanese' (2nd alias) must win over 'jp' (3rd alias) when 'ja' absent"
+    )
+
+    assert resolve_translation_field(
+        {"jp": "WIN_JP"}, ja_cfg
+    ) == "WIN_JP", "'jp' (3rd alias) returned when only it is present"
+
+    # zh field_aliases = ["zh", "chinese", "cn"] — same contract.
+    assert resolve_translation_field(
+        {"zh": "WIN_ZH", "chinese": "lose1", "cn": "lose2"}, zh_cfg
+    ) == "WIN_ZH", "first alias 'zh' must win over 'chinese' + 'cn'"
+
+    assert resolve_translation_field(
+        {"chinese": "WIN_CHINESE", "cn": "lose"}, zh_cfg
+    ) == "WIN_CHINESE", "'chinese' (2nd) must win over 'cn' (3rd)"
+
+    # ko field_aliases = ["ko", "korean", "kr"] — same contract.
+    assert resolve_translation_field(
+        {"korean": "WIN_KOREAN", "kr": "lose"}, ko_cfg
+    ) == "WIN_KOREAN", "ko: 'korean' (2nd) must win over 'kr' (3rd)"
+
+    print("[OK] resolve_translation_field_multi_alias_relative_priority")
+
+
 def test_config_validation():
     """配置文件 schema 校验：类型/范围/未知键"""
     from pathlib import Path as _Path
@@ -645,6 +702,8 @@ def run_all() -> int:
         test_resolve_translation_field,
         # Round 46 Step 4 (G4): alias priority over generic fallback
         test_resolve_translation_field_alias_priority_over_generic,
+        # Round 46 Step 5 audit-fix (G4): multi-alias relative priority within field_aliases
+        test_resolve_translation_field_multi_alias_relative_priority,
         test_config_validation,
         # Round 38 M2: 50 MB size-cap gates on user-supplied JSON paths
         test_config_file_rejects_oversized,

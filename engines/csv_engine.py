@@ -159,6 +159,13 @@ class CSVEngine(EngineBase):
         # 50 MB+ is almost certainly adversarial or misconfigured input.
         # The r37-r44 size-cap sweep covered .jsonl / .json but missed
         # .csv / .tsv; closed by the round 45 audit's optional MEDIUM.
+        # Round 46 Step 5 (security audit notes): the stat() check has
+        # known TOCTOU race + fail-open on stat OSError.  Both are
+        # ACCEPTABLE per the r37-r44 design philosophy (operator trust
+        # model + streaming reduces realistic blast radius to ~150 MB
+        # peak even if cap is bypassed).  See security audit doc for
+        # full bypass-vector analysis (4 vectors, all rated ACCEPTABLE
+        # or MITIGATED).
         try:
             fsize = filepath.stat().st_size
         except OSError:

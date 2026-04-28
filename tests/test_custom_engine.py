@@ -575,7 +575,7 @@ def test_sandbox_oversize_response_line_diverse_scripts():
 
       - Japanese hiragana 'あ' (U+3042, 3 bytes UTF-8)
       - Korean hangul     '한' (U+D55C, 3 bytes UTF-8)
-      - Emoji             '🎮' (U+1F3AE, 4 bytes UTF-8 — surrogate pair)
+      - Emoji             '🎮' (U+1F3AE, 4 bytes UTF-8, beyond BMP)
 
     All three must trigger the cap at the same char count (1024) as
     ASCII / CJK, regardless of byte width.  This proves the
@@ -646,6 +646,100 @@ def test_sandbox_oversize_response_line_diverse_scripts():
     print("[OK] test_sandbox_oversize_response_line_diverse_scripts")
 
 
+def test_sandbox_oversize_response_line_exact_cap_boundary():
+    """Round 46 Step 5 audit-fix (G3 coverage MEDIUM): cover the exact
+    cap boundary case that the r43 / r44 / round 46 tests miss.
+
+    The cap check in ``core/api_plugin.py::_read_response_line`` uses
+    ``len(line) >= _MAX_PLUGIN_RESPONSE_CHARS`` (line 347-348), so a
+    response line of EXACTLY ``cap`` chars without a newline must
+    trigger the RuntimeError — the >= operator means equality is the
+    smallest payload that trips the cap.  Earlier tests use 2048 chars
+    (well over a 1024 cap), proving "way over caps" but not the
+    boundary itself.
+
+    A regression here would mean the operator changed from >= to >,
+    silently allowing a perfectly cap-sized truncated line to be
+    accepted as a valid response, which would defeat the whole point
+    of the cap (the malformed-truncated detection).
+
+    Round 45 audit-tail flagged this as a coverage gap; closed here.
+    """
+    from unittest import mock
+
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+
+        def readline(self, size: int = -1) -> str:
+            if size > 0:
+                return self._payload[:size]
+            return self._payload
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            pass
+
+    # Boundary case: payload of EXACTLY 1024 chars with no newline.
+    # readline(1024) returns 1024 chars; len(line) == cap → >= cap
+    # branch fires → must raise.
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        client._proc = _FakeProc("X" * 1024)  # exactly cap chars, no \n
+        raised = False
+        msg = ""
+        try:
+            client._read_response_line(req_id=300)
+        except RuntimeError as e:
+            msg = str(e)
+            raised = "chars" in msg.lower() or "exceeded" in msg.lower()
+        assert raised, (
+            f"exact-cap (1024 chars, no newline) must trigger RuntimeError "
+            f"because the implementation uses >= not >; got msg={msg!r}"
+        )
+
+    # Symmetric negative case: payload of cap-1 chars with no newline
+    # must NOT trigger the cap check (len(line) < cap).  It will fail
+    # later for "no newline → EOF" reasons but NOT the cap raise — the
+    # caller's downstream parsing handles that.  This is intentionally
+    # a documentation test: prove the >= branch only fires at >= cap.
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        # cap-1 chars with explicit newline: this is a valid line
+        # exactly at the cap-1 length, with newline, so cap check is
+        # NOT triggered (the and-clause has not line.endswith('\n')).
+        client._proc = _FakeProc("Y" * 1023 + "\n")
+        cap_raised = False
+        try:
+            client._read_response_line(req_id=301)
+        except RuntimeError as e:
+            # Only treat it as a cap-raise if the message mentions cap.
+            cap_raised = "chars" in str(e).lower() or "exceeded" in str(e).lower()
+        # Other errors (JSON-parse / req_id mismatch downstream) are
+        # acceptable; the only thing we assert is the cap branch did
+        # NOT fire here.
+        assert not cap_raised, (
+            "cap-1 chars with newline must not trigger the >= cap "
+            "branch — newline presence + len < cap both required for "
+            "the cap path to NOT fire"
+        )
+    print("[OK] test_sandbox_oversize_response_line_exact_cap_boundary")
+
+
 def test_sandbox_close_idempotent():
     """Calling close() twice on a subprocess client is a no-op the second time."""
     config = APIConfig(
@@ -699,6 +793,8 @@ ALL_TESTS = [
     test_sandbox_oversize_response_line_char_semantics_multibyte,
     # Round 46 Step 4 (G3): diverse scripts (ja hiragana / ko hangul / emoji)
     test_sandbox_oversize_response_line_diverse_scripts,
+    # Round 46 Step 5 audit-fix (G3 boundary): exact cap-chars triggers >=
+    test_sandbox_oversize_response_line_exact_cap_boundary,
 ]
 
 
