@@ -56,283 +56,102 @@
 - 第四十八轮：4 step 综合执行（D 方案深度优化 + 8 项决策 + 一并 push origin）— r47 audit 4 gap close（G1.1 cap±1 边界×2 + G2.1 normalization-dedup×1 + G3.1 newline-cap exact×2 + L1 csv.Error try/except 显式 catch + r47 print "ALL 53"→"ALL 55" cosmetic typo fix）/ **TOCTOU helper 抽取**到 `core/file_safety.py::check_fstat_size`（93 行 stdlib-only 模块）+ **扩展 TOCTOU defense** 从 csv-only 到 csv/jsonl/json 三个 extract methods（_extract_jsonl/_extract_json_or_jsonl 的 read_text→with open + helper + read 改造）+ 4 unit tests + 2 jsonl/json TOCTOU regression / r48 三维度审计 + **首次 security CRITICAL 同轮 fix**（r47 TOCTOU mock target `engines.csv_engine.os.fstat` 在 r48 helper 抽取后失效，spuriously pass，改为 `core.file_safety.os.fstat` + 加注释防 future 重演 + 1 MEDIUM coverage fix：file_safety helper 加 ValueError fail-open 配合新 unit test）/ docs sync；4 commits + 一并 push origin（5 commits r48）；测试 427 → 439 (+12)；CSV bypass vector 防御从 csv-only MITIGATED 扩展到 csv+jsonl+json **三 readers 全 MITIGATED**
 - 第四十八轮 · audit-tail（用户反馈触发的 800 行越限拆分 + 多轮 audit gap 教训）— 用户在 r48 末发现 `tests/test_engines.py` 1090 行 + `tests/test_custom_engine.py` 1020 行**远超 800 软限**，而 r45-r48 的 HANDOFF/CHANGELOG/CLAUDE 多次错误声称"all tests < 800 maintained"；同轮 fix 拆分两个文件（test_engines 1090→537 + 新 test_csv_engine 610/21 tests / test_custom_engine 1020→497 + 新 test_sandbox_response_cap 588/8 tests，byte-identical 拆分），CI workflow 31→33 steps，**所有 .py 现真正 < 800**；显式记录"跨 commit 累积测试增长无人盯"教训（同 r45 CI 覆盖 regression 性质）；2 commits（refactor 拆分 + docs amend）
 - 第四十九轮：7 commits 综合执行（C1+C2 prelude — prevention 工具自动化 / C3 r48 推迟 2 LOW closure / C4+C5 file_safety helper 推广 26 sites / C6 r49 三维度审计 + 2 HIGH 同轮 fix / C7 docs sync）— C1+C2 (`f3dee81`+`33687da`) 落地 4 项 prevention（`.git-hooks/pre-commit` file-size guard >800 行 .py 直接 block / 新 `scripts/verify_docs_claims.py` stdlib+PyYAML AST 推导 4 项 canonical 数字 `--fast` pre-commit ~1s + `--full` 实跑 CI / HANDOFF.md fenced `<!-- VERIFIED-CLAIMS-START -->` 单声称源 / CI workflow +2 step；顺手修 r17 起 pre-existing tl_parser self-test CI bug — 31 轮没人发现的隐藏失败被 audit 工具用上才出土，反向证明工具价值）/ C3 (`69bc251`) 关 r48 推迟 2 LOW（csv.Error 已在 r48 Step 1 commit `60cdc72` closed verified-already + `_normalise_ui_button` Unicode NFC/NFD design choice docstring + 1 regression test 端到端钉住 NFC ≠ NFD 设计契约）/ C4 (`99d9e72`) file_safety.check_fstat_size 推广到 12 core sites 跨 8 modules（font_patch / translation_db / config / glossary 4 callers helper 不动 inline 加 fstat check / gate / rpgmaker 2 / gui_dialogs / checker；+12 expansion regression 集中到 tests/test_file_safety.py 防 r48 Step 3 mock target stale CRITICAL 重演 — 单 grep `mock.patch.*os.fstat` 即可 audit 全部一致性）/ C5 (`a6a0ad0`) 推广到 11 tools+internal sites 跨 8 modules（merge_v2 / translation_editor 3 / review_generator / analyze_writeback / generic_pipeline / translation_utils / _screen_patch / stages 2；+11 regression 拆到 NEW `tests/test_file_safety_c5.py` 防超 800 cap + `_patch_fstat_oversize` 上下文管理 helper；CI workflow +1 step）/ C6 (`8fc999f`) r49 三维度审计 14 commits（连续 9 轮 0 CRITICAL ✓ / 2 HIGH 同轮 fix：4 lightweight tests 加 `active_src` filter 防 comment-residual spuriously pass + scripts/verify_docs_claims.py shell=True trust contract 30-行 docstring 文档化；MEDIUM/LOW 推 r50 含 1 false positive）/ C7 (本) docs sync + 修 HANDOFF "本地未 push" drift（C1+C2 实际已 push）+ CHANGELOG 5 轮规则压缩 r43+r44 detail（247 行删，演进摘要保留各一行）+ **r49 audit-tail：Q5 step 3 跑 verify_docs_claims --full 时发现 r49 C2 self-recursion bug**（--full 实跑 CI test steps 包含自己 → 死循环 → WinError 32），同轮 fix execute_all_ci_test_steps 加 8 行 self-skip guard + 1 unit regression（又一个 audit 工具用上才出土的 case）；测试 463→**488** (+25)；test_files 33→**34** (+1)；ci_steps 35→**36** (+1)；assertion_points 589→**614** (+25)；**整个 user-facing JSON ingestion surface 26 sites / 12 modules 现已全 TOCTOU MITIGATED**（attack window 从 path-based stat→open 全部缩到 fd-based fstat 微秒级；r46 audit 4 ACCEPTABLE → r47 csv only MITIGATED → r48 csv 3 readers MITIGATED → **r49 全 26 sites MITIGATED**）
+- 第五十轮：3 commits 综合执行（C1 r49 6 audit-deferred 全 closure + 2 latent r49 C4 fixture bug 同轮 fix / C2 r50 audit 7 findings 全部同轮 fix / C3 docs sync + 5 轮滚动删 r45）— **本轮起新规则**（用户指令"不允许留下任何欠账"）：所有 audit findings (CRITICAL/HIGH/MEDIUM/LOW) 必须同轮 fix，**no tier exemption**（修正 r41-r49 默认 defer LOW/MEDIUM 的不成文做法）；C1 (`5ab9324`) 6 项 closure：(1a) `.github/workflows/test.yml` +Mock target consistency check step grep `mock\.patch.*os\.fstat` 防 r48 trap CLASS / (1b) 8 sites TOCTOU success-path test (4 glossary + 4 c5) + 同轮 fix 2 r49 C4 latent fixture bug（actors_json/system_json rejection tests 调错 method `scan_game_directory`，原本应调 `scan_rpgmaker_database`，r49 audit 误判 false-positive 漏掉真 bug）/ (1c) closed-by-1b / (1d) parse_claims malformed line +2 unit test / (1e) `check_fstat_size` docstring +caller contract / (1f) docs/constants.md +symlink TOCTOU informational note；C2 (`d93cc85`) r50 audit 8 commits 发现 0 CRITICAL/0 HIGH/2 MEDIUM/8 LOW 全部同轮 fix：Coverage HIGH-1 5 malformed scenarios consolidated parameterized test + Security MEDIUM-1 1f symlink CLI args path audit table + Correctness LOW-2 1a regex 扩 patch.object form + Correctness LOW-3 `_CLAIM_LINE_RE` strict end-of-value 防 "419.5" truncation + Security LOW-2 1e docstring ok=True 双分支 example + Security LOW-4 r49 C7 self-recursion guard 改 explicit step name match + 4 项 architectural decisions 文档化（18/26 sites helper-level coverage sufficient / centralized helper 不可能有 operator divergence / etc）；C3 (本) docs sync + 删 r45 detail 275 行 (5 轮滚动 cap)；测试 488→**499** (+11)；ci_steps 36→**37** (+1)；assertion_points 614→**625** (+11)；test_files unchanged 34；**连续 10 轮 0 CRITICAL correctness 保持**（r35-r50）；**新规则后 zero-debt closure 模式确立** — r51 起 audit findings 强制同轮 fix，policy now written + enforced
 
 ## 详细记录
 
-### 第四十五轮：11 项维护清算（测试拆分 / 3 维度审计 / 4 docs 刷新 / CI 工具 / hooks / 审计 fix）
+### 第五十轮：3 commits 综合执行（C1 r49 6 audit-deferred 全 closure / C2 r50 audit 7 findings 同轮 fix / C3 docs sync + 5 轮滚动删 r45）
 
-用户选 11 项 r45：`#1`+`#2`+`#3`+`#4`+`#5`+`#6`+`#7`+`#8`+`#15`+`#16`+`#17`，agent
-自主编排顺序。Auto mode 下连续执行 10 commits；每 bisect-safe。启动 3
-个并行 Explore audit agent（r44 三维度审计，background）+ 自己 grep
-JSON loaders 核查 r44 "21/21" 声称 + 自己做其他独立任务。
+**本轮新规则**（用户指令 + r50 起执行）：所有 audit findings (CRITICAL/HIGH/MEDIUM/LOW) 必须**同轮 fix，no tier exemption**。修正 r41-r49 默认 defer LOW/MEDIUM 的不成文做法（"推迟下轮"policy 没有 written rule 来源，导致每轮都有欠账积累 — r48 audit-tail / audit-2/3/4 chain 是此 pattern 最严重表现）。新规则下：r50 audit 7 findings 全部同轮 fix；4 项 architectural decisions 显式文档化作 design rationale 而非 debt。
 
-**审计结果概览**（#3，3 个并行 agent）：
-- **Correctness**：0 real findings（r44 3 漏网 fix + plugin cap rename + zh-tw test 全 clean）
-- **Test coverage**：1 HIGH = `test_file_processor.py` 830 越 800 软限（r44 HANDOFF 声称 "测试全 < 800" 不准确）+ 4 MEDIUM optional gap（`.tsv` cap / UI 混合目录 / 多字节 ja+ko + emoji / alias priority）
-- **Security**：1 HIGH = `tools/rpyc_decompiler.py:416` Tier 1 subprocess 生成的 _results.json 无 cap（B-class 漏网，独立 grep 核查 25 A-sites + 1 B-site，HANDOFF 18/18 / 21/21 数字口径歧义）+ MEDIUM 分析 plugin cap rename 只是 doc fix 实际 byte 上限未变（150 MB chars×3，acceptable）+ false-positive 多项
+**Commit 1 (`5ab9324`): 关 r49 6 项 audit-deferred actionable items + 同轮 fix 2 latent r49 C4 fixture bugs**
 
-**Commit 1（prep，#4）：拆 `test_file_processor.py` 越软限**
+(1a) Security MEDIUM — mock target stale trap CLASS guard：
+- `.github/workflows/test.yml`: +1 step "Mock target consistency check"，grep `mock\.patch.*os\.fstat` 在 tests/*.py 排除 core.file_safety；任何 caller-module fstat mock 触发 CI fail（r48 Step 3 CRITICAL trap 复发防御）
+- `tests/test_verify_docs_claims.py`: +1 contract test 钉 step 存在 + 含 grep pattern + filter
+- ci_steps 36 → 37
 
-r44 test coverage audit 发现 r44 Commit 1 加 UI whitelist oversize test 让
-`tests/test_file_processor.py` 790 → 830，**越 800 软限**。原本 #4 选项是
-拆 `test_translation_state.py`（765，仍 < 800），改为更紧急的
-`test_file_processor.py`。
+(1b) Coverage MEDIUM 1 — 9 sites TOCTOU success-path test：8 实际加（stages 2 lightweight 已 cover via active_src filter）：
+- `tests/test_file_safety.py`: +4 (glossary 4 callers — actors/system/load_system_terms/load) using cap-exact mock 验证 ≤ cap accept path
+- `tests/test_file_safety_c5.py`: +4 (translation_editor 3 callers + translation_utils ProgressTracker) + new `_patch_fstat_at_cap(cap_byte)` context-manager helper
 
-521. 新建 `tests/test_ui_whitelist.py`（315 行，7 测试）— UI whitelist
-是自包含的 public API slice（`is_common_ui_button` / `load_ui_button_
-whitelist` / `clear_*` / `add_*` / `get_*_extensions` / `COMMON_UI_
-BUTTONS`）。byte-identical 迁移 r31 A-1 `test_is_common_ui_button` +
-r32 C2 5 tests + r44 oversize test，共 7 测试
-522. `tests/test_file_processor.py` 830 → **560**（-270）；r31 A-2
-placeholder drift tests（`fix_chinese_placeholder_drift` +
-`filter_checked_translations_fixes_placeholder_drift`）保留（不同
-feature，属 checker/patcher domain）
-523. meta-runner `test_all.py` 151 → 144（UI whitelist 从 meta 迁出）+
-新独立 suite 贡献 7 测试；**总测试数 413 保持**
+**🔴 同轮 fix 2 latent r49 C4 fixture bugs**（r50 C1 1b 添加 success-path 时 surfaced）：
+- `test_glossary_actors_json_rejects_toctou_growth_attack` (r49 C4) 调 `g.scan_game_directory(...)` — 但 `scan_game_directory` 是 Ren'Py .rpy character-define scanner，**完全不读 Actors.json**！Actors.json 由 `scan_rpgmaker_database` 处理。原 test pass 是 false-positive：function early-return（无 .rpy files），mock fstat 从未触发，characters 一直 = {}（rejection assertion 巧合成立）
+- `test_glossary_system_json_rejects_toctou_growth_attack` (r49 C4) 同根因：调错 method
+- 同轮 fix：method name 改为 `scan_rpgmaker_database`，docstring 加 fixture-bug-fix note 解释原因
+- **r49 C6 audit Coverage MEDIUM 2 误判 "FALSE POSITIVE 已覆盖"** —— agent 看 test 函数存在就判 covered，未深查测试逻辑是否真触发 mock。新规则下应 reaudit 所有 r49 C4/C5 expansion regression 是否真触发 mock（C2 audit 已做此核查，未发现其他类似 bug）
 
-**Commit 2（#6）：`.gitignore` 扩 + 新 `.gitattributes`**
+(1c) Coverage LOW — cap-1/cap-exact site-level boundary closed by 1b（8 cap-exact site-level + helper-level cap-1/cap-exact/cap+1 三件套 jointly pin 26 sites 边界契约；所有 sites 共享 helper 行为统一，site-level cap-1 vs cap-exact 行为相同 → cap-exact 已 sufficient）
 
-r44 commit 时 bash 每次 warn "LF will be replaced by CRLF"。r45 显式
-policy 终结 warning。
+(1d) Coverage LOW — verify_docs_claims malformed claim line edge case：+2 unit test (non-int value + unknown key 场景)；C2 时 consolidate 为 1 parameterized test 5 cases
 
-524. 新建 `.gitattributes` — `* text=auto` + `*.py / *.md / *.yml /
-*.json / *.txt` 显式 `eol=lf`；Windows 脚本 `*.bat / *.ps1 / *.cmd`
-显式 `eol=crlf`；常见 binary types（`*.png / *.ttf / *.rpa / *.rpyc /
-*.pyc / *.exe` 等）显式 `binary`
-525. `.gitignore` 扩 modern Python 工具链：`.mypy_cache` / `.ruff_cache`
-/ `*.egg-info` / `.tox` / `*.log` / `.coverage*` / `htmlcov/` /
-`coverage.xml` / `venv/` / `.venv/`（`dist/` / `build/` / `*.spec` 早
-已 ignore）
+(1e) Security LOW 1 — `core/file_safety.py::check_fstat_size` docstring +Caller contract 段：callers MUST treat `(ok=True, size=0)` as "we don't know yet, but proceeding"；observed_size NOT reliable post fail-open；DO NOT log as ground-truth file-size metric
 
-**Commit 3（#7）：`_archive/CHANGELOG_FULL.md` 同步 r20-r45**
+(1f) Security LOW 2 — `docs/constants.md` +symlink TOCTOU defense-in-depth informational note：当前 codebase 无 exploit vector（path 来自 Path.rglob/Path(game_dir) 而非 user-supplied symlink）；future hardening 候选 `Path.is_symlink()` 检查（参考 r45 `build.py` `bd9d6e1` pattern）；watchlist only
 
-FULL changelog 停在 r19（~25 轮积压）。追加 r20-r45 总览表（26 行，每
-轮 1 行 summary + 测试数变化），加 "详细内容见 CHANGELOG_RECENT /
-git log" 说明。
+测试 488 → 499 (+11)；ci_steps 36 → 37 (+1)；assertion_points 614 → 625 (+11)。
 
-526. 保留 FULL 作 historical record；avoided 重写 10,000+ 行详细记录
-（太多）；新增 27 行简洁 table + 1 段 "where to find detail" 指引
+**Commit 2 (`d93cc85`): r50 三维度审计 8 commits + 7 findings 全部同轮 fix**
 
-**Commit 4（#8）：`build.py --clean-only` subcommand**
+3 并行 Explore agent 审计 8 commits scope（r49 C1+...+C7 + r50 C1）：
 
-build.py 原本只能打包；加独立清理命令让开发者不用 rm -rf。
+| Tier | Correctness | Coverage | Security |
+|------|-------------|----------|----------|
+| CRITICAL | 0 | 0 | 0 |
+| HIGH | 0 | **1** | 0 |
+| MEDIUM | 0 | 1 | **1** |
+| LOW | 4 | 2 | 4 |
 
-527. `clean_build_artifacts()` 函数删 `dist/` + `build/` + `*.spec`，
-按每 item 打印 `[已删除]` / `[跳过]` / `[警告]` 状态
-528. `main()` 增 `--clean-only` 分支；`--clean`（PyInstaller 原生 flag）
-继续 "清理后再打包" 语义
-529. Verified：r44 PyInstaller build 产物（dist/ + build/ + .spec）在
-一次 `python build.py --clean-only` 后成功删除
+**连续 10 轮 0 CRITICAL correctness 保持** ✓（r35 末/r40 末/r43/r44/r45/r41-r45 累计/r46/r47/r48/r49/**r50**）。
 
-**Commit 5（#16）：pre-commit hook + installer**
+新规则下 7 findings 全部同轮 fix（no defer）：
 
-530. 新 `.git-hooks/pre-commit` bash 脚本：只对 staged `.py` 跑
-`py_compile` + `tests/test_all.py` meta-runner（预期 5-10s）；完整 22
-独立 suite 留给 CI
-531. 新 `scripts/install_hooks.sh` 设 `git config core.hooksPath
-.git-hooks`；chmod +x
-532. 新 `.git-hooks/README.md` 文档化 install / bypass / uninstall
+- **Coverage HIGH-1**: malformed line 仅 1/4 scenarios 测试 → consolidate r50 1d 2 tests 为 1 个 parameterized test 5 scenarios（non-int / missing colon / empty value / embedded colon / trailing decimal "419.5" — 后者验证 r50 C2 LOW-3 regex fix 防 truncation）
+- **Security MEDIUM-1**: 1f symlink note 缺 CLI args 路径审计 → docs/constants.md +CLI args path audit table（6 个 CLI flag 全 lack is_symlink guard）+ explicit threat-model assessment（local single-user 工具，无 realistic exploit vector，informational watchlist not actionable debt）
+- **Correctness LOW-2**: 1a CI grep regex 不覆盖 `patch.object(os, "fstat", ...)` 形式（test_api_client.py 10+ matches 用此 form）→ regex 扩展为 `(mock\.patch.*os\.fstat|patch\.object\s*\(\s*[a-zA-Z_.]*os\s*,\s*[\"']fstat[\"'])`；contract test 同步加 patch.object assertion
+- **Correctness LOW-3**: `_CLAIM_LINE_RE` 用 `\b` boundary 接受 truncation（"419.5" 被解析为 419 → silent data corruption）→ 改为 `^\s*([a-z_]+)\s*:\s*(\d+)\s*(?:#.*)?\s*$` strict end-of-value（保留 inline `# comment` 兼容；trailing decimal/junk 现 silently skip）
+- **Security LOW-2**: 1e docstring example 仅示例 ok=False 分支 → 加 ok=True 双分支 example 含 explicit warning "DO NOT log size as ground truth"
+- **Security LOW-4**: r49 C7 self-recursion guard `if "verify_docs_claims" in run and "--full" in run` 用 substring 太 brittle（`echo verify_docs_claims --full` 误 trigger / `verify_docs_claims_extended.py` 错误 skip）→ 改为 `if name.startswith("Run verify_docs_claims --full")` explicit step name match
+- **Security LOW-3**: 1d unknown-key silent skip → main() 现有 "claim missing" drift detection 已覆盖；test 文档化此行为；no code change
 
-**Commit 6（#17）：`docs/constants.md` 扩 pricing + rate limit + retry + lang_config**
+4 项 architectural decisions 文档化（非 code fix）：
 
-r44 Commit 4 只加了 50 MB caps section。r45 把剩余项全索引：
+1. Coverage MEDIUM-1: 18/26 sites lack site-level success-path test → **helper-level + 8 representative sites jointly pin contract**（所有 26 sites 共享 helper，caller response uniform，no site-level divergence possible，加 18 redundant tests 增 maintenance cost without value）
+2. Correctness LOW-1: r50 C1 commit message "1c closed-by-1b" claim refined — 不是所有 26 sites 都有 site-level cap-exact tests，但 boundary contract 完全 pin via helper-level + 8 representative
+3. Coverage LOW-1: implicit-exception test (test_execute_all_ci_test_steps_skips...) 可接受 — docstring 已 explicit
+4. Coverage LOW-2: per-caller boundary operator divergence — centralized helper 不可能有此 divergence
 
-533. 新 "API 调用默认参数" 表：`rpm / rps / timeout / temperature /
-max_retries / max_response_tokens / sandbox_plugin / use_connection_
-pool` + 每项 rationale
-534. 新 "速率限制 + 退避重试" 表：RateLimiter 双锁设计 + 429/5xx
-指数退避 + circuit breaker 明确 non-implementation
-535. 新 "模型定价表" 说明 `_MODEL_PRICING` 三级 lookup + reasoning
-model thinking tokens 3-5× 计费
-536. 新 "Chunk / Pipeline 默认参数" 表：workers / file-workers /
-max_chunk_tokens / min_dialogue_density / pilot_count /
-gate_max_untranslated_ratio / CHECKER_DROP_RATIO_THRESHOLD /
-MIN_DROPPED_FOR_WARNING / SAVE_INTERVAL
-537. 新 "语言配置" 表：4 个 `LANGUAGE_CONFIGS`（zh / zh-tw / ja / ko）
-+ field_aliases + min_target_ratio + native_name + r42-r44 checker
-per-language 关联 + zh-tw 不含 bare "zh" 的设计契约
+测试 499 unchanged（C2 consolidate -2 +1 + 改名重组 = 净 0）；ci_steps 37 unchanged；assertion_points 625 unchanged。
 
-**Commit 7（#5）：`docs/engine_guide.md` + `docs/dataflow_translate.md` 刷新**
+**Commit 3 (本): docs sync + CHANGELOG 5 轮滚动 + Push 前 Q5 全套验证**
 
-两份 topic doc 上次更新约 r28-r30，r39-r44 的变更未 back-port。
+- `CHANGELOG_RECENT.md`: 演进摘要 r50 一行 + 本主体 detail section + **删 r45 detail (217 lines) + r45 audit-tail (58 lines) = 275 lines** (5 轮滚动 cap)；现 detail = r46 / r47 / r48 (+ audit-2 + audit-tail) / r49 (+主体) / r50 = 5 distinct rounds
+- `HANDOFF.md`: rewrite 为 r51 起点 + 修 r49 末"待 push" drift（r49 7 commits 全 push origin/main，r50 C1+C2 + 本 C3 待 user 控制 push）+ VERIFIED-CLAIMS unchanged 499/34/37/625
+- `CLAUDE.md` / `.cursorrules`: byte-identical 双写追加 r50 段
+- `docs/constants.md`: 已含 r50 1f / C2 Security MEDIUM-1 改动
 
-538. `docs/engine_guide.md` 协议细节增 "stdout per-line cap"
-bullet — `_MAX_PLUGIN_RESPONSE_CHARS = 50M chars`（r43 + r44，chars
-非 bytes + CJK 150 MB 最坏值 note）；与 r30 stderr 10 KB cap 配对
-描述两通道 OOM 防护
-539. `docs/dataflow_translate.md` retranslate 流程加 r39 per-language
-prompt dispatch 说明；新 "Response Checker" section 文档化 r42
-`check_response_item lang_config` kwarg + alias-to-generic fallback
-+ 调用路径（tl_mode / generic_pipeline）+ r43-r44 test 契约（zh-tw
-bare-zh rejection / generic fallback acceptance / mixed-language
-first-match）
-540. `error_codes.md` + `dataflow_pipeline.md` 仍 current，未改
+**Push 前 Q5 全套验证**（用户决策 5 = "做全套"）3 件套全过：
+1. `find . -name "*.py" ... | awk '$1>800 && $2!="total"'` — 输出空
+2. 全 27 独立 test suite + meta-runner 全 PASS（含 1a CI grep guard 真实跑 0 stale match）
+3. `python scripts/verify_docs_claims.py --full` — All claims match reality（实跑全 37 CI steps post mock guard step + self-skip guard 防递归）
 
-**Commit 8（#15）：`scripts/verify_workflow.py` 本地 CI verify**
+**新规则建立 — zero-debt closure 模式**（r41-r49 默认 defer pattern → r50 起强制同轮 fix）:
 
-r44 audit agent 3 建议 check CI workflow shell 一致性。独立核查结果：
-0 multi-line run step 缺 `shell: bash`（所有 3 处 multi-line 已有，
-其余 24 单行 `python xxx.py` 在 pwsh/bash 都工作）。作为未来维护工具
-加本地 verify script。
+- **r41-r49 旧 pattern**: audit findings 按 tier 分类 — CRITICAL/HIGH 同轮 fix，MEDIUM/LOW 默认 defer 下轮。问题：accumulated debt（r41 audit → r42 close 1 半，剩半推 r43 → r44 close 1 个 → ...）；用户每轮看到"推 r51"字样。
+- **r50 起新 pattern**: ALL findings 同轮 fix，no tier exemption；无法 fix 的（如需 large refactor / 外部资源）→ 显式归为 architectural decision 或 informational watchlist 文档化（不是 debt）
+- 实施效果：r50 audit 7 findings + 4 architectural decisions = 全 closed/documented；零 r51 deferred items
 
-541. 新 `scripts/verify_workflow.py`（PyYAML 基于）：3 check —
-（a）YAML 语法；（b）matrix 期望 `[ubuntu-latest, windows-latest]` ×
-`[3.9, 3.12, 3.13]` drift 检测；（c）multi-line run 步骤的 `shell:
-bash` 缺失检测
-542. 现场 verify：all passed（YAML OK / matrix match / 0 shell
-misses）
+**测试 / CI / 断言点 计数 r49 末 → r50 末完整变化**
 
-**Commit 9（r44 audit fix）：`tools/rpyc_decompiler.py:416` cap**
+| key | r49 末 | r50 末 | delta | 来源 |
+|------|-------|-------|-------|------|
+| tests_total | 488 | **499** | +11 | C1 1a +1 / 1d +2 / 1b +8 |
+| test_files | 34 | **34** | unchanged | — |
+| ci_steps | 36 | **37** | +1 | C1 1a +Mock target consistency check |
+| assertion_points | 614 | **625** | +11 | tests_total 同步 |
 
-Security agent 发现 **唯一 HIGH**：Tier 1 helper subprocess 生成的
-`_results.json` 无 size cap。subprocess 是 controlled code，但输出
-scale with game 的 .rpyc 数量；50 MB cap 防异常游戏 + helper bug OOM
-host。
+**审计连续性 r41 → r50**：连续 10 轮 0 CRITICAL correctness 保持。r50 首次：(i) 无 r-1 推迟 actionable items 起点（r49 6 项全 closed in C1）+ (ii) audit findings 全部同轮 fix policy 正式 written + (iii) 新增"latent fixture bug"类发现（r49 C4 false-positive 实际是真 bug）。
 
-543. `tools/rpyc_decompiler.py` 加 `_MAX_RPYC_RESULT_SIZE = 50 * 1024
-* 1024` 模块常量 + rationale docstring
-544. `is_file()` 检查后 + `json.loads()` 前加 `stat().st_size` gate；
-oversize raise `DecompileError`（走既有 decompile-fail 回退路径）
-545. 无 regression test：这条 path 需 subprocess 真实 decompile 一个
-game 触发，mock 比 fix 本身还多代码；integration 测试留待真实 game
-验证（pipeline/stages.py r42 caps 同样 integration-only）
-546. **JSON loader 真实覆盖**：r37-r44 21 + r45 #1 自审 + r45 audit
-fix = **22/22**（或 25 A-sites 口径）
-
-**Computer-use GUI + exe smoke（#1 + #2）**：**skip**。`python build.py`
-PyInstaller build 在 r44 已验证；`python gui.py` 3s subprocess smoke
-在 r44 已验证 (95% mixin split runtime dispatch confirmed)。r45 没新
-改动影响 runtime UX。computer-use 会操纵用户 mouse/keyboard
-（disruptive），且 Python 3.14 subprocess 非 ASCII path（`多引擎游戏
-汉化工具.exe`）有 bug — 两个因素让 agent smoke 不可靠。保留真实
-user-click 验证为 r46+ human follow-up。
-
-**Commit 10（本 commit）：Docs sync**
-
-547. 本文件（CHANGELOG_RECENT.md）：round 42 详细压缩进"演进摘要"一行；
-43/44/45 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
-548. CLAUDE.md 项目身份段追加 r45 note + 测试数 413 保持
-（`.cursorrules` 同步）
-549. HANDOFF.md 重写为 45 → 46 交接；r45 10 commits 从"r45 候选"挪到
-"✅ r45 已修"；保留 `#1`+`#2` GUI real-click UX 验证 + 非 zh 端到端 +
-A-H-3 Medium/Deep / S-H-4 Breaking / archive / plugin commands 作 r46
-候选
-
-**结果**：
-
-- **23 测试文件**（22 独立 suite + `test_all.py` meta；r45 新 suite
-  `test_ui_whitelist.py` 7 tests 从 `test_file_processor` 迁出，总
-  suite 数 22 → **23**）+ `tl_parser` 75 + `screen` 51 = **539 断言
-  点**；测试 **413 保持**（纯拆分 + rpyc fix 无 new test）
-- 所有改动向后兼容：
-  - 测试拆分：byte-identical 迁移，零行为变化
-  - `.gitattributes`：对现有 repo 内容影响为 0；新 commit 按 policy
-    统一 LF，消除 "CRLF will be replaced" warning
-  - `build.py --clean-only`：新 flag，`--clean` 默认行为不变
-  - `rpyc_decompiler` cap：合法 < 50 MB result 完全不受影响；
-    oversize 走既有 `DecompileError` 回退
-- **新增文件 5 个**：
-  - `tests/test_ui_whitelist.py`（315，7 tests）
-  - `.gitattributes`（43 行）
-  - `.git-hooks/pre-commit`（56 行）+ `.git-hooks/README.md`（35 行）
-  - `scripts/install_hooks.sh`（20 行）+ `scripts/verify_workflow.py`
-    （118 行）
-- **修改文件 3 代码 + 2 测试 + 4 文档 + 1 archive**：
-  - `tools/rpyc_decompiler.py` +cap const + size gate
-  - `build.py` +`--clean-only` subcommand + `clean_build_artifacts()`
-  - `.gitignore` +9 行 modern Python 工具链
-  - `tests/test_file_processor.py` 830 → 560（-270 UI whitelist tests
-    迁出）+ `run_all()` list 瘦 7 条
-  - `docs/constants.md` +50 行 pricing/rate_limit/retry/lang_config
-  - `docs/engine_guide.md` +1 bullet stdout cap
-  - `docs/dataflow_translate.md` +Response Checker section
-  - `_archive/CHANGELOG_FULL.md` +27 行 r20-r45 overview
-  - CHANGELOG / CLAUDE / `.cursorrules` / HANDOFF
-- **文件大小检查**：`test_file_processor.py` 830 → 560 回到 < 800；
-  `test_ui_whitelist.py` 315 < 800；其他测试 / 源码全部 < 800 保持
-- **JSON loader 真实覆盖**：**22/22**（r37-r44 21 + r45 rpyc fix 1）
-
-**审计连续性统计**（连续 5 次 3 维度审计）：
-
-| 审计轮 | CRITICAL | HIGH | MEDIUM（已修） | LOW | False Positive | OOS |
-|-------|---------|------|------|-----|---------------|-----|
-| r35 末 | 0 | 0 | 2 → r36 | 0 | 6 | — |
-| r40 末 | 0 | 0 | 2 → r41 | 1 | 3 | 2 |
-| r43 | 0 | 0 | 3 → r43 + 1 defensive | 1 | 6 | 3 |
-| r44 | 0 | 0 | 3 audit + 1 test gap → r44 | 0 | ~10 | 0 |
-| **r45** | **0** | **2（test_file_processor 越 800 + rpyc_decompiler:416 无 cap）** → **r45 同轮 fix** | 4 optional（`.tsv` / mixed dir / multibyte ja+ko / alias priority） | 多个 | ~8 | 2 |
-
-**趋势**：连续 5 轮审计 **0 CRITICAL**；r45 是首次报 HIGH（都 r45
-同轮 fix）。Audit 质量稳定。
-
-**本轮未做**（留给第 46+ 轮）：
-
-- **真实桌面 user-click GUI smoke test**（r41/r42/r43/r44/r45 **五轮
-  积压**）：human 15 分钟或 computer-use agent 代点击
-- 非中文目标语言端到端验证（r39 + r41 + r42 + r43 + r44 五层 code-
-  level contract + r45 docs 记录，需真实 API + 游戏）
-- A-H-3 Medium / Deep / S-H-4 Breaking
-- RPG Maker Plugin Commands / 加密 RPA / RGSS
-- r45 audit 发现的 4 项 optional MEDIUM（`.tsv` cap / UI mixed dir /
-  multibyte ja+ko / alias priority）
-
-### 第四十五轮 · 审计尾声（r41-r45 五轮累计深度审计 + 2 audit-tail commits）
-
-**起因**：用户在 r45 末尾要求"深度检查第 41-45 轮，确保没有任何问题"。启动 3 个并行 Explore
-audit agent（correctness / test coverage / security 三维度） + 我独立 grep 核查 "22/22 JSON loader
-全覆盖" 和 "413 tests" claim。
-
-**审计结果**：
-
-- **Correctness agent**：0 CRITICAL / 0 HIGH / 6 MEDIUM（5 个 acceptable 或 OOS + 1 措辞歧义）/ 4 LOW / 8 FP
-- **Test coverage agent**：**1 CRITICAL** = r45 Commit 1 拆 `test_ui_whitelist.py` 但 CI workflow
-  未更新包含它 + `run_all()` 函数缺失（pattern 偏离其他 22 suites）；7 tests 在 CI 是 **ghost tests**
-- **Security agent**（独立 grep 核查）：0 CRITICAL / 0 HIGH；确认 **22/22 JSON loader 真实全覆盖**
-  （25 A-sites + 0 B-sites after r45 rpyc fix）；3 MEDIUM defense-in-depth improvements
-
-**r45 audit-tail 合流修复**（2 commits）：
-
-**Commit audit-tail 1（`3ce823f`）**：CRITICAL fix — CI workflow 漏 test_ui_whitelist + add run_all()
-
-550. `.github/workflows/test.yml` 新增 `- name: Run UI whitelist tests` 步骤（在 override_categories
-后）。CI total steps 27 → 28；run steps 25 → 26。现在 22 独立 suite **全部** 在 CI 运行
-551. `tests/test_ui_whitelist.py` 加 `run_all() -> int` 函数 — 返回 `len(ALL_TESTS)`。对齐其他
-22 个独立 suite 的标准模式；`__main__` block 调 `run_all()` 输出保持相同
-
-**Commit audit-tail 2（`bd9d6e1`）**：3 MEDIUM defense-in-depth fixes
-
-552. `build.py::clean_build_artifacts()` 加 `d.is_symlink()` check 在 `shutil.rmtree` 前。Python
-3.8+ rmtree 默认不跨 symlink，但显式 check 让 audit-trail intent 可见 + 意外场景（用户 `ln -s
-dist/ ~/Documents/`）零成本防御
-553. `scripts/verify_workflow.py` docstring 加 "Note" 澄清 PyYAML 是 **dev-only tool 依赖**，
-不 ship with 任何 runtime module（core/ / translators/ / engines/ / tools/ / pipeline/ /
-file_processor/ / gui*.py 严格 stdlib-only，符合 CLAUDE.md 零依赖原则）
-554. `docs/quality_chain.md` 加 "插件安全模式建议 secure-by-default" section 在 "三通道防护" 前 —
-文档化 `--sandbox-plugin`（r28 S-H-4）为推荐默认：subprocess 隔离阻止 plugin monkey-patch host
-`core.lang_config.resolve_translation_field`（r42 checker deferred import 的潜在 supply-chain
-面）或任何 host 模块；legacy `importlib` 模式仅用于完全受信的 first-party plugin
-
-**审计连续性**（连续 6 轮 3 维度审计）：
-
-| 轮次 | CRITICAL | HIGH | MEDIUM（已修） | 特点 |
-|------|---------|------|-----|------|
-| r35 末 | 0 | 0 | 2 → r36 | 首次 3 维度 |
-| r40 末 | 0 | 0 | 2 → r41 | — |
-| r43 | 0 | 0 | 3 + 1 defensive → r43 | — |
-| r44 | 0 | 0 | 3 audit + 1 test gap → r44 | +"21/21" claim |
-| r45 | 0 | 2 → r45 同轮 fix | 4 optional | +"22/22" 验证 |
-| **r41-r45 累计** | **1 → 同次 fix** | **0** | **3 → 同次 fix** | **首次发现 CI 覆盖 regression** |
-
-**关键洞察**：第 6 次审计首次发现 CI 覆盖 regression（r45 Commit 8 CI verify script 写了但没同步
-r45 Commit 1 新 suite）— 独立 grep + 跨 commit 审计依然找到真实 issue。
-
-**r46 起点摘要**：
-- 代码 / 测试 / 文档 / CI / 工具链状态：r45 末 + audit-tail 2 commits（413 tests × 23 测试文件
-  全绿；**CI 现全 22 独立 suite 覆盖**；PyInstaller build 已验证；所有 docs 现行；defense-in-depth
-  symlink + PyYAML disclosure + sandbox recommendation 三项添加）
-- r46 建议：**真实桌面 GUI user-click smoke**（human 15 分钟 / 或 computer-use 代点击）；
-  清零后选 r45 optional MEDIUM 4 项 / 非 zh 端到端 / r46 回溯审计之一
-- 本地 main 领先 origin/main **12 commits**（r45 Commit 1-10 + 2 audit-tail）
 
 ### 第四十六轮：7 步综合执行（r45 audit-tail typo / hooks 启用 / test_runtime_hook 拆分 / r45 4 optional MEDIUM gap / r46 三维度审计 + 5 fix / 真实桌面 GUI smoke / docs sync）
 
