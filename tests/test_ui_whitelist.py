@@ -377,6 +377,110 @@ def test_load_ui_button_whitelist_mixed_directory():
     print("[OK] load_ui_button_whitelist_mixed_directory")
 
 
+def test_load_ui_button_whitelist_order_invariant():
+    """Round 47 Step 2 (G2 LOW gap): the file load order must not affect
+    the final whitelist contents.  Three permutations of small + big
+    files must produce the same extension set and added count.  Pins
+    the invariant that ``load_ui_button_whitelist`` processes files
+    independently (via per-file ``add_ui_button_whitelist`` which uses
+    frozenset union — order-insensitive by definition)."""
+    import json as _json
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        get_ui_button_whitelist_extensions,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        small_txt = td_path / "small.txt"
+        small_txt.write_text("alpha\nbeta\n", encoding="utf-8")
+        big_json = td_path / "big.json"
+        with open(big_json, "wb") as f:
+            f.seek(51 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        small_json = td_path / "small.json"
+        small_json.write_text(_json.dumps(["gamma"], ensure_ascii=False),
+                              encoding="utf-8")
+
+        files = [str(small_txt), str(big_json), str(small_json)]
+        # 3 representative permutations: forward / backward / big-first
+        permutations_to_test = [
+            (files[0], files[1], files[2]),
+            (files[2], files[1], files[0]),
+            (files[1], files[0], files[2]),
+        ]
+
+        expected_ext = None
+        expected_added = None
+        for perm in permutations_to_test:
+            clear_ui_button_whitelist()
+            added = load_ui_button_whitelist(list(perm))
+            ext = get_ui_button_whitelist_extensions()
+            if expected_ext is None:
+                expected_ext = ext
+                expected_added = added
+            assert ext == expected_ext, (
+                f"order {perm}: extension set differs;\n"
+                f"  got      {ext}\n  expected {expected_ext}"
+            )
+            assert added == expected_added, (
+                f"order {perm}: added count {added} != expected {expected_added}"
+            )
+
+    clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_order_invariant")
+
+
+def test_load_ui_button_whitelist_dedupes_cross_files():
+    """Round 47 Step 2 (G2 LOW gap): the same token appearing in
+    multiple files must be deduplicated; the final extension set
+    contains each token exactly once.  Verified end-to-end through
+    ``load_ui_button_whitelist`` → ``add_ui_button_whitelist`` →
+    frozenset union (which is naturally idempotent).  Also pins the
+    ``added`` return value semantics: it counts NET NEW tokens added
+    across the whole batch, not per-file additions."""
+    import tempfile
+    from pathlib import Path
+    from file_processor import (
+        clear_ui_button_whitelist,
+        load_ui_button_whitelist,
+        get_ui_button_whitelist_extensions,
+    )
+
+    clear_ui_button_whitelist()
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        # Two .txt files both containing "shared_token" + each their
+        # own unique token.  Total unique tokens across batch: 3.
+        file_a = td_path / "a.txt"
+        file_a.write_text("shared_token\nunique_a\n", encoding="utf-8")
+        file_b = td_path / "b.txt"
+        file_b.write_text("shared_token\nunique_b\n", encoding="utf-8")
+
+        added = load_ui_button_whitelist([str(file_a), str(file_b)])
+
+        ext = get_ui_button_whitelist_extensions()
+        assert "shared_token" in ext
+        assert "unique_a" in ext
+        assert "unique_b" in ext
+        # Exactly 3 unique tokens — shared_token deduped across files.
+        assert len(ext) == 3, (
+            f"expected 3 unique tokens (shared deduped), got {len(ext)}: {ext}"
+        )
+        # added = net new across batch = 3 (shared_token + unique_a +
+        # unique_b); the 2nd file's "shared_token" contributes 0.
+        assert added == 3, (
+            f"expected added=3 (net new across batch), got {added}; "
+            f"the 2nd file's duplicate shared_token must contribute 0"
+        )
+
+    clear_ui_button_whitelist()
+    print("[OK] load_ui_button_whitelist_dedupes_cross_files")
+
+
 ALL_TESTS = [
     # Round 31 Tier A-1
     test_is_common_ui_button,
@@ -390,6 +494,9 @@ ALL_TESTS = [
     test_load_ui_button_whitelist_rejects_oversized_file,
     # Round 46 Step 4 (G2): per-file granularity in mixed-directory load
     test_load_ui_button_whitelist_mixed_directory,
+    # Round 47 Step 2 (G2 LOW gap): order invariance + cross-file dedup
+    test_load_ui_button_whitelist_order_invariant,
+    test_load_ui_button_whitelist_dedupes_cross_files,
 ]
 
 

@@ -740,6 +740,106 @@ def test_sandbox_oversize_response_line_exact_cap_boundary():
     print("[OK] test_sandbox_oversize_response_line_exact_cap_boundary")
 
 
+def test_sandbox_oversize_response_line_2byte_latin():
+    """Round 47 Step 2 (G3 LOW gap): 2-byte UTF-8 chars (Latin-1
+    supplement like ñ U+00F1, ü U+00FC) must trigger the cap at the
+    same char count as 3-byte CJK / hiragana / hangul and 4-byte
+    emoji.  Closes the gap left by r46 Step 5 G3 (which covered 3-byte
+    あ/한 + 4-byte 🎮 but not the 2-byte UTF-8 range)."""
+    from unittest import mock
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+        def readline(self, size: int = -1) -> str:
+            return self._payload[:size] if size > 0 else self._payload
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+        def poll(self): return None
+        def kill(self): pass
+        def wait(self, timeout=None): pass
+
+    test_cases = [
+        ("ñ", "Spanish ñ U+00F1 (2-byte UTF-8)"),
+        ("ü", "German ü U+00FC (2-byte UTF-8)"),
+    ]
+    for char, label in test_cases:
+        client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+        client._timeout = 5.0
+        with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+            client._proc = _FakeProc(char * 2048)
+            raised = False
+            msg = ""
+            try:
+                client._read_response_line(req_id=400)
+            except RuntimeError as e:
+                msg = str(e)
+                raised = "chars" in msg.lower() or "exceeded" in msg.lower()
+            assert raised, (
+                f"{label}: 2048 chars (> 1024 cap) without newline must "
+                f"raise RuntimeError mentioning 'chars' or 'exceeded'; "
+                f"got msg={msg!r}"
+            )
+    print("[OK] test_sandbox_oversize_response_line_2byte_latin")
+
+
+def test_sandbox_oversize_response_line_with_newline_terminated_multibyte():
+    """Round 47 Step 2 (G3 LOW gap): a multibyte payload < cap chars
+    that ends with newline must NOT trigger the cap branch — the
+    newline tells readline() to stop early, and the cap check requires
+    BOTH ``len(line) >= cap`` AND ``not line.endswith('\\n')``.  Pins
+    the well-formed-line acceptance contract for multibyte payloads
+    (the cap should only fire on TRUNCATED malformed responses, not
+    on well-formed multibyte ones)."""
+    from unittest import mock
+    from core import api_plugin
+    from core.api_plugin import _SubprocessPluginClient
+
+    class _FakeStdout:
+        def __init__(self, payload: str):
+            self._payload = payload
+        def readline(self, size: int = -1) -> str:
+            # Real text-mode readline behaviour: returns up to ``size``
+            # chars OR up-to-and-including the next \n, whichever
+            # comes first.
+            if size <= 0:
+                return self._payload
+            up_to = self._payload[:size]
+            nl = up_to.find("\n")
+            return up_to[:nl + 1] if nl >= 0 else up_to
+
+    class _FakeProc:
+        def __init__(self, payload: str):
+            self.stdout = _FakeStdout(payload)
+        def poll(self): return None
+        def kill(self): pass
+        def wait(self, timeout=None): pass
+
+    client = _SubprocessPluginClient.__new__(_SubprocessPluginClient)
+    client._timeout = 5.0
+    with mock.patch.object(api_plugin, "_MAX_PLUGIN_RESPONSE_CHARS", 1024):
+        # 100 CJK chars (300 UTF-8 bytes) + newline — well under 1024
+        # char cap; the line is well-formed (newline-terminated).
+        client._proc = _FakeProc("你" * 100 + "\n")
+        cap_raised = False
+        try:
+            client._read_response_line(req_id=401)
+        except RuntimeError as e:
+            cap_raised = "chars" in str(e).lower() or "exceeded" in str(e).lower()
+        # Other downstream errors (JSON-parse / req_id mismatch) are
+        # acceptable; the only thing this test asserts is that the cap
+        # branch did NOT fire on this well-formed multibyte line.
+        assert not cap_raised, (
+            "100 CJK chars + newline (well under 1024 cap, well-formed) "
+            "must NOT trigger the >= cap + no-newline check"
+        )
+    print("[OK] test_sandbox_oversize_response_line_with_newline_terminated_multibyte")
+
+
 def test_sandbox_close_idempotent():
     """Calling close() twice on a subprocess client is a no-op the second time."""
     config = APIConfig(
@@ -795,6 +895,9 @@ ALL_TESTS = [
     test_sandbox_oversize_response_line_diverse_scripts,
     # Round 46 Step 5 audit-fix (G3 boundary): exact cap-chars triggers >=
     test_sandbox_oversize_response_line_exact_cap_boundary,
+    # Round 47 Step 2 (G3 LOW gap): 2-byte Latin + newline-terminated multibyte
+    test_sandbox_oversize_response_line_2byte_latin,
+    test_sandbox_oversize_response_line_with_newline_terminated_multibyte,
 ]
 
 

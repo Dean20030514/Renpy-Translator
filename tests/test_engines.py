@@ -568,6 +568,112 @@ def test_csv_engine_rejects_oversized_csv():
     print("[OK] csv_engine_rejects_oversized_csv")
 
 
+def test_csv_engine_accepts_exact_cap_csv():
+    """Round 47 Step 2 (G1 boundary): exact-cap-size CSV must NOT
+    trigger the cap because the operator is ``>`` not ``>=`` (line 219
+    of csv_engine.py).  Pins this contract — a future change to ``>=``
+    would silently reject many legitimate large CSVs at the boundary.
+    Uses mock.patch on _MAX_CSV_JSON_SIZE so we don't need a real
+    50 MB file."""
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        exact_csv = Path(d) / "exact.csv"
+        # Build a small valid CSV; remember its exact size for cap mock
+        exact_csv.write_text("original\nHello\n", encoding="utf-8")
+        size = exact_csv.stat().st_size
+        with mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", size):
+            units = engine.extract_texts(Path(d))
+        originals = [u.original for u in units if u.file_path == "exact.csv"]
+        assert "Hello" in originals, (
+            f"exact-cap-size CSV (file_size == cap) must NOT trigger > cap; "
+            f"expected 'Hello' in extracted units, got {originals}"
+        )
+    print("[OK] csv_engine_accepts_exact_cap_csv")
+
+
+def test_csv_engine_handles_empty_csv():
+    """Round 47 Step 2 (G1 boundary): empty 0-byte CSV file must not
+    crash the cap check or csv.DictReader.  Returns 0 units (no header
+    means csv.DictReader.fieldnames is None -> early return [])."""
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        empty_csv = Path(d) / "empty.csv"
+        empty_csv.write_bytes(b"")  # exactly 0 bytes
+        assert empty_csv.stat().st_size == 0
+        units = engine.extract_texts(Path(d))
+        empty_units = [u for u in units if u.file_path == "empty.csv"]
+        assert len(empty_units) == 0, (
+            f"empty 0-byte CSV must yield 0 units, got {len(empty_units)}"
+        )
+    print("[OK] csv_engine_handles_empty_csv")
+
+
+def test_csv_engine_handles_stat_oserror_fail_open():
+    """Round 47 Step 2 (G1 boundary): Path.stat() OSError must trigger
+    the fail-open path (fsize=0 < cap), so the file goes through normal
+    csv.DictReader processing rather than being skipped.  Pins the
+    intentional fail-open design.  The post-open os.fstat() (r47 D3
+    defense) is unaffected because it uses the open file descriptor."""
+    import os as _os
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        target_csv = Path(d) / "target.csv"
+        target_csv.write_text("original\nHello\n", encoding="utf-8")
+        # Selectively raise OSError only for target.csv path.stat()
+        original_stat = Path.stat
+        def _selective_stat(self, *, follow_symlinks=True):
+            if self.name == "target.csv":
+                raise OSError("simulated stat failure")
+            return original_stat(self, follow_symlinks=follow_symlinks)
+        with mock.patch.object(Path, "stat", _selective_stat):
+            units = engine.extract_texts(Path(d))
+        originals = [u.original for u in units if u.file_path == "target.csv"]
+        assert "Hello" in originals, (
+            f"stat() OSError fail-open: file must still be processed via "
+            f"normal path; got originals={originals}"
+        )
+    print("[OK] csv_engine_handles_stat_oserror_fail_open")
+
+
+def test_csv_engine_rejects_toctou_growth_attack():
+    """Round 47 Step 2 (D3 TOCTOU defense): if a file appears small at
+    Path.stat() but has grown to > cap by the time of the post-open
+    os.fstat() inside the with-open block, the file must be rejected.
+    Pins the new TOCTOU defense added in round 47 Step 2."""
+    from unittest import mock
+    from engines.csv_engine import CSVEngine
+    engine = CSVEngine()
+    with tempfile.TemporaryDirectory() as d:
+        target_csv = Path(d) / "toctou.csv"
+        target_csv.write_text("original\nHello\n", encoding="utf-8")
+        small_cap = 100  # mock cap
+
+        # Mock os.fstat to return huge size — simulates "file grew
+        # between Path.stat() and open()".  The real Path.stat() above
+        # returns the actual small size (~ 15 bytes < 100 cap), so the
+        # pre-open gate passes; the post-open fstat() now sees > cap.
+        class _LargeStatResult:
+            st_size = 99999  # > small_cap = 100
+        def _patched_os_fstat(fd):
+            return _LargeStatResult()
+
+        with mock.patch("engines.csv_engine.os.fstat", _patched_os_fstat), \
+             mock.patch("engines.csv_engine._MAX_CSV_JSON_SIZE", small_cap):
+            units = engine.extract_texts(Path(d))
+
+        originals = [u.original for u in units if u.file_path == "toctou.csv"]
+        assert "Hello" not in originals, (
+            "TOCTOU defense: file that grew past cap between stat and "
+            f"open must be rejected; got originals={originals}"
+        )
+    print("[OK] csv_engine_rejects_toctou_growth_attack")
+
+
 # ============================================================
 # generic_pipeline 测试
 # ============================================================
@@ -765,6 +871,11 @@ if __name__ == "__main__":
     test_csv_engine_rejects_oversized_json()
     # Round 46 Step 4 (G1): CSV/TSV 50 MB cap (audit-tail follow-up)
     test_csv_engine_rejects_oversized_csv()
+    # Round 47 Step 2 (G1 boundary + D3 TOCTOU defense)
+    test_csv_engine_accepts_exact_cap_csv()
+    test_csv_engine_handles_empty_csv()
+    test_csv_engine_handles_stat_oserror_fail_open()
+    test_csv_engine_rejects_toctou_growth_attack()
     # generic_pipeline
     test_build_generic_chunks_single()
     test_build_generic_chunks_split()
@@ -785,5 +896,5 @@ if __name__ == "__main__":
 
     print()
     print("=" * 40)
-    print("ALL 49 ENGINE TESTS PASSED")
+    print("ALL 53 ENGINE TESTS PASSED")
     print("=" * 40)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -160,12 +161,16 @@ class CSVEngine(EngineBase):
         # The r37-r44 size-cap sweep covered .jsonl / .json but missed
         # .csv / .tsv; closed by the round 45 audit's optional MEDIUM.
         # Round 46 Step 5 (security audit notes): the stat() check has
-        # known TOCTOU race + fail-open on stat OSError.  Both are
+        # known TOCTOU race + fail-open on stat OSError.  Both were
         # ACCEPTABLE per the r37-r44 design philosophy (operator trust
         # model + streaming reduces realistic blast radius to ~150 MB
-        # peak even if cap is bypassed).  See security audit doc for
-        # full bypass-vector analysis (4 vectors, all rated ACCEPTABLE
-        # or MITIGATED).
+        # peak even if cap is bypassed).  Round 47 Step 2 (D3) added
+        # stat-after-open via os.fstat() to MITIGATE the TOCTOU race
+        # within the with-open block — see the post-open check below.
+        # Bypass vector status (4 total): symlink MITIGATED (stat
+        # follows symlinks) / OSError fail-open ACCEPTABLE (intended
+        # design) / units accumulation ACCEPTABLE (legitimate CSVs <<
+        # 50 MB) / TOCTOU MITIGATED (r47 stat-after-open).
         try:
             fsize = filepath.stat().st_size
         except OSError:
@@ -179,6 +184,25 @@ class CSVEngine(EngineBase):
 
         # 使用文件对象读取，正确处理多行带引号的 CSV 值
         with open(filepath, encoding="utf-8-sig", newline="") as f:
+            # Round 47 Step 2 (D3 TOCTOU defense): re-check size after
+            # open via os.fstat() on the actual file descriptor.  If the
+            # file grew between the path.stat() above and this open() so
+            # that fstat now sees > cap, the file is adversarial — skip
+            # rather than stream the (now oversized) content into the
+            # accumulating units list.  Cost: one extra fstat() syscall
+            # on the open fd (microseconds).  Closes the r46 Step 5
+            # security audit's TOCTOU LOW-severity bypass vector.
+            try:
+                fsize2 = os.fstat(f.fileno()).st_size
+            except OSError:
+                fsize2 = 0
+            if fsize2 > _MAX_CSV_JSON_SIZE:
+                logger.warning(
+                    f"[CSV] 跳过 {rel}: 文件在 stat 后增长到 {fsize2} 字节 "
+                    f"（疑似 TOCTOU 攻击），超过 {_MAX_CSV_JSON_SIZE} 字节上限"
+                )
+                return units
+
             reader = csv.DictReader(f, delimiter=delimiter)
 
             if not reader.fieldnames:
