@@ -1118,6 +1118,136 @@ digest = md5.hexdigest()[:8]           # → label_XXXXXXXX
 
 ---
 
+## 第四十三轮：r36-r42 累计专项审计 + 3 个 test 补 + 1 个插件子进程 stdout 封顶 (round 47 archive push)
+
+**审计结果概览**：
+
+- **Correctness agent**：23 个审计点全 pass，0 CRITICAL / 0 HIGH（r36-r42
+  改动 code-level 正确性 clean，包括 r42 JSON cap 7 处 fallback / r41
+  mixin `self._project_root` init 顺序 / r42 checker deferred import 保
+  r27 A-H-2 layering / TOCTOU windows / signature consistency 等）
+- **Test coverage agent**：3 项 valid gap + 3 项 false-positive（被
+  overly-detailed boundary testing / 已被现有 test 隐含覆盖的 path / 标
+  准 try/finally 已足够的 isolation）
+- **Security agent**：1 项 valid defensive improvement + 5 项
+  theoretical-only / false-positive（post-parse size check 无法用
+  `sys.getsizeof` 实现，monkey-patch 威胁已属 "attacker has RCE" 范畴，
+  env var leakage on Windows 权限隔离足够，等等）
+
+3 项 valid 发现合流到 r43：
+
+**Commit 1：Test coverage 补齐（3 个 new test）**
+
+491. `tests/test_multilang_run.py::test_check_response_item_zh_tw_rejects_
+generic_zh_field` — 钉住 `LANGUAGE_CONFIGS["zh-tw"].field_aliases =
+["zh-tw", "zh_tw", "traditional_chinese"]` **刻意不含 bare "zh"** 的设
+计决策。否则 model 习惯性 emit `"zh"` 会悄悄落进 zh-tw bucket 而
+Simplified / Traditional 的脚本家族混淆没人察觉。正向 case 也测：
+"zh-tw" / "traditional_chinese" alias 被接受
+492. `tests/test_multilang_run.py::test_check_response_item_mixed_
+language_fields_picks_correct_alias` — 文档化 `resolve_translation_
+field` 的 alias 优先级契约：item 同时含 `"ja"` + `"ko"` 时，ja config
+读 ja 字段，ko config 读 ko 字段；ja-empty 但 ko-populated 在 ja
+config 下被拒（ko 不在 ja 别名链）
+493. `tests/test_translation_state.py::test_progress_tracker_handles_
+stat_failure_gracefully` — 覆盖 r42 M2 phase-3 的"stat() OSError →
+size=0 → 继续 read"两步降级路径。用 `mock.patch.object(Path, "stat",
+_selective_raise)` 让目标 progress.json stat() 抛 OSError，验证
+`read_text()` 仍成功时 data **不会被错误重置**。填补了 "stat fails
+but read works" 的路径覆盖缺口（原先只测 "文件太大"）
+
+测试 **405 → 408**（test_multilang_run 14→16 / test_translation_state
+18→19 / meta-runner 149→150）
+
+**Commit 2：插件子进程 response line 50 MB 封顶（defensive）**
+
+r30 已为 `_SubprocessPluginClient` stderr 加 10 KB cap 防 crash 日志
+OOM host。但 **stdout response 通道无 cap** —— 若 plugin 恶意（或故障）
+emit unbounded 单行 JSON，`readline()` 无 size 会一直累积到 OOM，早
+于任何 JSON decoder 介入。r43 audit surfaced 为 valid defensive
+improvement。
+
+494. `core/api_plugin.py` 新增 `_MAX_PLUGIN_RESPONSE_BYTES = 50 * 1024
+* 1024` 模块常量（与 r37-r42 JSON loader cap 跨模块一致）。legitimate
+batch response typically < 1 MB，50 MB 留足冗余
+495. `_read_response_line` 的内部 `_reader()` 改为 `readline(
+_MAX_PLUGIN_RESPONSE_BYTES)`。Python `readline(N)` 返回至多 N bytes
+**或**到 `\n` 为止，谁先到谁先返回 — 若 plugin 在 N bytes 前没发
+newline，被视为 malformed oversized 响应 raise RuntimeError（与既有
+"plugin stuck" / "EOFError" 路径同风格 wrap）
+496. `tests/test_custom_engine.py::test_sandbox_rejects_oversize_
+response_line` — stub `_proc.stdout` + `mock.patch.object` 把 cap 缩到
+1 KB 验证语义（避免实际 alloc 50 MB）。与 r30 的 `test_sandbox_
+stderr_read_bounded` 成对，共同 bound plugin 的 stdin/stdout/stderr
+三通道
+
+测试 test_custom_engine 20→21（独立 suite）；total **408 → 409**
+
+**Commit 3：Docs sync**
+
+497. 本文件（CHANGELOG_RECENT.md）：round 40 详细压缩进"演进摘要"一行；
+41/42/43 保留详细；维护规则继续"最近 3 轮详细 + 更老压缩"
+498. CLAUDE.md 项目身份段追加 r43 note + 测试数 405 → 409；`.cursorrules`
+同步（字节相同）
+499. HANDOFF.md 重写为 43 → 44 交接；r43 三项修从"r43 候选"挪到"✅ r43
+已修"；保留 PyInstaller smoke test + GUI manual smoke test（三轮积压）
++ 非 zh 端到端验证 + A-H-3 / S-H-4 / CI / docs 复查作 r44 候选。
+架构健康度表更新：**插件子进程三通道封顶完整**（stdin via
+`_SHUTDOWN_REQUEST_ID` + stdout via r43 50 MB cap + stderr via r30
+10 KB cap）
+
+**结果**：
+
+- **22 测试文件**（21 独立 suite + `test_all.py` meta；r43 无新 .py）
+  + `tl_parser` 75 + `screen` 51 = **535 断言点**；测试 **405 → 409**
+  （+4：zh-tw rejects +1 / mixed-lang +1 / stat fallback +1 / oversize
+  response line +1）
+- 所有改动向后兼容：
+  - Test 补齐：纯新增 assertion，零现有 test 受影响
+  - Plugin stdout cap：合法 response 行（< 50 MB）完全不受影响；只有
+    malformed / 恶意 oversized 情况才触发 RuntimeError，走已有
+    error-wrapping path
+- **新增文件 0 个**
+- **修改文件 1 代码 + 3 测试 + 4 文档**：
+  - `core/api_plugin.py` +cap 常量 + `_read_response_line` size-bounded
+    readline
+  - `tests/test_multilang_run.py` +2 tests
+  - `tests/test_translation_state.py` +1 test
+  - `tests/test_custom_engine.py` +1 test
+  - CHANGELOG / CLAUDE / `.cursorrules` / HANDOFF
+- **文件大小检查**：所有源码 / 测试 < 800 保持
+
+**审计连续性统计**（连续 3 次 3 维度 审计）：
+
+| 审计轮 | CRITICAL | HIGH | MEDIUM (已修) | LOW | False Positive | OOS |
+|-------|---------|------|------|-----|---------------|-----|
+| r35 末（r31-35） | 0 | 0 | 2 (H1, H2 → r36) | 0 | 6 | — |
+| r40 末（r36-40） | 0 | 0 | 2 (M4, r39 integ → r41) | 1 | 3 | 2 |
+| r43（r36-42） | 0 | 0 | 3 (zh-tw / mixed-lang / stat) + 1 defensive (stdout cap) → r43 | 1 | 6 | 3 |
+
+**趋势**：连续 3 次审计均无 CRITICAL/HIGH；每次找到的 MEDIUM/LOW 都在
+对应的下一轮合流修复；False-positive 和 OOS 比例稳定在 ~30-40%（正常
+量级，说明 agent 报告质量稳定）。
+
+**本轮未做**（留给第 44+ 轮）：
+
+- **PyInstaller 打包 smoke test**（r41/r42/r43 **三轮积压**）—
+  HANDOFF 最高优先，需 `pip install pyinstaller`（用户 approve） +
+  跑 `python build.py` + `dist/多引擎游戏汉化工具.exe` 启动 smoke；
+  若 fail 回退加 `gui_handlers`/`gui_pipeline`/`gui_dialogs` 到
+  `build.py::hidden_imports`
+- **GUI 手动 smoke test 全面清单**（r41/r42/r43 **三轮积压**）— 需
+  人工点击 Tab / 按钮 / 菜单 / 工具菜单 / 配置保存加载 验证 Tkinter
+  callback 真实运行时正确 dispatch + mixin MRO 工作
+- 非中文目标语言端到端验证（r39 prompt + r41 alias read + r42 checker
+  三层锁死 code-level contract，需真实 API + 真实游戏跑 ja / ko / zh-tw）
+- A-H-3 Medium / Deep / S-H-4 Breaking — 需真实 API + 游戏验证
+- RPG Maker Plugin Commands / 加密 RPA / RGSS
+- CI Windows runner + docs/constants / quality_chain / roadmap 复查
+  （连续 14 轮欠账）
+
+---
+
 ## 关键发现与经验
 
 1. **对话密度是漏翻率最强相关因子**：< 10% 密度文件漏翻中位数 57.69%，≥ 40% 仅 4.54%
