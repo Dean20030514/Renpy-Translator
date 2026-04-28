@@ -347,6 +347,15 @@ def execute_all_ci_test_steps(workflow_path: Path, repo_root: Path) -> None:
         run = step.get("run", "")
         if not run or not name.startswith("Run "):
             continue
+        # Round 49 C7 audit-tail fix: skip the "Run verify_docs_claims
+        # --full" step to prevent infinite self-recursion.  Without this
+        # guard the --full mode invokes itself (CI yaml exposes the
+        # --full gate as its own step), which recurses, holds the
+        # output file lock, and eventually fails with WinError 32.
+        # The current --full invocation already covers everything that
+        # step would re-do — re-executing it adds no signal.
+        if "verify_docs_claims" in run and "--full" in run:
+            continue
         proc = subprocess.run(
             run,
             shell=True,

@@ -87,6 +87,51 @@ JSON/text loader 提供内存 OOM 防护。每个 loader 在 `json.loads`
 | `_MAX_PROGRESS_JSON_SIZE` | translators/_screen_patch.py | r42 M2 phase-3 | `_load_progress` (screen 翻译进度) |
 | `_MAX_REPORT_JSON_SIZE` | pipeline/stages.py | r42 M2 phase-3 | `tl_mode_report.json` + `report.json`（2 sites） |
 
+### Round 49 升级：TOCTOU defense via `core.file_safety.check_fstat_size`
+
+R47-R49 累积扩展：path-based stat() 仅是 fast path；attacker 在 stat→open
+之间扩文件可绕过 path-stat cap。R47 Step 2 D3 在 `csv_engine._extract_csv`
+inline 加了 `os.fstat(f.fileno())` 二次校验（TOCTOU MITIGATED inline），
+R48 Step 2 抽取为共享 helper `core/file_safety.py::check_fstat_size(file_obj,
+max_size) -> tuple[bool, int]`（93 行 stdlib-only，fail-open on OSError /
+ValueError），R49 C4-C5 把 helper 推广到全部 user-facing JSON loader。
+**整个 user-facing JSON ingestion surface 现 26 sites / 12 modules 全
+TOCTOU MITIGATED**（attack window 缩到 microsecond 级 fstat-on-fd）：
+
+| 节点 | sites cumulative | 状态 |
+|------|------------------|------|
+| r46 audit | 0 | 4 ACCEPTABLE（csv 仅 path-based stat） |
+| r47 Step 2 D3 | 1 (csv `_extract_csv` inline) | TOCTOU MITIGATED inline |
+| r48 Step 2 | 3 (csv 3 readers via helper) | csv 全 MITIGATED |
+| **r49 C4** | **15** (+12 core sites: font_patch / translation_db / config / glossary 4 / gate / rpgmaker 2 / gui_dialogs / checker) | core 全 MITIGATED |
+| **r49 C5** | **26** (+11 tools+internal sites: merge_v2 / translation_editor 3 / review_generator / analyze_writeback / generic_pipeline / translation_utils / _screen_patch / stages 2) | **整个 user-facing JSON 全 MITIGATED** |
+
+升级 pattern（与 csv_engine byte-equivalent — 上方 user-facing / internal
+表中所有 r37-r44 的 path-based stat 仍然作为 fast path 保留，加 `with open
++ check_fstat_size + read` 内层 TOCTOU 二次校验）：
+
+```python
+fsize = path.stat().st_size           # path-based fast path (existing)
+if fsize > _MAX_X_SIZE: warn + skip   # rejects huge files before open
+with open(path, encoding=...) as f:
+    ok, fsize2 = check_fstat_size(f, _MAX_X_SIZE)  # TOCTOU defense
+    if not ok: warn TOCTOU + skip/return/continue/raise
+    data = json.loads(f.read())
+```
+
+`core/glossary.py::_json_file_too_large(path)` helper **不动**（保留 r38
+path-based fast path）；4 callers 各自 inline 加 fstat check 而非升级
+helper signature。理由 (i) 与 csv_engine pattern byte-equivalent (ii) 保
+留 path stat fast path 拒 100GB 文件不需 open (iii) caller 侧 fallback
+行为差异（continue / return）难抽象。
+
+**测试集中策略**：23 expansion regression 集中到 `tests/test_file_safety.py`
+(12 C4) + `tests/test_file_safety_c5.py` (11 C5)，所有 mock 统一打
+`core.file_safety.os.fstat`（防 r48 Step 3 mock target stale CRITICAL 重
+演 — 单 grep `mock.patch.*os.fstat` 即可 audit 全部一致性）。其中 4
+lightweight test (gate / gui_dialogs / stages × 2) 因 e2e fixture 太重，
+用 import + constant + active_src filter（过滤 `#` 注释行）source-grep。
+
 ## 其他内存 / 资源上限
 
 | 常量 | 位置 | 默认值 | 说明 |

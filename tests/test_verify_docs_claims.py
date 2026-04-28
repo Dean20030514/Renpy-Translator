@@ -686,6 +686,47 @@ def test_main_fast_path_zero_against_real_repo():
     print("[OK] main_fast_path_zero_against_real_repo")
 
 
+def test_execute_all_ci_test_steps_skips_verify_docs_claims_full_self_step():
+    """Round 49 C7 audit-tail: ``execute_all_ci_test_steps`` MUST skip
+    any CI step whose ``run`` invokes ``verify_docs_claims --full``,
+    to prevent infinite self-recursion when --full is wired into CI
+    as its own gate.
+
+    Without the skip, --full invokes itself, which recurses into
+    --full again, which holds output file locks (Windows WinError 32
+    on tempdir cleanup) and eventually fails with a confusing error.
+    See the rationale comment at the top of the function body.
+    """
+    import tempfile
+    from pathlib import Path
+    from scripts.verify_docs_claims import execute_all_ci_test_steps
+
+    with tempfile.TemporaryDirectory() as td:
+        ws = Path(td) / "workflow.yml"
+        # Two steps: a benign echo + the self-recursive --full call.
+        # If the skip is missing, the second step will fork python
+        # which will fail to find scripts/verify_docs_claims.py in
+        # the empty tempdir and raise RuntimeError; with the skip,
+        # only the echo runs and the function returns cleanly.
+        ws.write_text(
+            "name: test\n"
+            "on: push\n"
+            "jobs:\n"
+            "  test:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - name: Run echo test\n"
+            "        run: echo passed\n"
+            "      - name: Run verify_docs_claims --full self-gate\n"
+            "        run: python scripts/verify_docs_claims.py --full\n",
+            encoding="utf-8",
+        )
+        # No exception expected = skip works; any RuntimeError from
+        # the self-recursion path would propagate up.
+        execute_all_ci_test_steps(ws, repo_root=Path(td))
+    print("[OK] execute_all_ci_test_steps_skips_verify_docs_claims_full_self_step")
+
+
 # ---------------------------------------------------------------------------
 # Test registry + entry point
 # ---------------------------------------------------------------------------
@@ -716,6 +757,8 @@ TESTS = [
     test_main_fast_path_fails_on_tests_total_drift,
     test_main_fast_path_fails_on_assertion_points_drift,
     test_main_fast_path_zero_against_real_repo,
+    # Round 49 C7 audit-tail: self-recursion guard
+    test_execute_all_ci_test_steps_skips_verify_docs_claims_full_self_step,
 ]
 
 
