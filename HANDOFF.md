@@ -41,7 +41,7 @@ assertion_points: 633
 | 插件沙箱 | ✅ Dual-mode（importlib 快路径 + opt-in subprocess）+ 三通道防护（stdout 50M chars + stderr 10K + stdin lifecycle） |
 | 多语言完整栈 | ✅ 5 层 code-level contract（prompt + alias-read + checker + zh-tw 隔离 + generic fallback） |
 | OOM 防护 | ✅ 23/23 user-facing path-stat + 26 sites / 12 modules TOCTOU MITIGATED via `core.file_safety` 共享 helper |
-| Mock target stale trap | ✅ CI grep step 兜底（防 r48 trap CLASS 复发；r50 C4 filter 已放宽到 `file_safety` 兼容 qualified form） |
+| Mock target stale trap | ✅ CI grep step 兜底（防 r48 trap CLASS 复发；r50 C4 filter 放宽到 `file_safety` 兼容 qualified form；r51 audit-tail 加第三级 `test_repo_rename_consistency` filter 豁免 documentation-only 文件 self-trip） |
 | Repo rename consistency | ✅ Round 51 加 4 contract tests 钉自身 repo URL refs + logger namespace + 上游归属反向 exhaustiveness |
 | 模块分层 | ✅ deferred import 保 layering（`file_processor` 不在 module load 时 import `core`） |
 | docs claim drift | ✅ 4 项 prevention 自动化（pre-commit hook + `verify_docs_claims --fast`/`--full` + `VERIFIED-CLAIMS` 单一声称源） |

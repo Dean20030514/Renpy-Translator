@@ -117,7 +117,7 @@ scripts/         verify_docs_claims.py / verify_workflow.py / install_hooks.sh
 - **pre-commit hook 4 件套**（`scripts/install_hooks.sh` 启用）：py_compile + 800 行 cap + meta-runner + `verify_docs_claims --fast`
 - **CI**：6 jobs（matrix `[ubuntu-latest, windows-latest]` × `[3.9, 3.12, 3.13]`）
 - **HANDOFF.md `VERIFIED-CLAIMS` 块**：唯一数字声称源，pre-commit + CI 双层 enforce
-- **Mock target consistency CI guard**：所有 `mock.patch(...os.fstat)` / `patch.object(os, "fstat", ...)` 必须 target `core.file_safety`（防 stale mock trap CLASS；r50 C4 filter 放宽到 `file_safety` 兼容 qualified form）
+- **Mock target consistency CI guard**：所有 `mock.patch(...os.fstat)` / `patch.object(os, "fstat", ...)` 必须 target `core.file_safety`（防 stale mock trap CLASS；r50 C4 filter 放宽到 `file_safety` 兼容 qualified form；r51 audit-tail 加第三级 `test_repo_rename_consistency` filter 豁免 documentation-only 文件 self-trip）
 - **Repo rename consistency CI guard**（r51 起）：`tests/test_repo_rename_consistency.py` 钉自身 repo URL refs（`pyproject.toml` + `renpy_translate.example.json`）+ logger namespace（17 sites `getLogger("multi_engine_translator")`）+ 6 处 anonymousException 上游归属反向 exhaustiveness
 
 ---

@@ -198,7 +198,15 @@ GitHub 仓库远端已重命名 `Renpy-Translator` → `Multi-Engine-Game-Transl
 - repo 远端 `https://github.com/Dean20030514/Multi-Engine-Game-Translator`
 - 本地目录 `C:\Users\16097\Desktop\Renpy翻译\Multi-Engine Game Translator`（旧 `Renpy汉化（我的）`）
 
-**Push 前 Q5 全套验证**通过：file-size empty + 全独立 suite + meta-runner + verify_docs_claims --full + verify_workflow 全 PASS（待 C4 提交后跑最终 sanity gate 再确认）。
+### Round 51 audit-tail（同轮 fix Security MEDIUM 自食 r50 C4 模式）
+
+Q5 sanity gate 跑 B4 (CI grep guard 本地预跑) 时发现 r51 A5 新加的 `tests/test_repo_rename_consistency.py` 自身 docstring / 注释 / assert 错误消息字面量包含 `mock.patch.*os.fstat` / `patch.object` 两个 form pattern（line 300/301/315/317/320/322），CI grep step `| grep -v "file_safety"` 第二级 filter 不 catch（因为这些行不含 "file_safety"），**push 后 GitHub Actions Mock target consistency check 步骤会 FAIL**。同 r50 C4 模式（CI filter 自身 false positive），新规则下同轮 fix：
+
+- `.github/workflows/test.yml` Mock target 步加第三级 filter `| grep -v "test_repo_rename_consistency"`，豁免该 documentation-only 文件（与 `file_safety` 同性质 sanctioned exception；该文件零 mock 调用、纯 contract 引用）+ 16 行注释 docstring 解释 r51 audit-tail rationale + sanctioned exception 边界
+- `tests/test_repo_rename_consistency.py::test_ci_mock_target_guard_catches_known_stale_forms` 加第 4 个 fragment assertion 钉新 filter 形状（`'grep -v "test_repo_rename_consistency"' in workflow`），防 future maintainer 不慎删除第三级 filter 致 CI 再次 self-trip
+- 验证：本地预跑 `grep -rEn "..." tests/*.py | grep -v "file_safety" | grep -v "test_repo_rename_consistency"` empty；测试 8/8 PASS
+
+教训：**新加 contract test 引用 CI guard 自身 regex 形状时，必须同步检查 CI guard 是否会 self-trip**。r51 v3 plan 的 Risk #4 mock-target trap CLASS 检查只跑了 r50 既有 filter 不含新文件，未预见新文件本身会引入新的 false-positive vector。
 
 ---
 

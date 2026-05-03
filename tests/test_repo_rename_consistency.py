@@ -306,28 +306,42 @@ def test_ci_mock_target_guard_catches_known_stale_forms():
     ``from core import file_safety; patch.object(file_safety.os, "fstat", ...)``
     qualified-but-not-fully-dotted form.
 
-    This test pins all three pattern fragments so a future workflow
+    The Round 51 audit-tail added a third filter level
+    ``grep -v "test_repo_rename_consistency"`` to exempt this very
+    file (documentation-only references to the patterns above would
+    otherwise self-trip the guard).
+
+    This test pins all four pattern fragments so a future workflow
     edit cannot silently degrade the trap.
     """
     workflow_path = REPO_ROOT / ".github" / "workflows" / "test.yml"
     workflow = workflow_path.read_text(encoding="utf-8")
 
-    # Form 1: mock.patch(...os.fstat)
+    # Form 1: mock.patch(...os.fstat) -- string-arg form
     assert r"mock\.patch.*os\.fstat" in workflow, (
-        "CI mock-target guard missing string-arg form 'mock.patch...os.fstat'; "
+        "CI mock-target guard missing string-arg form; "
         "see Round 50 1a guard rationale."
     )
-    # Form 2: patch.object(os, "fstat", ...)
+    # Form 2: patch.object(os, "fstat", ...) -- object-arg form
     assert r"patch\.object" in workflow and "fstat" in workflow, (
-        "CI mock-target guard missing object-arg form patch.object(os, 'fstat', ...); "
+        "CI mock-target guard missing object-arg form; "
         "Round 50 C2 Correctness LOW-2 added this; do not regress."
     )
-    # Filter: relaxed to "file_safety" (Round 50 C4 deep-audit-tail).
+    # Filter level 1: relaxed to "file_safety" (Round 50 C4).
     # The previous strict 'core\.file_safety' would false-positive on
     # ``from core import file_safety; patch.object(file_safety.os, ...)``.
     assert 'grep -v "file_safety"' in workflow, (
-        "CI mock-target guard filter missing or wrong; should be "
+        "CI mock-target guard first filter missing or wrong; should be "
         "'grep -v \"file_safety\"' (Round 50 C4 relaxation)."
+    )
+    # Filter level 2: exempt this documentation-only file (Round 51 audit-tail).
+    # The strings/comments above contain the regex patterns as references for
+    # diagnostic clarity; without this exemption they would self-trip the
+    # CI guard.  Mirrors the file_safety sanctioned-exception design.
+    assert 'grep -v "test_repo_rename_consistency"' in workflow, (
+        "CI mock-target guard third filter missing; should be "
+        "'grep -v \"test_repo_rename_consistency\"' to exempt this "
+        "documentation-only contract file (Round 51 audit-tail closure)."
     )
     # Strict filter must NOT have been re-introduced.
     assert 'grep -v "core\\.file_safety"' not in workflow, (
