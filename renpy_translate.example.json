@@ -1,5 +1,5 @@
 {
-    "$schema": "https://github.com/Dean20030514/Renpy-Translator",
+    "$schema": "https://github.com/Dean20030514/Multi-Engine-Game-Translator",
     "_comment": "Ren'Py 汉化工具配置文件示例。复制为 renpy_translate.json 放在游戏目录下即可使用。",
 
     "provider": "xai",
