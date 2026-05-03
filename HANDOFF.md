@@ -1,10 +1,10 @@
 # HANDOFF — Round 50 末 → Round 51 起点
 
 <!-- VERIFIED-CLAIMS-START -->
-tests_total: 503
+tests_total: 507
 test_files: 35
 ci_steps: 38
-assertion_points: 629
+assertion_points: 633
 <!-- VERIFIED-CLAIMS-END -->
 
 > **上方 fenced 块是声明数字的唯一位置**。其他文档（`CLAUDE.md` / `.cursorrules` / `CHANGELOG.md` / `_archive/EVOLUTION.md` / `README.md` 等）只能引用这些数字，**不能重新声明**。`scripts/verify_docs_claims.py` 在 pre-commit hook 自动检查，drift fails the commit。
