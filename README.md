@@ -87,6 +87,8 @@ python main.py --engine jsonl --game-dir texts.jsonl --provider xai --api-key KE
 | [SECURITY.md](SECURITY.md) | 威胁模型与漏洞报告 |
 | [_archive/EVOLUTION.md](_archive/EVOLUTION.md) | 历史决策（r1-r50） |
 
+> 注：本项目旧名 `Renpy-Translator`（GitHub 仓库于 r51 重命名为 `Multi-Engine-Game-Translator`；详细历史见 [_archive/EVOLUTION.md](_archive/EVOLUTION.md)）。
+
 ### 常用 CLI 参数
 
 | 参数 | 默认 | 说明 |
@@ -198,6 +200,8 @@ python main.py --engine jsonl --game-dir texts.jsonl --provider xai --api-key KE
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
 | [SECURITY.md](SECURITY.md) | Threat model & vulnerability reporting |
 | [_archive/EVOLUTION.md](_archive/EVOLUTION.md) | Historical decisions (r1-r50) |
+
+> Note: This project was previously known as `Renpy-Translator` (GitHub repo renamed to `Multi-Engine-Game-Translator` at r51; see [_archive/EVOLUTION.md](_archive/EVOLUTION.md) for the full history).
 
 ### Common CLI Flags
 
