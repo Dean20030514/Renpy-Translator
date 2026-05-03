@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""冒烟测试：直接调用 file_processor / one_click_pipeline 的校验与统计逻辑，对 TEST_PLAN 中的功能点做断言。"""
+"""冒烟测试：直接调用 file_processor / one_click_pipeline 的校验与统计逻辑，对测试方案 (_archive/TEST_PLAN_r50.md) 中的功能点做断言。"""
 
 from __future__ import annotations
 

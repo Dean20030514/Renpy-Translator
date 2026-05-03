@@ -504,8 +504,9 @@ if __name__ == "__main__":
     # Round 48 Step 5: 21 CSV/JSONL/JSON-specific engine tests moved
     # to tests/test_csv_engine.py to bring this file back under the
     # CLAUDE.md 800-line soft limit (1090 -> 557).  See r48 Step 5
-    # split commit + CHANGELOG_RECENT for full lessons learned re
-    # multi-round drift between "all tests < 800" claim and reality.
+    # split commit + _archive/CHANGELOG_RECENT_r50.md (Round 48
+    # audit-tail) for full lessons learned re multi-round drift
+    # between "all tests < 800" claim and reality.
     # generic_pipeline
     test_build_generic_chunks_single()
     test_build_generic_chunks_split()

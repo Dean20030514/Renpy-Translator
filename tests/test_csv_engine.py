@@ -8,7 +8,8 @@ TOCTOU code) / r48 (boundary expansion + L1 csv.Error + helper
 extract + jsonl/json TOCTOU) — caught by user feedback at r48 end
 ("multiple files exceed 800; why didn't you alert me?"), revealing
 a multi-round drift between the HANDOFF claim "all tests < 800
-maintained" and reality.  See r48 Step 5 lessons in CHANGELOG_RECENT.
+maintained" and reality.  See r48 Step 5 lessons in
+_archive/CHANGELOG_RECENT_r50.md (Round 48 audit-tail section).
 
 Covers all CSV/TSV/JSONL/JSON extract + write_back + 50 MB cap +
 TOCTOU defense + csv.Error explicit catch tests for

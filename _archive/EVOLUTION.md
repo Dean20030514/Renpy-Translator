@@ -1,10 +1,11 @@
 # 项目演进史 (Round 1 — Round 50)
 
-> 本文件吸收原 `CLAUDE.md` 的"r31-r50 演进段"与原 `CHANGELOG_RECENT.md` 的演进摘要，按 round 编号组织，**不含 commit hash**（如需精确改动请查 `git log`）。
+> 本文件吸收原 `CLAUDE.md` 的"r31-r50 演进段"与原 `CHANGELOG_RECENT.md`（现归档为 [`_archive/CHANGELOG_RECENT_r50.md`](CHANGELOG_RECENT_r50.md)）的演进摘要，按 round 编号组织，**不含 commit hash**（如需精确改动请查 `git log`）。
 >
-> - **最近 5 轮详情**：见 `_archive/CHANGELOG_RECENT_r50.md`（93 KB，归档于 round 50 末）
-> - **r1-r45 总览表 + r19/r43 完整正文**：见 `_archive/CHANGELOG_FULL.md`
-> - **当前状态**：见根目录 `HANDOFF.md` 顶部 `VERIFIED-CLAIMS` 块
+> - **最近 5 轮详情**：见 [`_archive/CHANGELOG_RECENT_r50.md`](CHANGELOG_RECENT_r50.md)（归档于 round 50 末）
+> - **r1-r45 总览表**：见 [`_archive/CHANGELOG_FULL.md`](CHANGELOG_FULL.md)
+> - **r12-r19 引擎扩展方案历史快照**：见 [`_archive/EXPANSION_PLAN_FULL.md`](EXPANSION_PLAN_FULL.md)
+> - **当前状态**：见根目录 [`HANDOFF.md`](../HANDOFF.md) 顶部 `VERIFIED-CLAIMS` 块
 
 ---
 
@@ -41,6 +42,8 @@
 |----|------|
 | 18 | 预处理工具链 — RPA 解包 + rpyc 双层反编译 + lint 自动修复 + locked_terms 预替换 + tl 跨文件去重 + Hook 模板 |
 | 19 | 翻译后工具链 + 插件系统 — `tools/rpa_packer` + `tools/translation_editor` HTML 校对 + `custom_engines/` 插件接口 + 默认语言自动生成 |
+
+> **r12-r19 整体扩展方案的设计动机**（为什么 EngineProfile 用数据类而非继承多态、为什么 RPGMakerMVEngine 不实现 plugin commands 等）见 [`EXPANSION_PLAN_FULL.md`](EXPANSION_PLAN_FULL.md)。
 
 ## 阶段三（r20-r30）— 安全与稳健化
 

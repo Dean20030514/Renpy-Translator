@@ -470,9 +470,10 @@ ALL_TESTS = [
     # Round 48 Step 5: 8 sandbox response-line oversize cap tests
     # (r43-r48 累积) moved to tests/test_sandbox_response_cap.py to
     # bring this file back under the CLAUDE.md 800-line soft limit
-    # (1020 -> 505).  See r48 Step 5 split commit + CHANGELOG_RECENT
-    # for full lessons learned re multi-round drift between "all
-    # tests < 800" claim and reality.
+    # (1020 -> 505).  See r48 Step 5 split commit +
+    # _archive/CHANGELOG_RECENT_r50.md (Round 48 audit-tail) for
+    # full lessons learned re multi-round drift between "all tests
+    # < 800" claim and reality.
 ]
 
 

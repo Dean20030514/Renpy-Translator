@@ -9,7 +9,8 @@ scripts + exact boundary) / r47 (2-byte Latin + newline-terminated
 multibyte) / r48 (newline-cap exact boundary) — caught by user
 feedback at r48 end ("multiple files exceed 800; why didn't you alert
 me?"), revealing the same multi-round drift that affected
-test_engines.py.  See r48 Step 5 lessons in CHANGELOG_RECENT.
+test_engines.py.  See r48 Step 5 lessons in
+_archive/CHANGELOG_RECENT_r50.md (Round 48 audit-tail section).
 
 Covers all ``_SubprocessPluginClient._read_response_line`` size cap
 tests for the ``_MAX_PLUGIN_RESPONSE_CHARS`` boundary (50 MB chars

@@ -6,6 +6,8 @@
 > **r1-r50 演进摘要**：见 [EVOLUTION.md](EVOLUTION.md)
 > **r1-r45 总览表**：见 [CHANGELOG_FULL.md](CHANGELOG_FULL.md)
 > **当前 build / 数字 / 推荐工作**：见 [HANDOFF.md](../HANDOFF.md)
+>
+> **关于历史叙述中的文件名**：本文件叙述 r46-r50 当时改动时引用的 `docs/constants.md` / `docs/quality_chain.md` / `CHANGELOG_RECENT.md` 等文件，在 round 50 末 docs 重构时已被删除合并。等价当前文档：常量 → [`docs/REFERENCE.md`](../docs/REFERENCE.md)；架构/校验链 → [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)；CHANGELOG_RECENT.md → 本文件（rename 后）。historical references 保留以维持 round 当时的真实叙述。
 
 ---
 
