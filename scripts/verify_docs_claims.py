@@ -5,9 +5,9 @@
 Breaks the r45-r48 "HANDOFF / CHANGELOG / CLAUDE / .cursorrules
 all claim slightly different numbers because each round used the
 *previous round's claim* as a baseline" cycle.  See
-``CHANGELOG_RECENT.md`` round 48 audit-tail for the four drift
-incidents that motivated this tool (test count / file count /
-CI step / line count) — each one was caught by the user running
+``_archive/CHANGELOG_RECENT_r50.md`` round 48 audit-tail for the
+four drift incidents that motivated this tool (test count / file
+count / CI step / line count) — each one was caught by the user running
 independent ``find/wc/grep`` and noticing the docs disagreed
 with reality.
 
@@ -16,8 +16,9 @@ Source-of-truth contract
 
 The fenced ``<!-- VERIFIED-CLAIMS-START -->...<!-- END -->`` block
 in ``HANDOFF.md`` is the *only* place numbers are declared.  Every
-other doc (``CHANGELOG_RECENT.md`` / ``CLAUDE.md`` / ``.cursorrules``
-/ this file's docstring even) references those declared numbers in
+other doc (``CLAUDE.md`` / ``.cursorrules`` / ``CHANGELOG.md`` /
+``_archive/EVOLUTION.md`` / ``README.md`` / this file's docstring
+even) references those declared numbers in
 prose but does not re-declare them.  When the round-end docs sync
 runs, only the fenced block needs updating; the prose around it
 points the reader at "see VERIFIED-CLAIMS block".

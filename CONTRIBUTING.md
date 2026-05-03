@@ -1,152 +1,125 @@
-# 贡献指南
+# 贡献指南 / Contributing
 
-感谢考虑向本项目贡献代码。本指南汇总了开发环境、工作流、检查清单与提交规范，确保改动不破坏现有稳定性与既定原则。
-
----
-
-## 环境要求
-
-- **Python**：3.9 或更高
-- **第三方依赖**：**零**。坚持纯标准库，PR 中引入任何 `requirements` 或 `pip install` 调用会被驳回
-- **OS**：开发主要在 Windows 上进行，但代码需保证 Linux / macOS 也能跑通测试
-- **编码**：所有 `.py` / `.md` 文件使用 UTF-8（无 BOM）
+[简体中文](#简体中文) · [English](#english)
 
 ---
 
-## 九大开发原则（摘自 `CLAUDE.md`）
+## 简体中文
 
-任何 PR 必须遵守以下原则：
+### 环境
 
-1. **宁可漏翻也不误翻** — 不确定的条目保留原文，不要硬塞翻译
-2. **数据驱动** — 改动前收集数据，改动后验证数据，不拍脑袋定阈值
-3. **隔离变量** — 每次只改一个东西，验证独立效果
-4. **不破坏已有功能** — 新功能用 CLI 开关控制，默认行为不变
-5. **安全优先** — checker 不通过就丢弃、回写前校验、原地操作前备份
-6. **先读再写** — 涉及参考项目借鉴时，先完整阅读源码和文档再给方案
-7. **方案先行** — 给出改动方案和受影响函数列表，等维护者确认后再写代码
-8. **最小改动** — 不做不必要的重构、不加不需要的注释、不改不相关的代码
-9. **零依赖** — 坚持纯标准库，不引入第三方包
+- Python ≥ 3.9，**零第三方依赖**（PR 引入任何 `requirements` 或 `pip install` 会被驳回）
+- 文件编码 UTF-8（无 BOM），换行 LF（见 `.gitattributes`）
+- Windows 是主要开发环境，但代码须保证 Linux / macOS 可跑通测试
 
----
+### 10 大开发原则
 
-## 工作流
+详见 [CLAUDE.md](CLAUDE.md)。摘要：
 
-### 1. 开 issue / 讨论方案
+1. 宁可漏翻也不误翻 / 2. 数据驱动 / 3. 隔离变量 / 4. 不破坏已有功能 / 5. 安全优先
+6. 先读再写 / 7. 方案先行 / 8. 最小改动 / 9. 零依赖 / **10. 零欠账闭合**（r50 起新规则：所有 audit findings 同轮 fix）
 
-对于非 trivial 的改动（修复超过 20 行，或新增功能），**先开 issue 讨论方案**，不要直接发 PR。按 Issue 模板列出：
+### 工作流
 
-- 改动目的
-- 受影响的模块 / 函数 / 文件
-- 兼容性影响（是否改变默认行为）
-- 测试策略
-
-### 2. 分支策略
-
-- 从 `main` 创建特性分支，命名格式 `feat/xxx` 或 `fix/xxx`
-- 一个 PR 只做一件事（遵循"隔离变量"原则）
-
-### 3. 开发
-
-遵循[修改代码前的检查清单](#修改代码前的检查清单)逐项核对。
-
-### 4. 测试
-
-**运行测试套件**：
+1. **Issue 讨论方案**：非 trivial 改动（>20 行 / 新功能）先开 issue，列出目的 / 受影响模块 / 兼容性 / 测试策略
+2. **分支策略**：`feat/xxx` 或 `fix/xxx` 从 `main` 创建。一个 PR 只做一件事
+3. **TDD**：先写测试（RED）→ 实现（GREEN）→ 重构（IMPROVE）。修 bug 必须先补回归测试
+4. **运行测试**：
 
 ```bash
-python tests/test_all.py              # 核心单元测试（95 用例）
-python tests/test_engines.py          # 引擎层测试（62 用例）
-python tests/test_rpa_unpacker.py     # RPA 解包（14 用例）
-python tests/test_rpyc_decompiler.py  # rpyc 反编译（17 用例）
-python tests/test_lint_fixer.py       # lint 修复（15 用例）
-python tests/test_tl_dedup.py         # tl 去重（10 用例）
-python tests/test_batch1.py           # 批次功能（18 用例）
-python tests/test_translation_editor.py # 交互式校对（13 用例）
-python tests/test_custom_engine.py    # 插件系统（11 用例）
-python tests/smoke_test.py            # 冒烟测试（13 用例）
+python tests/test_all.py                    # meta-runner（~5s）
+python tests/test_engines.py                # 独立 suite，按需挑选
+python scripts/verify_docs_claims.py --fast # docs claim 同步性
 ```
 
-**测试要求**：
+5. **Conventional Commits**：`feat:` / `fix:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `ci:` / `security:`
+6. **更新 CHANGELOG**：详细变更进 `_archive/CHANGELOG_RECENT_*.md`；阶段总览进 `CHANGELOG.md`；如声称数字变化必须同步 `HANDOFF.md` 顶部 `VERIFIED-CLAIMS` 块
+7. **pre-commit hook**：通过 `scripts/install_hooks.sh` 启用；自动跑 4 件套（py_compile + 800 行 cap + meta-runner + verify_docs_claims --fast）
 
-- 全部测试必须绿，不允许 "测试个别失败但不影响主流程" 的 PR
-- 修 bug 必须先补回归测试，再改实现（RED → GREEN → IMPROVE）
-- 新增功能至少覆盖 happy path + 1 个边界 / 错误路径
+### PR 检查清单
 
-### 5. 提交
-
-**提交信息格式**（Conventional Commits）：
-
-```
-<type>: <description>
-
-<optional body>
-```
-
-`type` 可以是：`feat` / `fix` / `refactor` / `docs` / `test` / `chore` / `perf` / `ci` / `security`。
-
-示例：
-
-- `fix: pipeline 子包反向 import 修正，恢复一键流水线 Stage 3`
-- `security: SafeUnpickler 白名单替换 pickle.loads，关闭 RPA/rpyc pickle RCE 向量`
-- `feat: RPG Maker VX/Ace 引擎初步支持（需 Ruby Marshal 解析）`
-
-### 6. 更新 CHANGELOG
-
-改动合入前必须更新 `CHANGELOG_RECENT.md`：
-
-- 小改动追加到最近一轮
-- 大改动（新增模块 / 引擎 / 工具）新开一轮
-
----
-
-## 修改代码前的检查清单
-
-PR 描述中必须逐项勾选：
-
-- [ ] 已列出要修改的文件和函数
+- [ ] 已列出修改的文件和函数
 - [ ] 未引入任何第三方依赖
-- [ ] 未改变任何默认行为，或新增功能由 CLI 开关控制
-- [ ] 所有新增 / 修改的函数有类型注解
-- [ ] 有对应的测试用例
+- [ ] 未改变默认行为，或新增功能由 CLI 开关控制
+- [ ] 新增/修改的函数有类型注解 + docstring
+- [ ] 任何文件 ≤ 800 行
+- [ ] 有对应测试用例，`python tests/test_all.py` 全绿
 - [ ] 原地修改文件前有 `.bak` 备份逻辑（如适用）
 - [ ] checker 不通过的翻译被丢弃（而非强行使用）
-- [ ] 更新了 `CHANGELOG_RECENT.md`
-- [ ] `python tests/test_all.py` 及相关测试全绿
+- [ ] CHANGELOG / HANDOFF 已同步
+
+### 代码风格
+
+- PEP 8，`snake_case` / `PascalCase` / `UPPER_SNAKE_CASE`
+- 公共函数签名必须有类型注解
+- 文档字符串必须解释**为什么**（不是"做了什么"）
+- 单文件 ≤ 800 行（pre-commit hook 自动 enforce）
+
+### 引入新引擎
+
+参见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "5.4 新引擎添加流程（7 步）"。
+
+### 报告安全问题
+
+**不要**通过公开 issue 报告。请按 [SECURITY.md](SECURITY.md) 流程私密报告。
 
 ---
 
-## 代码风格
+## English
 
-- Python：PEP 8
-- 命名：函数 / 变量用 `snake_case`，类用 `PascalCase`，常量 `UPPER_SNAKE_CASE`
-- 类型注解：公共函数签名必须有（内部辅助函数推荐）
-- 注释：解释**为什么**这么做，不解释**做了什么**（代码本身表达）
-- 文档字符串：所有公共函数和类必须有 docstring
-- 文件大小：单文件控制在 800 行以内，超过需要拆分
+### Environment
 
----
+- Python ≥ 3.9, **zero third-party dependencies** (PRs introducing any `requirements` or `pip install` will be rejected)
+- Encoding UTF-8 (no BOM), line endings LF (see `.gitattributes`)
+- Windows is the primary dev environment, but code must pass tests on Linux / macOS
 
-## 引入新引擎
+### 10 Development Principles
 
-如果计划新增一个引擎（例如 Wolf RPG、Godot），请：
+See [CLAUDE.md](CLAUDE.md). Summary:
 
-1. 先阅读 `docs/engine_guide.md`
-2. 在 `docs/roadmap.md` 中找到对应的 P1/P2/P3 定位
-3. 实现 `engines/<name>_engine.py`，继承 `EngineBase` + 定义 `EngineProfile`
-4. 在 `engines/engine_detector.py` 中注册
-5. 配套 `tests/test_engines.py` 补测试
-6. 更新 README 的引擎支持列表
+1. Skip rather than mistranslate / 2. Data-driven / 3. Isolate variables / 4. Don't break existing features / 5. Safety first
+6. Read before write / 7. Plan first / 8. Minimal change / 9. Zero deps / **10. Zero-debt closure** (Round 50+ rule: all audit findings fixed same-round)
 
----
+### Workflow
 
-## 报告安全问题
+1. **Discuss in an issue first**: non-trivial changes (>20 lines / new features) need an issue listing goal / modules affected / compatibility / test strategy
+2. **Branch**: `feat/xxx` or `fix/xxx` off `main`. One PR, one thing
+3. **TDD**: tests first (RED) → impl (GREEN) → refactor (IMPROVE). Bug fix MUST add regression test before fix
+4. **Run tests**:
 
-**不要** 通过公开 issue 报告安全漏洞。请参照 [`SECURITY.md`](SECURITY.md) 的流程。
+```bash
+python tests/test_all.py                    # meta-runner (~5s)
+python tests/test_engines.py                # individual suites as needed
+python scripts/verify_docs_claims.py --fast # docs claim sync check
+```
 
----
+5. **Conventional Commits**: `feat:` / `fix:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `ci:` / `security:`
+6. **Update CHANGELOG**: detailed changes go to `_archive/CHANGELOG_RECENT_*.md`; stage overview to `CHANGELOG.md`; if claimed numbers change you MUST sync the `VERIFIED-CLAIMS` block at the top of `HANDOFF.md`
+7. **pre-commit hook**: enable via `scripts/install_hooks.sh`; auto-runs 4 checks (py_compile + 800-line cap + meta-runner + verify_docs_claims --fast)
 
-## 其他
+### PR Checklist
 
-- 按需加载文档索引见 `CLAUDE.md` 顶部
-- 历史决策见 `CHANGELOG_RECENT.md`（最近 3 轮）和 `_archive/CHANGELOG_FULL.md`（全量）
-- 架构 / 数据流图见 `docs/` 下 7 个专题文档
+- [ ] Listed modified files and functions
+- [ ] No third-party dependencies introduced
+- [ ] Default behaviour unchanged, or new feature gated by CLI flag
+- [ ] New/modified functions have type annotations + docstrings
+- [ ] All files ≤ 800 lines
+- [ ] Tests added; `python tests/test_all.py` all green
+- [ ] In-place file modifications have `.bak` backup logic (if applicable)
+- [ ] Failed-checker translations are discarded (not force-used)
+- [ ] CHANGELOG / HANDOFF synced
+
+### Style
+
+- PEP 8, `snake_case` / `PascalCase` / `UPPER_SNAKE_CASE`
+- Public function signatures must have type annotations
+- Docstrings must explain **why** (not "what")
+- Single file ≤ 800 lines (pre-commit hook auto-enforces)
+
+### Adding a New Engine
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "5.4 New engine flow (7 steps)".
+
+### Reporting Security Issues
+
+**Do not** open a public issue. Follow the private process in [SECURITY.md](SECURITY.md).

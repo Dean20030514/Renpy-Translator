@@ -1,0 +1,174 @@
+# 项目演进史 (Round 1 — Round 50)
+
+> 本文件吸收原 `CLAUDE.md` 的"r31-r50 演进段"与原 `CHANGELOG_RECENT.md` 的演进摘要，按 round 编号组织，**不含 commit hash**（如需精确改动请查 `git log`）。
+>
+> - **最近 5 轮详情**：见 `_archive/CHANGELOG_RECENT_r50.md`（93 KB，归档于 round 50 末）
+> - **r1-r45 总览表 + r19/r43 完整正文**：见 `_archive/CHANGELOG_FULL.md`
+> - **当前状态**：见根目录 `HANDOFF.md` 顶部 `VERIFIED-CLAIMS` 块
+
+---
+
+## 阶段零（r1-r10）— 翻译质量基线
+
+| 轮 | 主题 |
+|----|------|
+| 1 | 质量校验体系 — W430/W440/W441/W442/W251 告警 + E411/E420 术语锁定 |
+| 2 | 功能增强 — 结构化报告 + translation_db + 字体补丁 |
+| 3 | 降低漏翻率 — 12.12% → 4.01%（占位符保护 + 密度自适应 + retranslate） |
+| 4 | tl-mode — 独立 tl_parser + 并发翻译 + 精确回填 |
+| 5 | tl-mode 全量验证 — 引号剥离修复 + 99.97% 翻译成功率 |
+| 6 | 代码优化 — chunk 重试 + logging + 模块拆分 + 术语提取 |
+| 7 | 全量验证 — 99.99% 成功率（未翻译 25→7，Checker 丢弃 4→2） |
+| 8 | 代码质量 — 消除重复 + 大函数拆分 + validator 结构化 |
+| 9 | 深度优化 — 线程安全 + O(1) fallback + API 错误处理 |
+| 10 | 功能加固 — 控制标签确认 + CI 零依赖 + 跨平台路径 |
+
+## 阶段一（r11-r17）— 架构成型
+
+| 轮 | 主题 |
+|----|------|
+| 11 | `main.py` 拆分 2400→233 行 + Config 类 + Review HTML + 类型注解 + 多语言 |
+| 12 | 引擎抽象层 — `EngineProfile` + `EngineBase` + RPG Maker MV/MZ + CSV/JSONL + GUI |
+| 13 | 四项优化 — pipeline review.html + 可配置字体 + tl/none 模板 + CoT |
+| 14 | Ren'Py 专项五阶段升级（基础重构 + 健壮性 + 性能 + 质量 + 体验） |
+| 15 | nvl clear ID 修正 — 8.6+ say-only → 7.x nvl+say 哈希自动修正 |
+| 16 | screen 文本翻译 — `screen_translator.py` + 缓存清理 .rpymc 补全 |
+| 17 | 项目结构重构 — 根目录 25→5 .py + `core/translators/tools` 分层 |
+
+## 阶段二（r18-r19）— 工具链补全
+
+| 轮 | 主题 |
+|----|------|
+| 18 | 预处理工具链 — RPA 解包 + rpyc 双层反编译 + lint 自动修复 + locked_terms 预替换 + tl 跨文件去重 + Hook 模板 |
+| 19 | 翻译后工具链 + 插件系统 — `tools/rpa_packer` + `tools/translation_editor` HTML 校对 + `custom_engines/` 插件接口 + 默认语言自动生成 |
+
+## 阶段三（r20-r30）— 安全与稳健化
+
+| 轮 | 主题 |
+|----|------|
+| 20 | CRITICAL 修复 — pipeline 悬空 import × 3 + pickle RCE × 3 + ZIP Slip 防护 + CONTRIBUTING/SECURITY 治理文档 |
+| 21 | Top 5 HIGH 收敛 — HTTP 连接池（节省 ~90s/600 次握手）+ ProgressTracker 双锁解串行 + API Key 走 subprocess env（关闭进程列表泄露） |
+| 22 | 测试基础 + 响应体上限 — `MAX_API_RESPONSE_BYTES = 32 MB` + `read_bounded` 共享工具 |
+| 23 | A-H-4 Part 1 — `translators/direct.py` 1301 → 584 + 拆 `_direct_chunk/_direct_file/_direct_cli` |
+| 24 | A-H-4 Part 2 — `translators/tl_mode.py` 928 → 558 + `tl_parser.py` 1106 → 532 |
+| 25 | 七项 HIGH/MEDIUM 收敛 — A-H-1 + A-H-6 + S-H-3 + PF-H-2 + PF-C-2 + 测试加固 |
+| 26 | 综合包 A+B+C — TranslationDB 三件套（RLock + 原子写 + line=0）+ RPA 大小预检查 + RPYC 白名单同步 |
+| 27 | 分层收尾 — A-H-2（3 wrapper 下沉 `file_processor/checker.py`）+ A-H-5（`tools/font_patch.py` → `core/font_patch.py`） |
+| 28 | A-H-3 Minimal 路由统一 + S-H-4 Dual-mode 插件沙箱（`--sandbox-plugin` opt-in） |
+| 29 | `tests/test_all.py` 2539 行拆为 5 聚焦 suite + 49 行 meta-runner |
+| 30 | 冷启动审计 4 项 robustness — `_SubprocessPluginClient` stderr 10 KB 上限 + Popen atexit 兜底 |
+
+## 阶段四（r31-r35）— 多语言与运行时注入
+
+| 轮 | 主题 |
+|----|------|
+| 31 | inject_hook.rpy 模板 + `--emit-runtime-hook` opt-in CLI |
+| 32 | UI 白名单可配置化（sidecar JSON）+ 字体自动打包 + `translations.json` v2 多语言 schema |
+| 33 | `tools/merge_translations_v2.py` + `--font-config` 透传 runtime hook + `tools/translation_editor.py` v2 适配 |
+| 34 | TranslationDB schema v2 + `language` 字段 + 4-tuple 索引 + editor HTML dropdown 多语言切换 |
+| 35 | `--target-lang zh,ja,zh-tw` 逗号分隔 + main.py 外层语言循环 + editor side-by-side 多列 |
+
+## 阶段五（r36-r42）— 防御加固与契约化
+
+| 轮 | 主题 |
+|----|------|
+| 36 | 深度审计驱动 2 个 edge-case bug 修 — H1 跨语言 bare-key 污染 + H2 `_sanitise_overrides` 加 `math.isfinite` 过滤 |
+| 37 | M 级防御加固包 M1-M5 — partial v2 backfill + 4 处 JSON loader 50 MB cap + multi-lang try/finally restore + CWD path 白名单 + empty-cell SKIP 语义 |
+| 38 | "收尾包" — 拆 `test_translation_editor.py` 847→376 + M2 扩 4 处 + `config_overrides` 扩 bool + editor mobile 自适应 |
+| 39 | "收尾包 Part 2" — tl-mode/retranslate per-language prompt（zh 中文模板 byte-identical / 非 zh generic 英文）+ M2 phase-2 × 3 |
+| 40 | pre-existing 大文件拆 3/4 — `test_engines.py` / `rpyc_decompiler.py` / `api_client.py` 全部 < 800 行（`gui.py` 挂 r41） |
+| 41 | gui.py 拆 4/4 mixin — `gui.py` 815→489 + `gui_handlers/_pipeline/_dialogs` 三个 mixin（MRO 架构）；**源码全 < 800 首次达成** |
+| 42 | 内部 JSON loader cap 收尾 + checker per-language 化（`lang_config` kwarg + deferred import 保 layering） |
+
+## 阶段六（r43-r45）— 累计审计期
+
+| 轮 | 主题 |
+|----|------|
+| 43 | r36-r42 累计三维度专项审计（correctness / coverage / security）— 0 CRITICAL/0 HIGH，3 MEDIUM defensive + plugin stdout 50 MB cap |
+| 44 | 10 项综合清算 — 3 漏网 JSON loader cap 补齐 + plugin cap rename `_BYTES`→`_CHARS`（澄清 char-vs-byte 语义）+ CI 扩 Windows matrix + PyInstaller build 33.9 MB exe smoke 通过 |
+| 45 | 11 项维护清算 + r41-r45 累计 audit-tail（**首次发现 CI 覆盖 regression** — Commit 1 拆 test_ui_whitelist 但 CI verify script 未同步，**ghost tests** in CI；同轮 fix） |
+
+## 阶段七（r46-r48）— Auto Mode 综合执行
+
+| 轮 | 主题 |
+|----|------|
+| 46 | 7 step Auto-mode 执行 — install_hooks 启用 + test_runtime_hook 拆 v2_schema + r45 audit 4 MEDIUM gap 闭合 + r46 三维度审计 + **真实桌面 GUI smoke via computer-use**（5 轮积压 UX 缺口闭合） |
+| 47 | 5 step 综合执行 — r43 detail archive + 7 LOW gap 全补 + **TOCTOU 升级 ACCEPTABLE doc → MITIGATED code**（csv_engine `os.fstat(f.fileno())` 二次校验） + test_translation_state 拆 progress_tracker_language |
+| 48 | 4 step 深度优化 — TOCTOU helper 抽取到 `core/file_safety.py::check_fstat_size` + 扩展到 csv/jsonl/json 三 readers 全 MITIGATED + **首次 security CRITICAL 同轮 fix**（r47 mock target 在 helper 抽取后失效，spuriously pass） |
+
+### r48 audit-tail（用户反馈触发）
+
+用户在 r48 末发现 `tests/test_engines.py` 1090 + `tests/test_custom_engine.py` 1020 **远超 800 软限**，而 r45-r48 多次 HANDOFF/CHANGELOG 错误声称"all tests < 800 maintained"。同轮 fix 拆分两文件，**所有 .py 现真正 < 800**；连续 audit-2/3/4/5 修 5 项数字 drift；本次 incident 直接催生 r49 的 4 项自动化 prevention。
+
+## 阶段八（r49）— Drift Prevention 自动化
+
+7 commits（C1-C7）综合执行：
+
+- **C1+C2 prelude — 4 项 prevention 工具落地**：
+  - `.git-hooks/pre-commit` 加 file-size guard（>800 行 .py 直接 block）
+  - 新建 `scripts/verify_docs_claims.py`（`--fast` 在 pre-commit ~1s + `--full` 在 CI 实跑）
+  - `HANDOFF.md` 顶部 fenced `<!-- VERIFIED-CLAIMS-START -->` **单一声称源**契约
+  - 顺手修了 r17 起 31 轮无人发现的 pre-existing tl_parser self-test CI bug（audit 工具用上才出土，**反向证明工具价值**）
+- **C3** — 关 r48 推迟的 2 LOW（NFC/NFD design choice docstring + regression test）
+- **C4-C5** — `file_safety.check_fstat_size` helper 推广到 **26 sites / 12 modules**：
+  - 整个 user-facing JSON ingestion surface 全 TOCTOU MITIGATED
+  - attack window 从 path-based stat→open 全部缩到 fd-based fstat 微秒级
+  - 演进：r46 audit 4 ACCEPTABLE → r47 csv only MITIGATED → r48 csv 3 readers MITIGATED → **r49 全 26 sites MITIGATED**
+- **C6** — r49 三维度审计：连续 9 轮 0 CRITICAL ✓ / 2 HIGH 同轮 fix
+- **C7** — docs sync + audit-tail：跑 `verify_docs_claims --full` 时发现 C2 引入的 self-recursion bug（`--full` 实跑 CI test steps 包含自己 → 死循环 → WinError 32），同轮 fix `execute_all_ci_test_steps` 加 self-skip guard
+
+## 阶段九（r50）— Zero-Debt Closure 模式确立
+
+3 commits + 1 deep-audit-tail：
+
+- **本轮起新规则**（用户指令 + written + enforced）：所有 audit findings (CRITICAL/HIGH/MEDIUM/LOW) 必须**同轮 fix，no tier exemption**。修正 r41-r49 默认 defer LOW/MEDIUM 的不成文做法。无法 fix 的归 **architectural decision** 显式文档化（不算 debt）。
+- **C1** — 关 r49 6 项 audit-deferred + **同轮 fix 2 latent r49 C4 fixture bugs**：
+  - `test_glossary_actors/system_json_rejects_toctou_growth_attack` 调错 method（`scan_game_directory` 而非 `scan_rpgmaker_database`），function early-return 致 mock 从未触发，rejection 巧合成立 → false-positive pass
+  - r49 audit agent 看 test 函数存在就判 covered，未深查测试逻辑是否真触发 mock
+  - 教训：**audit agent 提示词应明确要求"verify test really exercises mock target, not just function exists"**
+- **C2** — r50 三维度审计 7 findings + 4 architectural decisions 全部同轮 fix（**新规则首次执行**）
+- **C3** — docs sync + 5 轮滚动删 r45 detail
+- **C4 deep-audit-tail**（用户"深度检查"触发）— 同轮 fix 1 个 r50 C2 自身引入的 Security MEDIUM（CI grep filter `core\.file_safety` 改为 `file_safety` 防 qualified mock false-positive）
+
+**连续 10 轮 0 CRITICAL correctness 保持**（r35-r50）。
+
+---
+
+## 累积技术资产（r1-r50 视角）
+
+### 翻译能力
+- 三种 Ren'Py 翻译模式（direct / tl / retranslate） + screen 补充
+- 三种引擎（Ren'Py / RPG Maker MV-MZ / CSV-JSONL 通用）
+- 五大 LLM provider + 自定义引擎插件（dual-mode：importlib 快路径 + subprocess 沙箱）
+- 多语言（zh / zh-tw / ja / ko）端到端栈：prompt + alias chain + checker per-language + zh-tw 隔离 + generic fallback **5 层契约**
+
+### 质量保障链
+- 占位符保护 + ResponseChecker + 50+ 项 validate_translation
+- 漏翻率 12.12% → 4.01%（direct）/ 99.97% 翻译成功率（tl）
+
+### 架构健康度
+- 所有源 .py < 800 行（pre-commit 自动 enforce）
+- 26 sites / 12 modules 全 TOCTOU MITIGATED
+- 23/23 user-facing JSON loader OOM cap 全覆盖
+- 3 处 pickle 全白名单（pickle_safe + rpyc Tier 1+2 + rpa_unpacker）
+- 插件三通道防护（stdout 50M chars + stderr 10K + stdin lifecycle）
+- HTTPS 持久连接池（节省 ~90s / 600 次调用） + 32 MB 响应硬上限
+
+### 自动化工程
+- CI：6 jobs（2 OS × 3 Python）× 37 steps
+- pre-commit hook 4 件套（py_compile + 800 行 cap + meta-runner + verify_docs_claims --fast）
+- HANDOFF.md VERIFIED-CLAIMS 单一声称源（drift 不可能跨 commit 累积）
+- Mock target consistency CI guard（防 stale mock trap CLASS）
+
+### 文档体系（r50 末）
+- 根目录：`README.md` / `CLAUDE.md` (= `.cursorrules`) / `HANDOFF.md` / `CHANGELOG.md` / `CONTRIBUTING.md` / `SECURITY.md`
+- `docs/`：`ARCHITECTURE.md`（架构 + 数据流 + 校验链 + 引擎指南 + 测试体系）+ `REFERENCE.md`（常量 + 错误码 + 路线图）
+- `_archive/`：本文件 + `CHANGELOG_FULL.md`（r1-r45 总览 + r19/r43 正文）+ `CHANGELOG_RECENT_r50.md` + `TEST_PLAN_r50.md`
+
+---
+
+## 设计原则的演进
+
+最初 9 大开发原则在 r1-r10 沉淀，r41-r49 因 audit-tail incidents 累计 4 项工具化 prevention，r50 起加入第 10 条：
+
+10. **零欠账闭合（zero-debt closure）** — 所有 audit findings 必须同轮 fix，无法 fix 的归 architectural decision 显式文档化。

@@ -2,118 +2,67 @@
 
 ## Threat Model / 威胁模型
 
-**English**
+**English** — Local single-user translation tool. Runs on user's own machine, loads game files the user chose, talks to remote LLM APIs with user-provided API keys.
 
-This project is a local single-user translation tool. It runs on the user's own machine, loads game files the user has chosen to translate, and talks to remote LLM APIs using API keys the user provides. The intended threat model is:
+- **Trusted**: user's own filesystem, user-supplied API key, user-configured LLM endpoints, plugins under `custom_engines/` written by the user
+- **Untrusted**: game archive contents (`.rpa`, `.rpyc`), game scripts (`.rpy`), LLM-returned translation payloads, file paths embedded in any of the above
 
-- **Trusted**: the user's own filesystem, the user-supplied API key, LLM API endpoints the user explicitly configures, and the user's own custom plugins under `custom_engines/`.
-- **Untrusted**: game archive contents (`.rpa`, `.rpyc`), game scripts (`.rpy`), translation payloads returned by the LLM, and any file paths embedded in them.
+Loading a malicious RPA / rpyc archive **must not** lead to arbitrary code execution or write files outside the output directory.
 
-Specifically, loading a **malicious RPA or rpyc archive** from an unknown source **must not** lead to arbitrary code execution, nor write files outside the output directory.
+**中文** — 本项目是**本地单用户**翻译工具，运行在用户机器上，加载用户选定的游戏文件，用用户提供的 API Key 调用远程 LLM。
 
-**中文**
-
-本项目是**本地单用户**的翻译工具，运行在用户自己的机器上，加载用户选定的游戏文件，用用户提供的 API Key 调用远程 LLM。威胁模型：
-
-- **可信**：用户自己的文件系统、用户提供的 API Key、用户明确配置的 LLM endpoint、用户自己放到 `custom_engines/` 下的插件
+- **可信**：用户自己的文件系统、用户提供的 API Key、用户明确配置的 LLM endpoint、用户自己放在 `custom_engines/` 下的插件
 - **不可信**：游戏档案（`.rpa`、`.rpyc`）、游戏脚本（`.rpy`）、LLM 返回的翻译内容、以及这些数据中嵌入的任何文件路径
 
-特别地，**加载来源不明的 RPA 或 rpyc 档案**绝不能导致任意代码执行或写入 `outdir` 之外的文件。
+加载来源不明的 RPA 或 rpyc 档案**绝不能**导致任意代码执行或写入 outdir 之外。
 
----
+## Reporting / 漏洞报告
 
-## Reporting a Vulnerability / 漏洞报告
+**Privately**, not via public issues / 请通过**私密渠道**报告，不要直接开公开 issue：
 
-**English**
+- Preferred / 推荐：GitHub Security Advisories（Private Vulnerability Reporting）
+- Alternative / 替代：邮件维护者，主题 `[SECURITY] <短标题>`
+- 在问题修复前请**不要公开披露**
 
-Please report vulnerabilities **privately**, not through public issues.
+报告请包含 / Include:
 
-- Preferred: GitHub Security Advisories (Private Vulnerability Reporting) on the project's repository
-- Alternative: email the maintainer with subject `[SECURITY] <short title>`
-- Do **not** disclose the vulnerability publicly until it has been addressed
+1. 受影响文件 + 行号 / Affected file(s) + line number(s)
+2. 攻击前提 / Attack prerequisites
+3. 最小化 PoC（仅复现，**不要**带武器化载荷） / Minimal PoC (reproduction only, no weaponised payload)
+4. 建议缓解（可选） / Suggested mitigation (optional)
+5. 公告署名（可选） / Preferred credit name (optional)
 
-Include in your report:
-
-1. Affected file(s) and line number(s)
-2. Attack prerequisites (what an attacker must control / provide)
-3. Proof of concept (minimal, for reproduction only — do not include weaponised payloads)
-4. Suggested mitigation if you have one
-5. Your preferred credit name for the advisory
-
-**Response time commitment**:
-
-- Acknowledge receipt within **7 days**
-- Initial assessment within **14 days**
-- Fix and coordinated disclosure within **90 days** for confirmed vulnerabilities
-
-**中文**
-
-请通过**私密渠道**报告漏洞，不要直接开公开 issue。
-
-- 推荐：GitHub Security Advisories（Private Vulnerability Reporting）
-- 替代：邮件联系维护者，主题 `[SECURITY] <简要标题>`
-- 请在问题修复前**不要公开披露**
-
-报告请包含：
-
-1. 受影响的文件和行号
-2. 可利用条件（攻击者需要控制 / 提供什么）
-3. 最小化 PoC（仅用于复现，不要带武器化载荷）
-4. 可选：建议的缓解方案
-5. 您希望在公告中使用的署名
-
-**响应时间承诺**：
-
-- **7 天内**确认收到
-- **14 天内**完成初步评估
-- **90 天内**对确认漏洞完成修复与协调披露
-
----
-
-## Known Constraints / 已知限制
-
-**English**
-
-- **Custom plugins** (`custom_engines/`) run with the full privileges of the main process. Do not install plugins from untrusted sources.
-- **Tier 1 rpyc decompilation** executes the game's bundled Python interpreter in a subprocess. The subprocess inherits the parent environment; do **not** point Tier 1 at games from untrusted sources while sensitive environment variables (including API keys) are set.
-- **LLM translation output** is validated but not sandboxed. A compromised or adversarial LLM provider could in theory craft translations that bypass the 55+ validator checks and produce misleading but syntactically valid scripts.
-- **PyInstaller-built exe** (`dist/多引擎游戏汉化工具.exe`) has not been code-signed; Windows SmartScreen may warn on first run.
-
-**中文**
-
-- **自定义插件**（`custom_engines/` 下的文件）以主进程完整权限运行。不要加载来源不明的插件。
-- **Tier 1 rpyc 反编译**会启动游戏自带 Python 作为子进程。子进程会继承父进程环境（包括 API Key 等敏感环境变量），**不要**在设置了敏感环境变量的情况下对来源不明的游戏运行 Tier 1。
-- **LLM 翻译结果**经过校验但未沙箱化。理论上被控制的 / 恶意的 LLM 提供商可以构造绕过 55+ 项校验的翻译，产生语法合法但误导性的脚本。
-- **PyInstaller 构建的 exe**（`dist/多引擎游戏汉化工具.exe`）未做代码签名，Windows SmartScreen 可能在首次运行时警告。
-
----
+**响应时间承诺 / Response time**：
+- 7 天内确认收到 / Acknowledge within 7 days
+- 14 天内初步评估 / Initial assessment within 14 days
+- 90 天内完成修复与协调披露 / Fix + coordinated disclosure within 90 days
 
 ## Hardening Applied / 已实施的加固
 
-This section tracks security hardening that has been applied, so reviewers
-can confirm the corresponding code paths are still protected.
+| 防御 | 位置 | 防御目标 |
+|------|------|---------|
+| `SafeUnpickler` 白名单 | `core/pickle_safe.py` | 禁 `pickle.loads` 任意 RCE |
+| RPA index 反序列化 | `tools/rpa_unpacker.py` | 同上，refuses unknown classes |
+| RPA 解包路径校验 | `tools/rpa_unpacker.unpack_rpa` | ZIP-Slip 防护 |
+| Tier 2 rpyc 加载 | `tools/rpyc_decompiler._RestrictedUnpickler` | 白名单 + renpy/store 类映射到无害 stub |
+| Tier 1 rpyc 子进程 | `_DECOMPILE_HELPER_SCRIPT` | 内联 `_SafeUnpickler` 防游戏自带 Python 内 RCE |
+| Plugin sandbox | `core/api_plugin._SubprocessPluginClient` | opt-in subprocess + JSONL 隔离（`--sandbox-plugin`） |
+| Plugin stdout cap | 50M chars | DoS 防御（CJK 响应最坏 ~150 MB） |
+| Plugin stderr cap | 10 KB chars | 防 OOM crash-diag |
+| HTTPS 响应体上限 | `core/http_pool.py` `MAX_API_RESPONSE_BYTES = 32 MB` | 防被劫持 endpoint 流式无限数据 |
+| TOCTOU 二次校验 | `core/file_safety.check_fstat_size` | 26 sites / 12 modules 全 MITIGATED |
+| OOM 防护 | 23/23 user-facing JSON loader 50 MB cap | 巨型 JSON 内存炸 |
+| `api_key_file` 路径校验 | `core/config.py` | 拒绝指向敏感目录 + 8 KB 上限 |
 
-- **`core/pickle_safe.SafeUnpickler`**: whitelist-based pickle loader used in
-  place of `pickle.loads` for all untrusted archive / AST data.
-- **RPA index reader** (`tools/rpa_unpacker.py`): uses `SafeUnpickler`,
-  refuses unknown classes.
-- **RPA extraction** (`tools/rpa_unpacker.unpack_rpa`): verifies every
-  resolved destination path is contained within `outdir` (ZIP Slip guard).
-- **Tier 2 rpyc loader** (`tools/rpyc_decompiler._RestrictedUnpickler`):
-  whitelist strategy for builtins + real renpy/store classes mapped to
-  harmless stubs.
-- **Tier 1 helper script** (`_DECOMPILE_HELPER_SCRIPT`): inlines a minimal
-  `_SafeUnpickler` class inside the injected subprocess code so that
-  malicious rpyc payloads cannot reach `os.system` / `subprocess.Popen` /
-  `builtins.eval` through pickle opcodes even inside the game's own Python.
+## Known Constraints / 已知限制
 
----
+- **Custom plugins** (`custom_engines/`) 默认以主进程权限运行；使用 `--sandbox-plugin` 启用 subprocess 隔离
+- **Tier 1 rpyc decompilation** 启动游戏自带 Python 子进程，子进程继承父进程环境变量
+- **LLM translation output** 经过校验但未沙箱化；理论上恶意 provider 可构造绕过校验但语法合法的脚本
+- **PyInstaller exe** 未代码签名，Windows SmartScreen 首次运行可能告警
 
-## Scope Note / 范围说明
+## Scope / 范围
 
-**English**: This policy covers the Python source code in this repository.
-It does **not** cover vulnerabilities in upstream dependencies (there are
-none — the project uses only the Python standard library), in the Ren'Py
-runtime, in LLM provider APIs, or in the user's operating system.
+This policy covers Python source code in this repository. **Not** covered: upstream dependencies (none — pure stdlib), Ren'Py runtime, LLM provider APIs, user OS.
 
-**中文**：本策略覆盖本仓库的 Python 源代码。**不**覆盖上游依赖漏洞（本项目零依赖）、Ren'Py 运行时漏洞、LLM 提供商 API 漏洞、以及用户操作系统漏洞。
+本策略覆盖本仓库 Python 源代码。**不覆盖**上游依赖（本项目零依赖）、Ren'Py 运行时、LLM 提供商 API、用户操作系统。

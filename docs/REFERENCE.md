@@ -1,0 +1,255 @@
+# 参考手册
+
+本文档汇总：可配置常量速查、Error/Warning 代码索引、引擎与架构路线图。
+
+> 模块图、数据流、引擎指南、测试体系：见 [ARCHITECTURE.md](ARCHITECTURE.md)
+> 历史决策：见 [_archive/EVOLUTION.md](../_archive/EVOLUTION.md)
+
+---
+
+## 1. 校验相关常量
+
+| 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `MODEL_SPEAKING_PATTERNS` | `file_processor/checker.py` | 7 条模式 | W440 模型自述检测关键词 |
+| `PLACEHOLDER_ORDER_PATTERNS` | `file_processor/checker.py` | 4 组 (regex, name) | W251 占位符顺序提取 |
+| `MIN_CHINESE_RATIO` | `file_processor/validator.py` | 0.05 | W442 中文占比阈值 |
+| `LEN_RATIO_LOWER / UPPER` | `pipeline/helpers.py` | 0.15 / 2.5 | W430 长度异常阈值 |
+
+## 2. 翻译流程相关常量
+
+| 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `SKIP_FILES_FOR_TRANSLATION` | `file_processor/checker.py` | `{define, variables, screens, earlyoptions, options}.rpy` | 跳过翻译的配置文件 |
+| `CHECKER_DROP_RATIO_THRESHOLD` | `core/translation_utils.py` | 0.3 | chunk 丢弃率重试阈值 |
+| `MIN_DROPPED_FOR_WARNING` | `core/translation_utils.py` | 3 | 最小丢弃数触发警告 |
+| `MIN_DIALOGUE_LENGTH` | `core/translation_utils.py` | 4 | 定向翻译最小对话长度 |
+| `MAX_MEMORY_ENTRIES` | `core/glossary.py` | 10000 | 翻译记忆最大条目数 |
+| `SAVE_INTERVAL` | `core/translation_utils.py` | 10 | 批量写入间隔（每 N 次 mark 写磁盘） |
+| `_PH_TOKEN_RE` | `core/translation_utils.py` | `__RENPY_PH_\d+__` | 占位符令牌正则 |
+| `_QUOTE_STRIP_PAIRS` | `translators/tl_parser.py` | ASCII "" / 弯引号 "" / 全角 ＂＂ | fill_translation 引号剥离 |
+| 截断匹配阈值 | `file_processor/patcher.py:414` | 0.7 | AI 截断文本匹配阈值 |
+
+## 3. 流水线常量
+
+| 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `RISK_KEYWORDS` | `pipeline/helpers.py` | 14 个关键词 | 试跑文件风险评分 |
+| `MAX_FILE_RANK_SCORE` | `pipeline/helpers.py` | 200 | 文件大小评分上限 |
+| `RISK_KEYWORD_SCORE` | `pipeline/helpers.py` | 80 | 风险关键词加分 |
+| `SAZMOD_BONUS_SCORE` | `pipeline/helpers.py` | 30 | SAZMOD 模组额外加分 |
+
+## 4. 文本分析常量
+
+| 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `MIN_UNTRANSLATED_TEXT_LENGTH` | `translators/renpy_text_utils.py` | 20 | 漏翻检测最小文本长度 |
+| `MIN_ENGLISH_CHARS_FOR_UNTRANSLATED` | `translators/renpy_text_utils.py` | 12 | 漏翻检测最小英文字符数 |
+| `_MODEL_PRICING` | `core/api_client.py` | ~20 个模型 | 精确定价表 |
+
+---
+
+## 5. OOM 防护 — 50 MB 文件大小上限
+
+所有用户面 + 内部 JSON/text loader 在 `json.loads()` 或 `read_text()` 前加 `stat().st_size` gate，超限 warning + fallback。合法文件（< 50 MB）行为完全不变。
+
+**阈值选择 rationale**：
+- 50 MB 远超任何 legitimate 场景（典型 `translation_db.json` 几百 KB；游戏 RPG Maker `Map001.json` 低 MB；glossary 几十 KB）
+- 与 `MAX_API_RESPONSE_BYTES = 32 MB` 同量级
+- 每个 loader 独立 `_MAX_*_SIZE` 常量而非共享 helper — 保持 layering 规则（`file_processor` 不 import `core`），同时每 module 可独立调阈值
+
+### 5.1 User-facing loaders（operator-supplied path）
+
+| 常量 | 位置 |
+|------|------|
+| `_MAX_FONT_CONFIG_SIZE` | `core/font_patch.py` |
+| `_MAX_TRANSLATION_DB_SIZE` | `core/translation_db.py` |
+| `_MAX_V2_ENVELOPE_SIZE` | `tools/merge_translations_v2.py` |
+| `_MAX_EDITOR_INPUT_SIZE` | `tools/translation_editor.py`（覆盖 `_apply_v2_edits` + `_extract_from_db` + `import_edits`） |
+| `_MAX_CONFIG_FILE_SIZE` | `core/config.py` |
+| `_MAX_GLOSSARY_JSON_SIZE` | `core/glossary.py`（4 caller 共享 `_json_file_too_large` helper） |
+| `_MAX_REVIEW_DB_SIZE` | `tools/review_generator.py` |
+| `_MAX_ANALYZE_DB_SIZE` | `tools/analyze_writeback_failures.py` |
+| `_MAX_GATE_GLOSSARY_SIZE` | `pipeline/gate.py` |
+| `_MAX_RPGM_JSON_SIZE` | `engines/rpgmaker_engine.py`（2 sites） |
+| `_MAX_CSV_JSON_SIZE` | `engines/csv_engine.py`（3 readers） |
+| `_MAX_GUI_CONFIG_SIZE` | `gui_dialogs.py` |
+| `_MAX_UI_WHITELIST_SIZE` | `file_processor/checker.py` |
+
+### 5.2 Internal loaders（pipeline-generated / progress file）
+
+| 常量 | 位置 |
+|------|------|
+| `_MAX_PROGRESS_JSON_SIZE` | `engines/generic_pipeline.py` / `core/translation_utils.py::ProgressTracker._load` / `translators/_screen_patch.py` |
+| `_MAX_REPORT_JSON_SIZE` | `pipeline/stages.py`（2 sites） |
+
+### 5.3 TOCTOU 二次校验（Round 49 完成）
+
+整个 user-facing JSON ingestion surface **26 sites / 12 modules 全 TOCTOU MITIGATED**。共享 helper：
+
+- 位置：`core/file_safety.py::check_fstat_size(file_obj, max_size) -> tuple[bool, int]`
+- 93 行 stdlib-only，fail-open on `(OSError, ValueError)`
+- 23 expansion regression 集中到 `tests/test_file_safety.py` (12 C4) + `tests/test_file_safety_c5.py` (11 C5)
+- 所有 mock 统一打 `core.file_safety.os.fstat`（防 r48 mock target stale CRITICAL 重演 — CI grep step 兜底）
+
+**Symlink TOCTOU defense-in-depth**（informational watchlist，本地工具威胁模型下 not actionable）：
+- 当前 r49 fstat helper 把 race window 收紧到 microsecond 级 fd-based fstat
+- POSIX `open(link)` 在 t0 解析 → relink → fstat 在 t2 sees inode_B 的 path-swap symlink TOCTOU 在理论上仍可触发
+- CLI args 接受 path 的入口（`--game-dir` / `--output-dir` / `--config` / `--font-file` / `--font-config` / `--ui-button-whitelist`）均无 `is_symlink` guard
+- 当前威胁评估：本地单机工具无 multi-tenant 场景，attacker 已有本地 RW 权限即可 — 比 symlink TOCTOU 严重得多。当前 codebase **无 realistic exploit vector**
+
+---
+
+## 6. 其他内存 / 资源上限
+
+| 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `MAX_API_RESPONSE_BYTES` | `core/api_client.py` (re-export from `core/http_pool.py`) | 32 MB | HTTPS 响应体上限 |
+| `_MAX_PLUGIN_RESPONSE_CHARS` | `core/api_plugin.py` | 50M chars | plugin subprocess stdout per-line cap（**chars 不是 bytes** — Popen text mode；CJK 响应最坏字节 ~150 MB） |
+| `_MAX_PLUGIN_RESPONSE_BYTES` | `core/api_plugin.py` | alias | r43 原 name，r44 保留作 backward-compat alias |
+| plugin stderr | `core/api_plugin.py` | `read(10_000)` | 取尾 600 字符显示 |
+| `MAX_LOG_LINES` / `TRIM_TO` | `gui_pipeline.py` | 5000 / 3000 | GUI 日志 Text widget 行数上限 / 裁剪目标 |
+
+---
+
+## 7. API 调用默认参数（`core/api_client.py::APIConfig`）
+
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `rpm` | 0 | 每分钟请求数；0 = 不限（由 `--rpm` 覆盖） |
+| `rps` | 0 | 每秒请求数；0 = 不限 |
+| `timeout` | 180.0 秒 | 推理模型自动提升到 ≥ 300.0 秒 |
+| `temperature` | 0.1 | 低温保证一致性 |
+| `max_retries` | 5 | 429/5xx 自动重试上限 |
+| `max_response_tokens` | 32768 | response 的 max_tokens 参数 |
+| `sandbox_plugin` | False | True 时自定义引擎走 JSONL subprocess sandbox |
+| `use_connection_pool` | True | HTTPS 连接池（节省 ~90s / 600 次调用） |
+
+---
+
+## 8. 速率限制 + 退避重试
+
+| 常量 / 行为 | 位置 | 说明 |
+|------|------|------|
+| RPM / RPS 双重限制 | `core/api_client.py::RateLimiter` | 线程安全；`_second_counts` 批量清理 |
+| 429 / 5xx 自动重试 | `core/api_client.py::translate` | 指数退避 + jitter；优先 `Retry-After` 头；退避上限 60 秒 |
+
+---
+
+## 9. 模型定价表
+
+`core/api_client.py::_MODEL_PRICING`：精确匹配优先、按 model name 前缀 fallback、最终 `(input, output, False)` unknown 降级。
+
+| 提供商 | `--provider` | 默认模型 | 输入/输出 ($/M tokens) |
+|--------|-------------|---------|------------------------|
+| xAI | `xai` / `grok` | grok-4-1-fast-reasoning | $0.20 / $0.50 |
+| OpenAI | `openai` | gpt-4o-mini | $0.15 / $0.60 |
+| DeepSeek | `deepseek` | deepseek-chat | $0.14 / $0.28 |
+| Claude | `claude` | claude-sonnet-4 | $3.00 / $15.00 |
+| Gemini | `gemini` | gemini-2.5-flash | $0.15 / $0.60 |
+
+reasoning models（`grok-*-reasoning` / `deepseek-reasoner` / `o3-mini` 等）的 thinking tokens 按 3-5× 计费。
+
+---
+
+## 10. Chunk / Pipeline 默认参数
+
+| 字段 / 常量 | 位置 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--workers` (chunk 级并发) | `main.py` argparse | 3 | 同一文件内 chunk 并发翻译数 |
+| `--file-workers` (文件级并发) | `main.py` argparse | 1 | 同时翻译的文件数 |
+| `max_chunk_tokens` | `main.py` argparse | 4000 | chunk 切分上限；超过则 `_force_split` |
+| `min_dialogue_density` | `main.py` argparse | 0.20 | 低于此密度文件降级为 targeted 模式 |
+| `--pilot-count` | `main.py` argparse | 20 | 试跑文件数 |
+| `--gate-max-untranslated-ratio` | `main.py` argparse | 0.08 | 闸门最大漏翻比 |
+
+---
+
+## 11. 语言配置
+
+`core/lang_config.py::LANGUAGE_CONFIGS`：
+
+| 语言 code | `field_aliases` | `min_target_ratio` | `native_name` |
+|----------|----------------|------------------|---------------|
+| `zh` | `["zh", "chinese", "cn"]` | 0.05 | 简体中文 |
+| `zh-tw` | `["zh-tw", "zh_tw", "traditional_chinese"]` | 0.05 | 繁體中文（**刻意不含 bare "zh"** — 防 Simplified vs Traditional 混淆） |
+| `ja` | `["ja", "japanese", "jp"]` | 0.05 | 日本語 |
+| `ko` | `["ko", "korean", "kr"]` | 0.05 | 한국어 |
+
+`resolve_translation_field(item, lang_config)` 按 `field_aliases` 顺序查找；都不匹配时 fallback 到 generic `["translation", "target", "trans"]`。
+
+---
+
+## 12. Error / Warning Code 索引
+
+**处理原则**：E 级错误 → 丢弃翻译保留原文；W 级警告 → 保留翻译但记录日志。
+
+| Code | 级别 | 含义 | 处理 |
+|------|------|------|------|
+| E210_VAR_MISSING | error | 译文缺少原文中的 `[var]` 变量 | 丢弃翻译 |
+| W211_VAR_EXTRA | warning | 译文含原文没有的 `[var]` 变量 | 保留但告警 |
+| E220_TEXT_TAG_MISMATCH | error | `{tag}` 配对不一致 | 丢弃翻译 |
+| E230_MENU_ID_MISMATCH | error | `{#id}` 菜单标识符不一致 | 丢弃翻译 |
+| E240_FMT_PLACEHOLDER_MISMATCH | error | `%(name)s` 格式化占位符不一致 | 丢弃翻译 |
+| W251_PLACEHOLDER_ORDER | warning | 占位符顺序与原文不一致（集合相同） | 仅告警，仍 apply |
+| W410_GLOSSARY_MISS | warning | 术语表未命中 | 告警 |
+| E411_GLOSSARY_LOCK_MISS | error | 锁定术语未使用规定译名 | 标记错误 |
+| E420_NO_TRANSLATE_CHANGED | error | 禁翻片段被修改 | 标记错误 |
+| W430_LEN_RATIO_SUSPECT | warning | 译文长度比例异常 | 告警 |
+| W440_MODEL_SPEAKING | warning | 模型自我描述/多余解释 | 告警 |
+| W441_PUNCT_MIX | warning | 中英标点连续混用 | 告警 |
+| W442_SUSPECT_ENGLISH_OUTPUT | warning | 中文占比极低，疑似未翻译 | 告警 |
+| E250_CONTROL_TAG_DAMAGED | error | Ren'Py 控制标签在译文中缺失 | 标记错误 |
+| W460_POSSIBLE_OVERTRANSLATION | warning | Ren'Py 关键字可能被过度翻译 | 告警 |
+| W470_CONSECUTIVE_PUNCTUATION | warning | 连续中文标点（。。、！！） | 告警 |
+
+---
+
+## 13. 引擎路线图
+
+### 13.1 已完成
+
+| 引擎 | 优先级 | 占比 | 依赖 |
+|------|--------|------|------|
+| Ren'Py | P0 | ~35% | 纯标准库 |
+| RPG Maker MV/MZ | P0 | ~25% | 纯标准库 |
+| CSV/JSONL/JSON 通用 | P0 | 覆盖全部 | 纯标准库 |
+
+### 13.2 待实现
+
+| 优先级 | 引擎 | 占比 | 难度 | 依赖 |
+|--------|------|------|------|------|
+| 🟡 P1 | RPG Maker VX/Ace | ~5% | 中 | `rubymarshal`（可选） |
+| 🟡 P1 | Wolf RPG Editor | ~5% | 中 | 自定义二进制解析 |
+| 🟡 P1 | Godot | ~3% | 低 | 纯标准库 |
+| 🟢 P2 | Unity（XUnity） | ~10% | 低 | XUnity 导出文本 |
+| 🟢 P2 | Kirikiri 2/Z | ~5% | 中 | 参考 VNTextPatch |
+| 🟢 P2 | TyranoBuilder | ~3% | 低 | .ks 脚本 |
+| 🔵 P3 | Unreal Engine | ~5% | 高 | uasset 工具 |
+| 🔵 P3 | HTML5 / 浏览器 | ~3% | 最低 | JS/JSON 解析 |
+
+### 13.3 各引擎实现要点
+
+- **RPG Maker VX/Ace（P1）**：Ruby Marshal 格式（`.rxdata`/`.rvdata`/`.rvdata2`），需 `rubymarshal`。建议先只读支持（提取 → CSV），后续做直接回写。
+- **Wolf RPG Editor（P1）**：自定义二进制（`.wolf`/`.dat`）。建议通过 WolfTrans 导出格式 → CSVEngine 间接支持。
+- **Godot（P1）**：`.tscn`/`.gd`/`.tres` 均为文本格式，纯标准库。`.gd` 中 `tr("...")` 需正则提取，Godot CSV 翻译表可直接用 CSVEngine。
+- **Unity / XUnity（P2）**：不做 AssetBundle 解析。支持 XUnity AutoTranslator 导出的 `original=translation` 文本文件。
+- **Kirikiri 2/Z（P2）**：`.ks` 是文本格式可直接正则提取，`.scn` 二进制通过 VNTextPatch 导出 CSV。
+- **TyranoBuilder（P2）**：`.ks` 脚本格式类似 Kirikiri，实现方案相近。
+
+### 13.4 架构 TODO（非引擎）
+
+| 优先级 | 项目 | 状态 |
+|--------|------|------|
+| 🟠 P1 | 非中文目标语言端到端验证（ja / ko / zh-tw） | 5 层 code-level contract 已锁死，需真实 API + 真实游戏 |
+| 🟡 P2 | A-H-3 Medium / Deep（让 Ren'Py 走 generic_pipeline） | 需真实 API + 游戏验证 |
+| 🟡 P2 | S-H-4 Breaking（强制所有 plugins 走 subprocess，retire importlib） | dual-mode 已稳定，待用户拍板破坏性变更 |
+| 🟢 P3 | RPG Maker Plugin Commands（code 356） | 需真实 MV/MZ 游戏样本 |
+| 🟢 P3 | 加密 RPA / RGSS 归档 | 需加密游戏样本 |
+
+### 13.5 监控项（informational watchlist，not actionable）
+
+- Pickle 白名单 `_codecs.encode` / `copyreg._reconstructor` 理论链式攻击
+- HTTP 响应体 64 KB 精度偏差
+- TOCTOU fstat 自身 race 窗口（极小 microsecond 级，r49 末已大幅缩小）
+- Symlink path-swap TOCTOU（current codebase 无 exploit vector，本地 single-user 工具 not actionable）

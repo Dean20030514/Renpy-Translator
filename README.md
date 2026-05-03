@@ -1,930 +1,228 @@
-# 多引擎游戏汉化工具
+# 多引擎游戏汉化工具 / Multi-Engine Game Translator
 
-一个纯 Python 的游戏自动汉化工具，支持 **Ren'Py**、**RPG Maker MV/MZ**、**CSV/JSONL 通用格式**，通过 LLM API 翻译为简体中文。
-
-**零依赖**（纯标准库）| **图形界面 + 命令行** | **五大 LLM + 自定义引擎** | **多引擎自动检测** | **55+ 项翻译校验** | **断点续传** | **并发翻译** | **RPA 解包/打包 + rpyc 反编译** | **HTML 交互式校对**
-
-### 文档索引
-
-| 文档 | 读者 | 内容 |
-|------|------|------|
-| **README.md**（本文件） | 用户 | 快速开始、翻译模式、参数说明、故障排查 |
-| [CLAUDE.md](CLAUDE.md) | AI 助手 / 开发者 | 项目全局上下文（精简版，≤120 行） |
-| [docs/](docs/) | AI 助手 / 开发者 | 按需加载专题文档（数据流、校验、常量、引擎指南、路线图） |
-| [CHANGELOG_RECENT.md](CHANGELOG_RECENT.md) | 开发者 | 最近 3 轮变更详情 + 历史摘要 |
-| [TEST_PLAN.md](TEST_PLAN.md) | 开发者 | 测试覆盖明细、缺口分析、执行方法 |
-| `tests/test_all.py` + 5 拆分文件 | 开发者 | meta-runner 聚合 `test_api_client` / `test_file_processor` / `test_translators` / `test_glossary_prompts_config` / `test_translation_state`（round 29 拆分） |
-| [_archive/](_archive/) | 开发者 | 完整历史文档归档 |
+[简体中文](#简体中文) · [English](#english)
 
 ---
 
-## 特性一览
+## 简体中文
 
-- **三种翻译模式**：direct-mode（整文件翻译）、tl-mode（tl 框架翻译）、retranslate（残留英文补翻）
-- **四阶段一键流水线**：试跑 → 闸门评估 → 全量翻译 → 自动补翻
-- **占位符保护**：`[var]`、`{tag}`、`%(name)s` 等 Ren'Py 语法标记在翻译前替换为安全令牌，翻译后精确还原
-- **密度自适应**：低对话密度文件自动切换定向翻译模式，避免 AI 注意力被代码稀释
-- **术语一致性**：自动提取角色名、支持外部词典、翻译记忆自动学习、锁定术语 + 禁翻片段
-- **完整质量链**：发送前占位符保护 → 返回后 ResponseChecker → 回写后 55+ 项结构校验 → chunk 自动重试（截断时自动拆分）
-- **漏翻归因分析**：每条未翻译行自动归因（AI 未返回 / Checker 丢弃 / 回写失败）
-- **日志分级控制**：`--verbose` 输出 DEBUG 详情（dry-run 时含每文件密度/费用明细 + 直方图），`--quiet` 仅输出 WARNING 及以上
-- **AI 自动术语抽取**：试跑阶段后 AI 自动从译文中提取高频术语补充词典
-- **Ren'Py 7→8 show 修复**：自动为空 ATL 块的 `show` 语句补加冒号（RENPY-020 规则）
-- **多引擎支持**：Ren'Py（direct/tl/retranslate 三模式）+ RPG Maker MV/MZ（事件指令+数据库+System）+ CSV/JSONL 通用格式，`--engine auto` 自动检测
-- **CoT 思维链翻译**：`--cot` 启用直译→校正→意译三步流程，提升长难句和文化改编质量
-- **字体配置可定制**：`--font-config font_config.json` 自定义字号/布局参数，tl-mode 使用 `translate None` 覆盖模板（不修改 gui.rpy）
-- **会话级翻译缓存**：相同原文自动命中缓存，减少重复 API 调用，跨文件术语一致性自动保障
-- **GUI 增强**：实时进度条、自适应轮询（50/200ms）、日志自动裁剪（5000→3000 行）、优雅终止（保存进度后退出）
-- **Screen 文本翻译**：`--tl-screen` 翻译 screen 中 tl 框架无法提取的裸英文（`text`/`textbutton`/`tt.Action` Tooltip），作为 tl-mode 补充覆盖剩余 ~5% UI 文本
-- **RPA 解包**：纯标准库解包 RPA-3.0/2.0 档案，提取 .rpy/.rpyc 文件（`python -m tools.rpa_unpacker`）
-- **rpyc 反编译**：双层策略 — Tier 1 调用游戏自带 Python 完美反编译，Tier 2 独立提取文本（无需 Ren'Py 运行时）。覆盖只发布 .rpyc 的游戏（`python -m tools.rpyc_decompiler`）
-- **Ren'Py lint 集成**：调用游戏引擎 lint 检测翻译语法错误并自动修复，优雅降级（无运行时时回退到静态验证）
-- **文件级并行翻译**：`--file-workers N` 多文件同时翻译，与 `--workers`（chunk 并发）正交叠加
-- **锁定术语预替换**：locked_terms 在翻译前替换为令牌，翻译后还原为中文译名，作为 prompt 注入的补充保险
-- **跨文件翻译去重**：tl-mode 下相同完整句子（≥40 字符）只翻译一次，结果复用到所有重复条目，节省 ~20% API 调用
-- **Hook 模板**：运行时提取 Hook（注入游戏提取全部对话 JSON）+ 语言切换 UI 注入（自动扫描 tl/ 生成切换按钮）
-- **RPA 打包**：纯标准库生成 RPA-3.0 档案，自动收集翻译文件 + 字体 → 玩家拖入 game/ 即可使用（`python -m tools.rpa_packer`）
-- **HTML 交互式校对**：导出翻译为可编辑 HTML（搜索/过滤/修改跟踪），浏览器中编辑后导入回写（`python -m tools.translation_editor`）
-- **自定义翻译引擎**：`--provider custom --custom-module my_engine` 加载 `custom_engines/` 目录下的 Python 模块，支持批量和单句双接口
-- **插件子进程沙箱（opt-in）**：`--sandbox-plugin` 把自定义插件运行在独立 subprocess 中，通过 JSONL 协议通信，插件无法读取宿主环境变量（如 API key）、文件系统、内存。默认关闭保留 legacy importlib 快路径；新写插件同时兼容两种模式
-- **默认语言自动设置**：流水线打包前自动生成 `default_language.rpy`，玩家首次启动即显示中文
-- **统一引擎入口**：所有引擎（含 Ren'Py / RPG Maker / CSV/JSONL）通过 `engines.resolve_engine(...).run(args)` 单一入口分派；Ren'Py 三条管线（direct/tl/retranslate）+ screen 补充由 `RenPyEngine.run()` 内部路由
-- **TranslationDB 并发安全**：`core/translation_db.py` 使用 `threading.RLock` + `os.replace` 原子写入，支持多线程 `upsert_entry` 无数据竞争；generic_pipeline 的 `ThreadPoolExecutor` 并发翻译路径已验证零冲突
+一个**纯 Python**（零第三方依赖，Python ≥ 3.9）的游戏自动汉化工具，支持 **Ren'Py / RPG Maker MV-MZ / CSV-JSONL**，通过 LLM API 翻译为简体中文（也支持繁体中文 / 日语 / 韩语）。
 
----
+### 特性
 
-## 快速开始
+- **三种翻译模式**：direct（整文件）/ tl（框架槽位）/ retranslate（残留补翻）+ screen 补充
+- **多引擎自动检测**：Ren'Py / RPG Maker MV-MZ / CSV-JSONL，`--engine auto`
+- **五大 LLM**：xAI / OpenAI / DeepSeek / Claude / Gemini + 自定义引擎插件（可选 subprocess 沙箱）
+- **完整质量保障**：占位符保护 + ResponseChecker + 50+ 项 validate_translation
+- **多语言端到端**：zh / zh-tw / ja / ko，5 层 code-level contract
+- **GUI + CLI + 一键流水线**：Tkinter 图形界面 / 中文交互菜单 / 四阶段自动流水线
+- **预处理工具链**：RPA 解包 + rpyc 双层反编译 + lint 自动修复 + Hook 模板
+- **翻译后工具链**：RPA 打包（Mod 分发）+ HTML 交互式校对 + 多语言 v2 envelope 编辑
 
-### 环境要求
-
-- Python >= 3.9
-- 无第三方依赖（纯标准库）
-
-### 三种启动方式
+### 快速开始
 
 ```bash
-# 方式一：图形界面（推荐）
-python gui.py                  # 或双击 多引擎游戏汉化工具.exe
+# 1. 图形界面（推荐）
+python gui.py
+# 或双击 dist/多引擎游戏汉化工具.exe（先 python build.py 打包）
 
-# 方式二：中文交互菜单
-START.bat
+# 2. 中文交互菜单
+START.bat   # Windows
+# 或 python start_launcher.py
 
-# 方式三：命令行
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --tl-mode --tl-lang chinese --workers 5
-```
-
-### 先估费再翻译
-
-```bash
-# 扫描文件、估算 token 和费用（不调用 API，无需 API key）
-python main.py --game-dir "E:\Games\MyGame" --provider xai --dry-run
-
-# 详细分析：每文件对话密度 + 翻译策略 + 密度分布直方图 + 术语预览
-python main.py --game-dir "E:\Games\MyGame" --provider xai --dry-run --verbose
-```
-
----
-
-## 翻译模式
-
-### Direct-mode（整文件翻译）
-
-将完整 `.rpy` 文件发给 AI，AI 自行识别可翻译内容，以 JSON 返回翻译结果，程序 Patch 回原文件。
-
-```bash
-# 基本用法
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY
-
-# 指定模型和风格
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --model grok-4-1-fast-reasoning --genre adult
-
-# 断点续传
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --resume
-
-# 并发翻译（chunk 级 + 文件级并行）
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --workers 3 --file-workers 2 --rpm 600 --rps 10
-
-# 加载外部词典 + 复制资源 + 保存日志
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --dict terms.csv --copy-assets --log-file output/translate.log
-
-# 排除特定文件
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --exclude "tl/*" "*.bak"
-```
-
-**适用场景**：没有 tl 翻译框架的项目；AI 看到完整代码上下文，自然知道 `screen say(who, what):` 中的 `say` 是 screen 名不能翻译。
-
-### tl-mode（tl 框架翻译）
-
-扫描 Ren'Py 官方翻译框架 `tl/<lang>/` 中的空翻译槽位，AI 翻译后精确回填到对应行。
-
-```bash
-# 从头开始
+# 3. 命令行
 python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
     --tl-mode --tl-lang chinese --workers 5
 
-# 断点续跑
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --tl-mode --tl-lang chinese --workers 5 --resume
+# 4. 先估费（不调 API）
+python main.py --game-dir "E:\Games\MyGame" --provider xai --dry-run
 ```
 
-**适用场景**：已通过 Ren'Py SDK（`renpy.sh launcher` → 「Generate Translations」）在 `tl/<lang>/` 下生成翻译框架的项目。
+### 翻译模式选择
 
-**注意**：含 `\n` 换行的多行条目会标注 `[MULTILINE]` 标签，提示 AI 保留换行结构。
+| 模式 | CLI | 适用 | 回写精度 |
+|------|-----|------|---------|
+| direct-mode | 默认 | 无 SDK / 小项目一次到位 | 文本匹配（~96%） |
+| **tl-mode** | `--tl-mode --tl-lang chinese` | **大项目首选**（需先用 Ren'Py SDK 生成 tl/） | 行号精确（~99.97%） |
+| retranslate | `--retranslate` | 任何模式后扫尾补翻 | 原地替换 |
+| screen | `--tl-screen` | tl 框架未覆盖的 UI 文本（与 tl-mode 联用） | 原地替换源文件（自动 .bak） |
 
-**优势**：
-- 翻译行精确定位到行号，不存在"回写失败"问题
-- 回填精度远高于 direct-mode（行号定位 vs 文本匹配）
-- 引号剥离保护：AI 有时返回带外层引号的译文，回填前自动剥离，防止 `""text""` 格式错误
-- StringEntry 四层 fallback 匹配（精确 → strip → 去占位符令牌 → 转义规范化）
-- 翻译后自动清理修改过的 `.rpyc`/`.rpymc`/`.rpyb` 缓存（强制 Ren'Py 重编译），可用 `--no-clean-rpyc` 禁用
-
-### Screen 文本翻译（`--tl-screen`）
-
-tl 框架只提取 Say 对话和 `_()` 包裹的字符串，screen 定义中的裸 `text "..."`、`textbutton "..."`、`tt.Action("...")` 不会被提取。`--tl-screen` 直接修改源文件中的英文字符串，补充覆盖 tl-mode 遗漏的 UI 文本。
-
-```bash
-# 与 tl-mode 联用（推荐）：先翻译对话，再补充 screen 文本
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --tl-mode --tl-lang chinese --workers 5 --tl-screen
-
-# 独立运行（已完成 tl-mode 后补充）
-python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY --tl-screen
-```
-
-**注意**：
-- Screen 翻译**直接修改源 .rpy 文件**（自动创建 `.bak` 备份），游戏更新后需重新执行
-- 自动跳过 `_()` 包裹的文本（已由 tl 框架的 `translate strings:` 块覆盖）
-- 支持 `--dry-run` 预览（仅扫描统计，不调用 API）
-- 支持 `--resume` 断点续传
-
-### Retranslate（补翻模式）
-
-扫描已翻译文件中残留的英文对话行，构建小 chunk 精准补翻。
-
-```bash
-python main.py --game-dir "E:\Games\MyGame" --output-dir "E:\Games\MyGame" \
-    --provider xai --api-key YOUR_KEY --retranslate
-```
-
-每条残留英文行附带 ±3 行上下文，构建 ≤20 行的小 chunk，发送专用 prompt（每行标注 `>>>` 必须翻译）。原地回写，自动 `.bak` 备份。
-
-### CSV/JSONL 通用格式
-
-用任何外部工具（Translator++、VNTextPatch、GARbro 等）导出为 CSV/JSONL，用本工具做 AI 翻译，再用原工具回灌。**一天覆盖所有引擎**。
-
-```bash
-# CSV 翻译（单文件）
-python main.py --engine csv --game-dir texts.csv --provider xai --api-key KEY
-
-# CSV 翻译（整个目录）
-python main.py --engine csv --game-dir /path/to/csvs/ --provider xai --api-key KEY
-
-# JSONL 翻译
-python main.py --engine jsonl --game-dir texts.jsonl --provider xai --api-key KEY
-```
-
-**支持格式**：CSV（含 TSV）、JSONL、JSON 数组。列名自动匹配（original/source/text/en 等别名），支持 UTF-8 BOM。输出为 `translations_zh.csv` 或 `translations_zh.jsonl`。
-
-### RPG Maker MV/MZ
-
-自动检测 RPG Maker 游戏目录，提取对话（401/405 事件指令合并）、选项（102）、数据库（角色/物品/技能等 8 种 JSON）、系统文本（System.json）。
-
-```bash
-# 自动检测引擎（RPG Maker MV 或 MZ）
-python main.py --engine auto --game-dir "E:\Games\RPGMakerGame" --provider xai --api-key KEY
-
-# 显式指定引擎
-python main.py --engine rpgmaker --game-dir "E:\Games\RPGMakerGame" --provider xai --api-key KEY
-
-# dry-run 预估
-python main.py --engine rpgmaker --game-dir "E:\Games\RPGMakerGame" --provider xai --dry-run
-```
-
-**注意**：翻译后需手动安装中文字体到 `www/fonts/` 目录，工具会在翻译完成后给出提示。
-
-### 翻译模式选择指南
-
-| 维度 | Direct-mode | tl-mode | Retranslate |
-|------|------------|---------|-------------|
-| **适用场景** | 快速翻译、无 SDK 环境 | 精确翻译、有 Ren'Py SDK | 补翻残留英文 |
-| **前置条件** | 无 | 需先用 SDK 生成 `tl/<lang>/` | 需已有翻译输出 |
-| **回写精度** | 文本匹配（~96%） | 行号精确定位（~99.97%） | 原地替换 |
-| **推荐工作流** | 小项目一次到位 | 大项目首选（配合 `--tl-screen` 覆盖 UI） | 任何模式翻译后扫尾 |
-| **CLI 参数** | 默认 | `--tl-mode --tl-lang chinese` | `--retranslate` |
-
----
-
-## 一键流水线
-
-`one_click_pipeline.py` 按四阶段自动执行完整翻译流程：
+### 一键流水线
 
 ```bash
 python one_click_pipeline.py --game-dir "E:\Games\MyGame" \
-    --provider xai --api-key YOUR_KEY --model grok-4-1-fast-reasoning --clean-output
+    --provider xai --api-key YOUR_KEY --workers 5 --rpm 600 --rps 10 --clean-output
 ```
 
-| 阶段 | 说明 |
+四阶段：试跑（按风险评分挑 20 文件）→ 闸门评估 → 全量翻译 → 自动补翻。
+
+### 多引擎
+
+```bash
+# RPG Maker MV/MZ（自动检测 www/data/System.json）
+python main.py --engine auto --game-dir "E:\Games\RPGMakerGame" --provider xai --api-key KEY
+
+# CSV/JSONL 通用（一天覆盖所有引擎，与外部工具组合）
+python main.py --engine csv --game-dir texts.csv --provider xai --api-key KEY
+python main.py --engine jsonl --game-dir texts.jsonl --provider xai --api-key KEY
+```
+
+### 安全与质量
+
+- 翻译质量：direct-mode 漏翻 4.01% / tl-mode 翻译成功率 99.97%（The Tyrant ~140 文件实测）
+- 安全防护：3 处 pickle 全白名单 + ZIP Slip 防护 + 26 sites TOCTOU MITIGATED + plugin 三通道 bound
+- 测试覆盖：见 [HANDOFF.md](HANDOFF.md) `VERIFIED-CLAIMS` 块；CI 6 jobs (2 OS × 3 Python)
+
+### 文档
+
+| 文档 | 内容 |
 |------|------|
-| **Stage 1: 试跑批次** | 按风险评分自动挑选高风险文件先跑小批量，验证 API 连通性和翻译质量 |
-| **Stage 1.5: 自动术语抽取** | 试跑完成后 AI 自动从译文中提取高频术语，补充到 glossary |
-| **Stage 2: 闸门评估** | 结构错误阻断，漏翻比例超阈值仅告警（不中断） |
-| **Stage 3: 全量批处理** | 翻译全项目；低密度文件（< 20%）自动走定向翻译模式 |
-| **Stage 4: 补翻轮** | 扫描残留英文行，精准补翻，原地回写 |
+| **README.md**（本文件） | 用户面快速开始 / 翻译模式 / 引擎说明 |
+| [HANDOFF.md](HANDOFF.md) | 当前 build / 验证数字 / 推荐下一步 |
+| [CHANGELOG.md](CHANGELOG.md) | 阶段总览 + 最近 5 轮高亮 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 模块图 / 数据流 / 校验链 / 引擎扩展 / 测试体系 |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | 阈值常量 / Error 代码 / 路线图 |
+| [CLAUDE.md](CLAUDE.md) | AI 助手 / 开发者全局上下文 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 |
+| [SECURITY.md](SECURITY.md) | 威胁模型与漏洞报告 |
+| [_archive/EVOLUTION.md](_archive/EVOLUTION.md) | 历史决策（r1-r50） |
 
-**输出产物**：
+### 常用 CLI 参数
 
-```
-output/projects/<project_name>/
-  ├── stage2_translated/    # 翻译结果
-  ├── _pipeline/
-  │   ├── pilot_input/      # 试跑输入
-  │   ├── pilot_output/     # 试跑输出
-  │   ├── pilot.log         # 试跑日志
-  │   └── full.log          # 全量日志
-  └── pipeline_report.json  # 阶段结果与闸门状态
-```
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--game-dir` | 必填 | 游戏根目录（自动检测 game/ 子目录） |
+| `--provider` | 必填 | xai / openai / deepseek / claude / gemini / custom |
+| `--api-key` | — | API 密钥（dry-run 可不填） |
+| `--model` | 自动 | 模型名称 |
+| `--workers` | 1 | chunk 并发线程数 |
+| `--file-workers` | 1 | 文件级并行翻译数 |
+| `--rpm` / `--rps` | 60 / 5 | 速率限制 |
+| `--target-lang` | `zh` | 目标语言；逗号分隔多语言（`zh,ja,zh-tw`）触发外层语言循环 |
+| `--engine` | `auto` | auto / renpy / rpgmaker / csv / jsonl |
+| `--config` | 自动 | 默认查找 `<game-dir>/renpy_translate.json` |
 
-**常用参数**：
+完整参数：`python main.py --help`
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--pilot-count` | 20 | 试跑文件数 |
-| `--gate-max-untranslated-ratio` | 0.08 | 闸门允许的最大漏翻比例 |
-| `--clean-output` | 否 | 开始前清理输出目录 |
-| `--min-dialogue-density` | 0.20 | 低密度阈值（低于此值走定向翻译） |
-| `--package-name` | CN_patch_game | 输出 zip 包名 |
+### 故障排查
 
-| `--tl-mode` | 否 | 流水线中使用 tl-mode 翻译 |
+- **API 超时**：增大 `--timeout`（默认 180s，推理模型自动 300s）/ 减少 `--workers` / 检查代理
+- **进度文件损坏**：自动重置；如需从头开始删 `output/progress.json` 或 `output/tl_progress.json`
+- **漏翻率偏高**：用 `--tl-mode` 替代 direct-mode；或跑一键流水线（自动试跑→闸门→全量→补翻）
+- **词典文件不生效**：CSV 首行须为 `english,chinese`；JSONL 每行 `{"en":"...","zh":"..."}`
 
-其余参数（`--dict` / `--exclude` / `--copy-assets` / `--target-lang` 等）透传到 `main.py`。
+### 许可
+
+[MIT License](LICENSE)
 
 ---
 
-## Ren'Py 7→8 升级扫描
+## English
 
-独立工具，扫描 `.rpy` 中的 Python 2 → 3 兼容性问题（20 条规则），支持自动修复。
+A **pure-Python** (zero third-party dependencies, Python ≥ 3.9) automatic game translation tool. Supports **Ren'Py / RPG Maker MV-MZ / CSV-JSONL**, translating to Simplified Chinese via LLM APIs (also Traditional Chinese / Japanese / Korean).
 
-包含 RENPY-020 规则：自动为空 ATL 块的 `show` 语句补加冒号（Ren'Py 8 要求 `show` 后跟 ATL 块时必须带冒号）。
+### Features
+
+- **Three translation modes**: direct (whole-file) / tl (framework slots) / retranslate (residual catch-up) + screen text
+- **Multi-engine auto-detection**: Ren'Py / RPG Maker MV-MZ / CSV-JSONL, `--engine auto`
+- **Five LLM providers**: xAI / OpenAI / DeepSeek / Claude / Gemini + custom plugin (optional subprocess sandbox)
+- **Full quality chain**: placeholder protection + ResponseChecker + 50+ validate_translation rules
+- **End-to-end multilingual**: zh / zh-tw / ja / ko with 5-layer code-level contracts
+- **GUI + CLI + one-click pipeline**: Tkinter GUI / interactive CLI menu / 4-stage auto pipeline
+- **Pre-processing toolkit**: RPA unpacker + 2-tier rpyc decompiler + lint auto-fixer + injection hook templates
+- **Post-processing toolkit**: RPA packer (mod distribution) + HTML interactive review + multi-language v2 envelope editor
+
+### Quickstart
 
 ```bash
-# 仅扫描报告
-python -m tools.renpy_upgrade_tool ./game
+# 1. GUI (recommended)
+python gui.py
+# or double-click dist/MultiEngineTranslator.exe (after `python build.py`)
 
-# 自动修复并备份
-python -m tools.renpy_upgrade_tool ./game --fix --backup
-```
+# 2. Interactive CLI menu
+python start_launcher.py
 
----
-
-## 中文交互启动器
-
-`START.bat` 提供 9 种模式的中文菜单，适合不想记命令行参数的用户：
-
-| 模式 | 说明 |
-|------|------|
-| 1 | Ren'Py 主流程翻译（从头开始） |
-| 2 | Ren'Py 主流程翻译（断点续跑） |
-| 3 | Ren'Py 仅扫描与费用估算（Dry-run） |
-| 4 | Ren'Py 一键流水线（试跑 + 闸门 + 全量 + 补翻） |
-| 5 | Ren'Py tl-mode 翻译（从头开始） |
-| 6 | Ren'Py tl-mode 翻译（断点续跑） |
-| 7 | Ren'Py 7→8 升级扫描 |
-| 8 | RPG Maker MV/MZ 翻译 |
-| 9 | CSV/JSONL 通用格式翻译 |
-
----
-
-## 支持的 API
-
-| 提供商 | `--provider` | 默认模型 | 输入/输出价格 ($/M tokens) |
-|--------|-------------|---------|--------------------------|
-| xAI | `xai` / `grok` | grok-4-1-fast-reasoning | $0.20 / $0.50 |
-| OpenAI | `openai` | gpt-4o-mini | $0.15 / $0.60 |
-| DeepSeek | `deepseek` | deepseek-chat | $0.14 / $0.28 |
-| Claude | `claude` | claude-sonnet-4 | $3.00 / $15.00 |
-| Gemini | `gemini` | gemini-2.5-flash | $0.15 / $0.60 |
-
-支持 `--input-price` / `--output-price` 自定义价格覆盖。
-
-**重试策略**：指数退避 + 随机 jitter，优先使用 `Retry-After` 响应头，等待时间上限 60 秒。
-
----
-
-## 项目架构
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  入口层                                                       │
-│  gui.py                            Tkinter 图形界面           │
-│  START.bat → start_launcher.py     中文交互启动器（9 种模式） │
-│  main.py                           CLI 入口 + --engine 路由   │
-│  one_click_pipeline.py             四阶段流水线 CLI            │
-├──────────────────────────────────────────────────────────────┤
-│  Ren'Py 翻译层  translators/                                  │
-│  direct.py             direct-mode 整文件翻译引擎（含 dry-run）│
-│  retranslator.py       补翻引擎（残留英文检测 + 精准补翻）    │
-│  tl_mode.py            tl-mode 翻译框架槽位引擎               │
-│  screen.py             screen 文本翻译引擎（--tl-screen）     │
-│  tl_parser.py          tl/ 框架状态机解析器                    │
-│  renpy_text_utils.py   Ren'Py 文本分析公共函数                │
-├──────────────────────────────────────────────────────────────┤
-│  多引擎层  engines/                                           │
-│  engine_base.py        EngineProfile + TranslatableUnit + ABC │
-│  engine_detector.py    引擎自动检测 + --engine CLI 路由       │
-│  renpy_engine.py       Ren'Py 薄包装（委托 translators/）    │
-│  rpgmaker_engine.py    RPG Maker MV/MZ（事件+数据库+System） │
-│  csv_engine.py         CSV/JSONL 通用格式                     │
-│  generic_pipeline.py   通用翻译流水线（6 阶段）               │
-├──────────────────────────────────────────────────────────────┤
-│  核心层  core/                                                │
-│  api_client.py         多提供商 API 客户端 + 限流 + 计费 + 自定义引擎加载 │
-│  config.py             全局配置（三层合并）                    │
-│  lang_config.py        目标语言抽象层                          │
-│  prompts.py            Prompt 模板工厂 + 引擎 addon + CoT     │
-│  glossary.py           术语表 + 翻译记忆 + 锁定/禁翻          │
-│  translation_db.py     翻译元数据 JSON 存储                    │
-│  translation_utils.py  公共辅助（ChunkResult/ProgressTracker） │
-├──────────────────────────────────────────────────────────────┤
-│  基础设施层                                                   │
-│  file_processor/         拆分/回写/校验/占位符保护（4 子模块） │
-│  pipeline/               一键流水线拆分包（helpers/gate/stages）│
-├──────────────────────────────────────────────────────────────┤
-│  工具层  tools/                                               │
-│  rpa_unpacker.py         RPA-3.0/2.0 纯标准库解包             │
-│  rpa_packer.py           RPA-3.0 纯标准库打包（翻译 Mod 分发）│
-│  rpyc_decompiler.py      rpyc 反编译（双层策略）              │
-│  renpy_lint_fixer.py     lint 集成 + 自动修复                  │
-│  translation_editor.py   HTML 交互式校对工具（导出/编辑/导入） │
-│  font_patch.py           字体补丁（gui.*_font 改写）           │
-│  renpy_upgrade_tool.py   Ren'Py 7→8 升级扫描 + 自动修复       │
-│  review_generator.py     翻译审校报告生成                      │
-├──────────────────────────────────────────────────────────────┤
-│  插件层  custom_engines/                                      │
-│  example_echo.py         自定义翻译引擎示例（双接口）          │
-├──────────────────────────────────────────────────────────────┤
-│  测试层（267 个自动化用例）                                    │
-│  tests/test_all.py       综合模块测试（94 用例）               │
-│  tests/test_engines.py   引擎抽象层测试（62 用例）             │
-│  tests/smoke_test.py     冒烟测试（13 用例）                   │
-│  tests/test_rpa_unpacker.py  RPA 解包测试（14 用例）           │
-│  tests/test_rpyc_decompiler.py  rpyc 反编译测试（17 用例）     │
-│  tests/test_lint_fixer.py    lint 修复测试（15 用例）          │
-│  tests/test_tl_dedup.py  tl 去重测试（10 用例）               │
-│  tests/test_batch1.py    批次一功能测试（18 用例）             │
-│  tests/test_translation_editor.py  翻译编辑器测试（13 用例）   │
-│  tests/test_custom_engine.py  自定义引擎测试（11 用例）        │
-│  tests/test_single.py    单文件端到端测试（需 API）            │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### 模块调用关系
-
-```
-gui.py (图形界面) ─── start_launcher.py (CLI 菜单)
-       │                      │
-       └──────────────────────┘
-                │ subprocess 调用
-                ▼
-main.py (CLI 入口 + --engine 路由)
-  ├── [engine=auto/renpy] → translators/ Ren'Py 三条管线
-  │    ├── translators/direct.py         (direct-mode)
-  │    ├── translators/retranslator.py   (补翻)
-  │    ├── translators/tl_mode.py        (tl-mode)
-  │    ├── translators/screen.py         (screen 裸英文翻译)
-  │    └── translators/tl_parser.py      (tl/ 解析器)
-  │
-  ├── [engine=rpgmaker/csv/jsonl] → engines/ 多引擎架构
-  │    ├── engines/engine_detector.py  (检测+路由)
-  │    ├── engines/engine_base.py      (EngineProfile/TranslatableUnit)
-  │    ├── engines/generic_pipeline.py (6 阶段通用流水线)
-  │    ├── engines/rpgmaker_engine.py  (RPG Maker MV/MZ)
-  │    └── engines/csv_engine.py       (CSV/JSONL)
-  │
-  ├── core/ 共享基础设施
-  │    ├── api_client.py / prompts.py / glossary.py
-  │    ├── translation_db.py / translation_utils.py
-  │    ├── config.py / lang_config.py
-  │    └── file_processor/ (splitter/patcher/checker/validator)
-  │
-  ├── one_click_pipeline.py → pipeline/ (Ren'Py 四阶段流水线)
-  │
-  ├── tools/ 独立工具（可单独运行）
-  │    ├── rpa_unpacker.py / rpa_packer.py / rpyc_decompiler.py / renpy_lint_fixer.py
-  │    ├── translation_editor.py / font_patch.py / renpy_upgrade_tool.py / review_generator.py
-  │    └── verify_alignment.py / revalidate.py / analyze_writeback_failures.py
-  │
-  └── custom_engines/ 自定义翻译引擎插件（example_echo.py 示例）
-```
-
-所有底层模块仅依赖 Python 标准库，无循环依赖。
-
----
-
-## 翻译质量保障
-
-### 占位符保护
-
-翻译前将 Ren'Py 语法标记替换为安全令牌，翻译后精确还原：
-
-```
-原文: "[name] says: {color=#f00}Hello{/color}"
-保护: "__RENPY_PH_0__ says: __RENPY_PH_1__Hello__RENPY_PH_2__"
-还原: "[name] says: {color=#f00}你好{/color}"
-```
-
-### ResponseChecker（返回后校验）
-
-- `check_response_item()`：占位符集合一致性 + 原文/译文非空
-- `check_response_chunk()`：返回条数与期望条数一致性
-- 不通过 → 丢弃该条，保留原文（宁可漏翻也不误翻）
-- **chunk 自动重试**：API 错误或高丢弃率（drop rate 超阈值）时自动重试 1 次
-
-### validate_translation（回写后校验，55+ 项）
-
-| 类别 | 检查内容 | Error/Warning Code |
-|------|----------|-------------------|
-| 结构 | 行数一致、缩进保留、关键字保留 | — |
-| 变量 | `[var]` 缺失 / 多余 | E210 / W211 |
-| 标签 | `{tag}` 配对不一致 | E220 |
-| 菜单 | `{#id}` 标识符不一致 | E230 |
-| 格式 | `%(name)s` 占位符不一致 | E240 |
-| 转义 | 转义序列不一致 | E250 |
-| 顺序 | 占位符顺序偏差 | W251 |
-| 术语 | 锁定术语未使用 / 禁翻片段被改 | E411 / E420 |
-| 长度 | 译文长度比例异常 | W430 |
-| 风格 | 模型自述 / 标点混用 / 中文占比低 | W440 / W441 / W442 |
-| 缓存 | 缓存命中译文与原文不匹配 | W460 |
-| 一致性 | 相同原文不同译文 | W470 |
-
-### 漏翻归因分析
-
-翻译完成后，每条未翻译行自动归因为：
-- **AI 未返回**：AI 在响应中遗漏了该行
-- **Checker 丢弃**：校验不通过被丢弃（保留原文）
-- **回写失败**：翻译存在但回写到文件时匹配失败
-
-归因数据写入 `pipeline_report.json` 和 `translation_db.json`。
-
----
-
-## 术语表与词典
-
-### 自动术语表
-
-- 自动扫描 `define Character(...)` 和 `DynamicCharacter(...)` 提取角色名
-- 翻译记忆：成功翻译的内容自动学习（按质量过滤）
-- 每次 API 调用自动附带术语表（控制长度避免超 token）
-- 线程安全，支持并发翻译
-
-### glossary.json 结构
-
-```json
-{
-  "characters": {"mc": "主角", "mother": "母亲"},
-  "terms": {"Save Game": "保存游戏"},
-  "memory": {"You enter the room.": "你走进了房间。"},
-  "locked_terms": ["mc"],
-  "no_translate": ["Discord"]
-}
-```
-
-- `locked_terms`：锁定术语的 key 列表；译文必须使用规定译名，否则报 E411 错误
-- `no_translate`：禁翻片段列表；原文含这些片段时译文须保留相同英文，否则报 E420 错误
-
-### 外部词典格式
-
-**CSV**（支持 `.csv` / `.tsv` / `.txt`）：
-```csv
-english,chinese
-Save Game,保存游戏
-Load Game,读取存档
-```
-
-**JSONL**：
-```jsonl
-{"en": "Save Game", "zh": "保存游戏"}
-{"en": "Load Game", "zh": "读取存档"}
-```
-
-字段名支持多种别名：`en`/`original`/`source` 和 `zh`/`translation`/`target`。
-
----
-
-## 输出结构
-
-### direct-mode 输出
-
-```
-output/
-├── game/                  # 翻译后的 .rpy（保持原目录结构）
-├── glossary.json          # 术语表（自动维护）
-├── translation_db.json    # 逐行翻译元数据
-├── progress.json          # 断点续传进度
-├── report.json            # 翻译报告（token 用量 + 费用）
-└── warnings.txt           # 警告详情
-```
-
-### tl-mode 输出
-
-tl-mode 直接修改 `tl/<lang>/` 下的文件（原地回填），不生成副本：
-```
-output/
-├── glossary.json          # 术语表
-├── translation_db.json    # 翻译元数据
-├── tl_progress.json       # chunk 级断点续传进度
-└── tl_mode_report.json    # tl-mode 翻译报告
-```
-
-### 一键流水线输出
-
-```
-output/projects/<project_name>/
-├── stage2_translated/     # 翻译结果（保持原目录结构）
-├── _pipeline/
-│   ├── pilot_input/       # 试跑输入文件
-│   ├── pilot_output/      # 试跑输出
-│   ├── pilot.log          # 试跑阶段日志
-│   ├── full.log           # 全量阶段日志
-│   └── retranslate_*.json # 补翻进度和数据
-├── pipeline_report.json   # 完整报告
-└── CN_patch_game.zip      # 最终补丁包
-```
-
----
-
-## 预处理工具
-
-游戏只发布了 .rpa 档案或 .rpyc 编译文件？使用预处理工具链提取源文件后再翻译。
-
-```bash
-# 1. 解包 RPA 档案（提取 .rpy/.rpyc 文件）
-python -m tools.rpa_unpacker "E:\Games\MyGame\game\archive.rpa" --scripts-only
-
-# 2. 反编译 .rpyc（需要完整游戏目录）
-python -m tools.rpyc_decompiler "E:\Games\MyGame" --confirm
-
-# 2b. 无 Ren'Py 运行时时，独立提取文本（Tier 2 降级）
-python -m tools.rpyc_decompiler "E:\Games\MyGame" --fallback --json-out strings.json
-
-# 3. 翻译完成后，运行 lint 检查并自动修复语法错误
-python -m tools.renpy_lint_fixer "E:\Games\MyGame"
-```
-
-**Hook 模板**（手动注入游戏 `game/` 目录后启动游戏）：
-- `resources/hooks/extract_hook.rpy` — 运行时提取全部对话到 JSON（静态解析的兜底方案）
-- `resources/hooks/language_switcher.rpy` — 自动生成语言切换按钮（玩家体验增强）
-
----
-
-## 翻译后工具
-
-### RPA 打包（Translation Mod 分发）
-
-将翻译文件打包为 `.rpa` 档案，玩家拖入 `game/` 目录即可使用。
-
-```bash
-# 自动收集翻译文件 + 字体 + Hook 脚本
-python -m tools.rpa_packer --game-dir "E:\Games\MyGame" --tl-lang chinese --output CN_patch.rpa
-
-# 手动指定文件
-python -m tools.rpa_packer tl/chinese/ fonts/NotoSansSC.ttf --base-dir game/ -o CN_patch.rpa
-```
-
-### HTML 交互式校对
-
-导出翻译为可编辑 HTML，校对者在浏览器中搜索/过滤/编辑，然后导入修改。
-
-```bash
-# 导出（tl-mode 翻译结果）
-python -m tools.translation_editor --export --tl-dir game/tl/chinese --output review.html
-
-# 导出（translation_db.json）
-python -m tools.translation_editor --export --db output/translation_db.json --output review.html
-
-# 在浏览器中编辑后，点击"Export Edits"按钮下载 translation_edits.json，然后导入：
-python -m tools.translation_editor --import-json translation_edits.json
-```
-
-### 自定义翻译引擎
-
-在 `custom_engines/` 目录下放置 Python 模块，实现 `translate_batch()` 或 `translate()` 接口：
-
-```bash
-python main.py --game-dir "E:\Games\MyGame" --provider custom --custom-module my_engine --tl-mode --tl-lang chinese
-```
-
-参见 `custom_engines/example_echo.py` 示例。
-
----
-
-## 参数完整说明
-
-### main.py
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--game-dir` | 必填 | 游戏根目录（自动检测 `game/` 子目录，自动排除 `renpy/` 引擎文件） |
-| `--provider` | 必填 | API 提供商：`xai`/`openai`/`deepseek`/`claude`/`gemini`/`custom` |
-| `--api-key` | — | API 密钥（dry-run 模式可不填） |
-| `--model` | 自动 | 模型名称（留空使用提供商默认） |
-| `--output-dir` | `output` | 输出目录 |
-| `--genre` | `adult` | 翻译风格：`adult`/`visual_novel`/`rpg`/`general` |
-| `--rpm` | 60 | 每分钟请求数限制 |
-| `--rps` | 5 | 每秒请求数限制 |
-| `--timeout` | 180 | API 超时秒数 |
-| `--temperature` | 0.1 | 生成温度（低 = 一致性高） |
-| `--max-chunk-tokens` | 4000 | 分块最大 token 数 |
-| `--max-response-tokens` | 32768 | API 最大响应 token 数 |
-| `--workers` | 1 | 每文件内 chunk 并发线程数 |
-| `--file-workers` | 1 | 文件级并行翻译线程数（>1 时多文件同时翻译） |
-| `--resume` | — | 从上次中断处继续 |
-| `--dry-run` | — | 仅扫描统计，预估费用 |
-| `--retranslate` | — | 补翻模式 |
-| `--tl-mode` | — | tl 框架翻译模式 |
-| `--tl-lang` | `chinese` | tl 语言子目录名 |
-| `--tl-priority` | — | 仅翻译 `tl/` 下的脚本 |
-| `--min-dialogue-density` | 0.20 | 低密度阈值（低于此值走定向翻译） |
-| `--dict` | — | 外部词典路径（可多个） |
-| `--exclude` | — | 排除文件 glob 模式（可多个） |
-| `--copy-assets` | — | 复制非 `.rpy` 资源文件 |
-| `--patch-font` | — | 启用自动字体补丁 |
-| `--font-file` | — | 指定字体文件路径 |
-| `--target-lang` | `zh` | 目标语言代码 |
-| `--log-file` | — | 日志输出文件 |
-| `--input-price` | 自动 | 自定义输入价格 ($/M tokens) |
-| `--output-price` | 自动 | 自定义输出价格 ($/M tokens) |
-| `--verbose` | — | 输出 DEBUG 级别详细日志 |
-| `--quiet` | — | 仅输出 WARNING 及以上日志 |
-| `--stage` | `single` | 阶段标记（流水线内部使用） |
-| `--tl-screen` | — | 翻译 screen 中的裸英文字符串（可与 `--tl-mode` 联用） |
-| `--engine` | `auto` | 游戏引擎类型（auto/renpy/rpgmaker/csv/jsonl） |
-| `--cot` | — | CoT 思维链翻译（直译→校正→意译，质量更高费用+30-50%） |
-| `--font-config` | — | 字体配置文件路径（font_config.json） |
-| `--no-clean-rpyc` | — | 跳过 tl-mode 翻译后的 .rpyc 缓存清理 |
-| `--custom-module` | — | 自定义翻译引擎模块名（位于 `custom_engines/` 目录，配合 `--provider custom`） |
-| `--config` | 自动 | 配置文件路径（默认查找 game-dir 下 renpy_translate.json） |
-
----
-
-## 设计解决的关键问题
-
-### 文件拆分与密度自适应
-
-- 按 `label` / `screen` / `init` / `translate` 等顶层块边界拆分
-- 超大单块在空行处自动强制拆分
-- 每块 < 4K tokens（可配置 `--max-chunk-tokens`）
-- 行偏移量追踪，确保多块翻译结果精确重组
-- chunk 间传递 `prev_context`（前一 chunk 末尾 5 行），保证跨块翻译连贯性
-- 低密度文件（对话占比 < 20%）自动提取对话行 + 上下文，定向翻译
-- 纯配置文件（`define.rpy` / `variables.rpy` / `screens.rpy` / `options.rpy` / `earlyoptions.rpy`）自动跳过
-
-### 防止代码结构被修改
-
-- AI 仅返回 JSON `[{"line": N, "original": "...", "zh": "..."}]`
-- 程序只替换引号内文本（双引号/单引号/三引号/`_()` 包裹），不碰代码
-- 替换前验证：原文必须在指定行精确匹配（±3 行模糊搜索）
-- 第四遍全文扫描跳过已修改行，防止同一原文在多处出现时被重复替换
-- 回写前安全转义（反斜杠、引号、换行）
-
-### 并发与容错
-
-- `--workers N` 支持文件内多 chunk 并行翻译
-- 6 级 JSON 解析容错：直接解析 → Markdown 提取 → 括号搜索 → 尾逗号修复 → 逐对象提取 → 字段顺序容错
-- 指数退避重试（429/5xx 错误）
-- chunk 级断点续传，崩溃后 `--resume` 恢复
-- ETA 进度显示
-
-### 费用追踪
-
-- 实时统计 input/output tokens
-- 按提供商 + 模型精确定价（支持 20+ 模型）
-- 推理模型 thinking tokens 按额外倍率计费
-- `--dry-run` 预估费用（零 API 调用）
-- 支持 `--input-price` / `--output-price` 自定义覆盖
-
----
-
-## 组合式工作流
-
-本工具负责「AI 翻译 + 校验」，可与其他工具组合：
-
-### 模式 A：解包 → 本工具 → 字体补丁
-
-1. 使用解包工具（unrpyc 等）获取 `.rpy` 源文件
-2. 使用 `main.py` 或 `one_click_pipeline.py` 翻译
-3. 使用 `projz` / `renpy-chinese-tl` 等项目的字体补丁方案打包
-
-### 模式 B：SDK 生成 tl → 本工具 tl-mode → 原地回填（推荐）
-
-1. 通过 Ren'Py SDK 生成 `tl/<lang>/` 翻译框架
-2. `--tl-mode --tl-lang chinese --workers 5` 翻译空槽位
-3. 支持多线程并发、断点续跑、`.bak` 自动备份
-4. 后续可用 `renpy-translator` 做增量校对
-
-### 模式 C：projz 扫描 → 本工具翻译 → projz 回写
-
-1. `projz` 扫描项目生成 translate 脚本
-2. 本工具翻译 `.rpy` 中的可见字符串
-3. 交回 `projz` 回写或构建补丁包
-
-### 模式 D：LinguaGacha / AiNiee 前处理 → 本工具翻译
-
-1. 使用其他工具预处理（归一化、冗余清理、术语抽取）
-2. 预处理后的 `.rpy` 交给本工具翻译
-3. 结合上述任意模式完成最终打包
-
----
-
-## 验证数据
-
-以 The Tyrant（~140 文件）为测试项目：
-
-| 模式 | 翻译成功率 | 费用 | 耗时 | 备注 |
-|------|-----------|------|------|------|
-| direct-mode | 95.99%（漏翻 4.01%） | — | — | 密度自适应 + retranslate 后 |
-| tl-mode | **99.97%** | $2.73 | 73 min | 10 线程，grok-4-1-fast-reasoning |
-
-**direct-mode 漏翻归因**：AI 未返回 71.1% / 回写失败 28.1% / Checker 丢弃 0.8%
-
-**关键发现**：
-- 对话密度是漏翻率最强相关因子（<10% 密度文件漏翻中位数 57.69%，≥40% 仅 4.54%）
-- tl-mode 回填精度远高于 direct-mode，可消除"回写失败"类漏翻
-- AI 约 14% 概率返回带外层引号的译文，已通过引号剥离保护修复
-
----
-
-## 开发与测试
-
-### Python 版本
-
-Python >= 3.9，无第三方依赖（纯标准库：`threading` / `json` / `re` / `pathlib` / `urllib`）。
-
-### 许可证
-
-MIT License — 详见 [LICENSE](LICENSE)。
-
-### 测试
-
-```bash
-# 快速验证（< 10 秒，无需 API）
-python tests/test_all.py             # 94 个单元+集成测试
-python tests/test_engines.py         # 62 个引擎抽象层测试
-python tests/smoke_test.py           # 13 个校验规则冒烟测试
-python tests/test_rpa_unpacker.py    # 14 个 RPA 解包测试
-python tests/test_rpyc_decompiler.py # 17 个 rpyc 反编译测试
-python tests/test_lint_fixer.py      # 15 个 lint 修复测试
-python tests/test_tl_dedup.py        # 10 个 tl 去重测试
-python tests/test_batch1.py          # 18 个批次一功能测试
-python tests/test_translation_editor.py # 13 个翻译编辑器测试
-python tests/test_custom_engine.py   # 11 个自定义引擎测试
-python -m translators.tl_parser --test  # 75 个解析器断言
-# 总计 267 个自动化用例（不含内建断言）
-```
-
-### CI
-
-GitHub Actions 自动在 Python 3.9 / 3.12 / 3.13 上运行全部测试 + `py_compile` 语法检查 + 零依赖验证 + mypy 类型检查 + dry-run 集成测试。
-
-### 配置文件（可选）
-
-在游戏目录下放置 `renpy_translate.json` 可省去大量 CLI 参数：
-
-```bash
-# 复制示例配置
-cp renpy_translate.example.json /path/to/game/renpy_translate.json
-# 编辑后只需指定 game-dir 和 api-key
-python main.py --game-dir /path/to/game --api-key YOUR_KEY
-```
-
-配置文件示例（完整参数见 `renpy_translate.example.json`）：
-
-```json
-{
-    "provider": "xai",
-    "api_key_env": "XAI_API_KEY",
-    "model": "grok-4-1-fast-reasoning",
-    "workers": 5,
-    "rpm": 600,
-    "rps": 10
-}
-```
-
-**优先级**：CLI 参数 > 配置文件 > 默认值。API Key 通过 `api_key_env`（环境变量名）或 `api_key_file`（密钥文件路径）安全配置，不直接写入 JSON。
-
-查找顺序：`--config path` > `<game-dir>/renpy_translate.json` > `<game-dir>/../renpy_translate.json`。
-
----
-
-## 各提供商用法示例
-
-```bash
-# xAI (Grok) — 推荐，性价比最高
+# 3. CLI
 python main.py --game-dir "E:\Games\MyGame" --provider xai --api-key YOUR_KEY \
-    --model grok-4-1-fast-reasoning --workers 5 --rpm 600 --rps 10
+    --tl-mode --tl-lang chinese --workers 5
 
-# OpenAI (GPT)
-python main.py --game-dir "E:\Games\MyGame" --provider openai --api-key YOUR_KEY \
-    --model gpt-4o-mini --workers 3 --rpm 500 --rps 10
-
-# DeepSeek
-python main.py --game-dir "E:\Games\MyGame" --provider deepseek --api-key YOUR_KEY \
-    --model deepseek-chat --workers 3 --rpm 60 --rps 5
-
-# Claude (Anthropic)
-python main.py --game-dir "E:\Games\MyGame" --provider claude --api-key YOUR_KEY \
-    --model claude-sonnet-4-20250514 --workers 2 --rpm 50 --rps 3
-
-# Gemini (Google)
-python main.py --game-dir "E:\Games\MyGame" --provider gemini --api-key YOUR_KEY \
-    --model gemini-2.5-flash --workers 3 --rpm 60 --rps 5
+# 4. Cost estimate (no API call)
+python main.py --game-dir "E:\Games\MyGame" --provider xai --dry-run
 ```
 
----
+### Mode Selection
 
-## 性能调优
+| Mode | CLI | Use case | Writeback precision |
+|------|-----|----------|---------------------|
+| direct-mode | default | No SDK / small projects one-shot | text match (~96%) |
+| **tl-mode** | `--tl-mode --tl-lang chinese` | **Large projects** (Ren'Py SDK generates `tl/` first) | line-precise (~99.97%) |
+| retranslate | `--retranslate` | Catch-up after any mode | in-place |
+| screen | `--tl-screen` | Bare UI text the tl framework misses | in-place (auto `.bak`) |
 
-| 提供商 | 推荐 workers | 推荐 rpm | 推荐 rps | 说明 |
-|--------|-------------|---------|---------|------|
-| xAI | 5-10 | 600 | 10 | 限流宽裕，可高并发 |
-| OpenAI | 3-5 | 500 | 10 | TPM 限制注意 token 用量 |
-| DeepSeek | 3 | 60 | 5 | 限流较严，推理模型更慢 |
-| Claude | 2-3 | 50 | 3 | RPM 限制严格 |
-| Gemini | 3-5 | 60 | 5 | Free tier 限制较多 |
+### One-Click Pipeline
 
-推理模型（如 `grok-*-reasoning`、`deepseek-reasoner`、`o3-mini`）自动将 timeout 提升到 300s。
-
----
-
-## 故障排查
-
-### API 超时
-
-```
-RuntimeError: API 调用失败，已重试 5 次
+```bash
+python one_click_pipeline.py --game-dir "E:\Games\MyGame" \
+    --provider xai --api-key YOUR_KEY --workers 5 --rpm 600 --rps 10 --clean-output
 ```
 
-- 增大 `--timeout`（默认 180s，推理模型自动 300s）
-- 减少 `--workers` 降低并发压力
-- 检查网络代理设置
+Four stages: pilot (risk-scored 20 files) → gate evaluation → full translation → auto retranslate.
 
-### 编码错误
+### Multiple Engines
 
-```
-UnicodeDecodeError: 'utf-8' codec can't decode byte ...
-```
+```bash
+# RPG Maker MV/MZ (auto-detects www/data/System.json)
+python main.py --engine auto --game-dir "E:\Games\RPGMakerGame" --provider xai --api-key KEY
 
-- 工具自动尝试 UTF-8 → UTF-8-sig → Latin-1 → GBK 四种编码
-- 如仍报错，手动用文本编辑器将文件转为 UTF-8
-
-### 进度文件损坏
-
-```
-[PROGRESS] 进度文件损坏，已重置
+# CSV/JSONL universal format
+python main.py --engine csv --game-dir texts.csv --provider xai --api-key KEY
+python main.py --engine jsonl --game-dir texts.jsonl --provider xai --api-key KEY
 ```
 
-- 工具会自动重置损坏的 progress.json，无需手动处理
-- 如需从头开始：删除 `output/progress.json` 或 `output/tl_progress.json`
+### Security & Quality
 
-### 漏翻率偏高
+- Translation quality: direct-mode 4.01% missed / tl-mode 99.97% success rate (measured on The Tyrant, ~140 files)
+- Security: 3 pickle sites whitelisted + ZIP-Slip guard + 26 sites TOCTOU MITIGATED + 3-channel plugin bounds
+- Test coverage: see [HANDOFF.md](HANDOFF.md) `VERIFIED-CLAIMS` block; CI runs 6 jobs (2 OS × 3 Python)
 
-- 使用 `--tl-mode` 替代 direct-mode（99.99% vs 95.99%）
-- 检查 `--min-dialogue-density` 阈值（默认 0.20）
-- 运行一键流水线（自动试跑→闸门→全量→补翻）
+### Documentation
 
-### 词典文件不生效
+| File | Content |
+|------|---------|
+| **README.md** (this) | User-facing quickstart / modes / engines |
+| [HANDOFF.md](HANDOFF.md) | Current build / verified numbers / recommended next steps |
+| [CHANGELOG.md](CHANGELOG.md) | Stage overview + recent 5 rounds highlights |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map / data flow / quality chain / engine extension / test system |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Threshold constants / error codes / roadmap |
+| [CLAUDE.md](CLAUDE.md) | AI assistant / developer global context |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
+| [SECURITY.md](SECURITY.md) | Threat model & vulnerability reporting |
+| [_archive/EVOLUTION.md](_archive/EVOLUTION.md) | Historical decisions (r1-r50) |
 
-- 确认文件路径正确（错误路径会显示 `[WARN] 词典文件不存在` 警告）
-- CSV 格式：首行必须是 `english,chinese` 表头
-- JSONL 格式：每行一个 `{"en": "...", "zh": "..."}` 对象
+### Common CLI Flags
 
----
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--game-dir` | required | Game root (auto-detects `game/` subdir) |
+| `--provider` | required | xai / openai / deepseek / claude / gemini / custom |
+| `--api-key` | — | API key (omitable in dry-run) |
+| `--model` | auto | Model name |
+| `--workers` | 1 | Per-file chunk concurrency |
+| `--file-workers` | 1 | File-level parallel translation |
+| `--rpm` / `--rps` | 60 / 5 | Rate limits |
+| `--target-lang` | `zh` | Target language; comma-separated (`zh,ja,zh-tw`) triggers outer language loop |
+| `--engine` | `auto` | auto / renpy / rpgmaker / csv / jsonl |
+| `--config` | auto | Defaults to `<game-dir>/renpy_translate.json` |
 
-## 版本历史
+Full parameter list: `python main.py --help`
 
-详见 [CHANGELOG.md](CHANGELOG.md)。
+### Troubleshooting
 
----
+- **API timeout**: increase `--timeout` (default 180s, reasoning models auto 300s) / reduce `--workers` / check proxy
+- **Corrupt progress file**: auto-reset; for fresh start delete `output/progress.json` or `output/tl_progress.json`
+- **High missed rate**: switch to `--tl-mode` from direct-mode; or use the one-click pipeline (auto pilot→gate→full→catchup)
+- **Dictionary file ignored**: CSV first row must be `english,chinese`; JSONL each row `{"en":"...","zh":"..."}`
 
-## 附录：配置项速查表
+### License
 
-### 模块级常量
-
-| 常量 | 所在文件 | 默认值 | 说明 | 调整建议 |
-|------|----------|--------|------|----------|
-| `LEN_RATIO_LOWER` | `pipeline/helpers.py` | 0.15 | W430 译文长度比例下限 | 短句误报多可调低 |
-| `LEN_RATIO_UPPER` | `pipeline/helpers.py` | 2.5 | W430 译文长度比例上限 | 译文偏长可调高 |
-| `MODEL_SPEAKING_PATTERNS` | `file_processor/checker.py` | 7 条模式 | W440 模型自述检测关键词 | 新套话可追加 |
-| `PLACEHOLDER_ORDER_PATTERNS` | `file_processor/checker.py` | 4 组 (regex, name) | W251 占位符顺序提取 | 新类型追加 |
-| `SKIP_FILES_FOR_TRANSLATION` | `file_processor/checker.py` | 5 个文件名 | 跳过翻译的配置文件 | 按项目追加 |
-| `_QUOTE_STRIP_PAIRS` | `translators/tl_parser.py` | 3 对引号 | fill_translation 引号剥离 | AI 返回新引号类型时追加 |
-
-### 数据文件字段
-
-| 字段 | 所在文件 | 默认值 | 说明 |
-|------|----------|--------|------|
-| `locked_terms` | `glossary.json` | `[]` | 锁定术语 key 列表，违反报 E411 |
-| `no_translate` | `glossary.json` | `[]` | 禁翻片段列表，违反报 E420 |
+[MIT License](LICENSE)
