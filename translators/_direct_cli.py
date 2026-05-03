@@ -14,7 +14,7 @@ from pathlib import Path
 
 from file_processor import read_file
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 def _compute_file_dialogue_stats(filepath: Path) -> tuple[int, float]:

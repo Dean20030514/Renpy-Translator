@@ -23,7 +23,7 @@ from typing import Any
 
 from core.file_safety import check_fstat_size
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 # Round 38: reject renpy_translate.json config files above 50 MB to bound
 # memory before ``json.loads`` reads the file.  Legitimate config files

@@ -55,7 +55,7 @@ from translators._direct_file import (  # noqa: F401
     translate_file,
 )
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 def run_pipeline(args: argparse.Namespace) -> None:

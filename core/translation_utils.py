@@ -19,7 +19,7 @@ from typing import Optional
 
 from core.file_safety import check_fstat_size
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 # Round 42 M2 phase-3: 50 MB cap on the ProgressTracker JSON reader.
 # Legitimate progress.json files scale linearly with file count and

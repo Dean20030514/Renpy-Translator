@@ -17,7 +17,7 @@ from typing import Any
 from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, RPGMAKER_MV_PROFILE
 from core.file_safety import check_fstat_size
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 # Round 42 M2 phase-3: 50 MB cap on every RPG Maker data JSON read.
 # Game-supplied JSON files (Map###.json / System.json / CommonEvents.json

@@ -34,7 +34,7 @@ from file_processor import (
     _filter_checked_translations,
 )
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 def calculate_dialogue_density(content: str) -> float:

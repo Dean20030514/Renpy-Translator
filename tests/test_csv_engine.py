@@ -474,7 +474,7 @@ def test_csv_engine_logs_csv_error_distinct_from_generic():
                     captured.append(record.getMessage())
 
             handler = _CaptureHandler(level=logging.ERROR)
-            logger = logging.getLogger("renpy_translator")
+            logger = logging.getLogger("multi_engine_translator")
             logger.addHandler(handler)
             try:
                 units = engine.extract_texts(Path(d))

@@ -25,7 +25,7 @@ from pathlib import Path
 
 from core.font_patch import resolve_font, default_resources_fonts_dir
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 # Language switch button snippet injected into screen preferences()
 _LANG_BUTTON_SNIPPET = '''

@@ -65,7 +65,7 @@ from translators.retranslator import (
     calculate_dialogue_density,
 )
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 def translate_file(

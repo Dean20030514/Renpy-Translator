@@ -40,7 +40,7 @@ from file_processor import (
     _filter_checked_translations,
 )
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 def _translate_chunk(ctx: TranslationContext, chunk: dict) -> ChunkResult:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, RENPY_PROFILE
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 class RenPyEngine(EngineBase):

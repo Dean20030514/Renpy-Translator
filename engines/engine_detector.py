@@ -17,7 +17,7 @@ import logging
 from collections import Counter
 from pathlib import Path
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 class EngineType(enum.Enum):

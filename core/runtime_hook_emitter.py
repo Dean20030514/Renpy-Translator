@@ -29,7 +29,7 @@ import shutil
 from pathlib import Path
 from typing import Iterable, Mapping
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 # Round 33 Subtask 2: safety regex for ``gui_overrides`` keys.  The key must

@@ -19,7 +19,7 @@ from typing import Any
 from core.file_safety import check_fstat_size
 from engines.engine_base import EngineBase, EngineProfile, TranslatableUnit, CSV_PROFILE
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 # Round 44 audit-tail: 50 MB cap on operator-supplied CSV/JSONL/JSON
 # files.  Missed by r37-r43 M2 phases which focused on `.json` loaders;

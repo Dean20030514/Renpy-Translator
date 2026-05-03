@@ -59,7 +59,7 @@ from translators._tl_patches import (  # noqa: F401
     _inject_language_buttons,
 )
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 def _translate_one_tl_chunk(

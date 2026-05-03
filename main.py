@@ -26,7 +26,7 @@ import os
 import sys
 from pathlib import Path
 
-logger = logging.getLogger("renpy_translator")
+logger = logging.getLogger("multi_engine_translator")
 
 
 # ============================================================
