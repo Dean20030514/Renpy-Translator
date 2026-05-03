@@ -1,27 +1,15 @@
-# Round 46 → Round 50 详细变更（Round 50 末归档快照）
+# Round 47 → Round 51 详细变更（Round 51 末归档快照）
 
-> **本文件已精简**。原始未删节版（93 KB / 960 行，含 r46-r50 commit-by-commit 复述、所有"演进摘要 r1-r50"重复段、详细 audit findings 列表）可通过 git 恢复：
-> `git log --oneline _archive/CHANGELOG_RECENT_r50.md` 找重写本文件之前的 commit hash → `git show <hash>:_archive/CHANGELOG_RECENT_r50.md`。
+> **本文件已精简**。原始未删节版可通过 git 恢复：
+> `git log --follow --oneline _archive/CHANGELOG_RECENT_r51.md` 找重写本文件之前的 commit hash → `git show <hash>:_archive/CHANGELOG_RECENT_r51.md`（或 r50/r49 旧名 — `--follow` 自动跨 rename）。
 >
-> **r1-r50 演进摘要**：见 [EVOLUTION.md](EVOLUTION.md)
+> **r1-r51 演进摘要**：见 [EVOLUTION.md](EVOLUTION.md)
 > **r1-r45 总览表**：见 [CHANGELOG_FULL.md](CHANGELOG_FULL.md)
 > **当前 build / 数字 / 推荐工作**：见 [HANDOFF.md](../HANDOFF.md)
 >
-> **关于历史叙述中的文件名**：本文件叙述 r46-r50 当时改动时引用的 `docs/constants.md` / `docs/quality_chain.md` / `CHANGELOG_RECENT.md` 等文件，在 round 50 末 docs 重构时已被删除合并。等价当前文档：常量 → [`docs/REFERENCE.md`](../docs/REFERENCE.md)；架构/校验链 → [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)；CHANGELOG_RECENT.md → 本文件（rename 后）。historical references 保留以维持 round 当时的真实叙述。
-
----
-
-## Round 46 — 7 步综合执行（Auto Mode）
-
-**主线**：A 方案完整闭合 ~3-4 h；6 commits；测试净 +6。
-
-1. r45 audit-tail typo 修复（3 处 "Round 46 audit-tail" 注释/docstring → "Round 45 audit-tail"，根因 r45 audit-tail commit 写注释时 r46 还未开始）
-2. `scripts/install_hooks.sh` 启用 — `git config core.hooksPath = .git-hooks/`，pre-commit hook 现激活每 commit 跑 py_compile + meta-runner
-3. `tests/test_runtime_hook.py` 794 → 589 行拆 v2_schema（新 `test_runtime_hook_v2_schema.py` 251 行 / 7 tests，byte-identical 迁出 r32 Subtask C；CI workflow 28 → 29 steps）
-4. r45 audit 4 optional MEDIUM gap 全闭合 + 4 regression tests（**G1 真实代码加固**：`engines/csv_engine.py::_extract_csv` 加 50 MB size cap，OOM 防护从 22/22 → **23/23** user-facing JSON loader；G2 mixed directory granularity；G3 multibyte boundary；G4 alias-priority-over-generic）
-5. r46 三维度审计 + 同轮 fix（3 并行 Explore agent correctness/coverage/security：0 CRITICAL/0 HIGH/2 MEDIUM coverage/1 LOW correctness/1 LOW security informational，全部同轮 fix）
-6. **真实桌面 GUI smoke via computer-use**（5 轮积压 UX 缺口闭合 — `python gui.py` background → request_access → screenshot 验证窗口完整渲染 + 3 tab + 引擎/提供商/模型下拉 + 命令预览实时拼装；切换"翻译设置" tab 验证 mixin MRO dispatch；X 关闭 exit code 0 干净退出 — **r41 mixin split 端到端运行验证完成**）
-7. docs sync — CHANGELOG_RECENT 加 r46 详细 + 演进摘要 r43-r46 / HANDOFF rewrite r46→r47 起点 / CLAUDE.md / .cursorrules 同步
+> **关于历史叙述中的文件名**：本文件叙述 r47-r51 当时改动时引用的 `docs/constants.md` / `docs/quality_chain.md` / `CHANGELOG_RECENT.md` 等文件，在 round 50 末 docs 重构时已被删除合并。等价当前文档：常量 → [`docs/REFERENCE.md`](../docs/REFERENCE.md)；架构/校验链 → [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)；CHANGELOG_RECENT.md → 本文件（rename 后）。historical references 保留以维持 round 当时的真实叙述。
+>
+> **Round 51 删 r46**：5 轮滚动 cap（保 r47-r51）。r46 详细已落 git history；恢复方式同上。r46 高亮在 [EVOLUTION.md](EVOLUTION.md) 概览表已保留。
 
 ---
 
@@ -157,6 +145,63 @@ CHANGELOG_RECENT.md 演进摘要 r50 一行 + r50 详细 section + **删 r45 det
 
 ---
 
+## Round 51 — Repo rename sync + 11th 0-CRITICAL streak（5 commits）
+
+**主线**：5 commits；测试净 +8（499→507）；test_files +1；ci_steps +1；assertion_points +8。
+
+### 本轮交付
+
+GitHub 仓库远端已重命名 `Renpy-Translator` → `Multi-Engine-Game-Translator`（用户在 r50 末 docs consolidation 之后操作），本地目录从 `Renpy汉化（我的）` 改为 `Multi-Engine Game Translator`。Round 51 把本地 self-references + project-wide logger namespace + docs 全部同步到位，并以 r50 zero-debt closure 模式首次执行"下轮验证"，r50 7 findings + 4 architectural decisions 全部确认在 production code path 上 robust。
+
+### A1-A6 — Track A 仓库重命名 sync（5 commits）
+
+- **A1** `git remote set-url origin https://github.com/Dean20030514/Multi-Engine-Game-Translator.git`（无 commit；旧 URL GitHub 自动 redirect 仍 work，但 canonical URL 已是新的）
+- **A2** `pyproject.toml` `name = "multi-engine-game-translator"` + Repository URL + `renpy_translate.example.json $schema` URL（commit `c26aba3`）
+- **A3** README "文档" / "Documentation" table 各加 1 行历史注解链 `_archive/EVOLUTION.md`（commit `2517384`）；CONTRIBUTING.md / SECURITY.md 实测无 stale ref，按"最小改动"原则不动
+- **A4** Logger namespace 17 sites `getLogger("renpy_translator")` → `"multi_engine_translator"`（16 module-level + 1 test 函数内：core × 3 + engines × 5 + translators × 7 + main.py × 1 + tests/test_csv_engine.py × 1）（commit `aae13a0`）；`logging.getLogger(NAME)` 是 stdlib 纯标识符派发，无 derived behaviour，行为零变化；6 处上游归属 `anonymousException renpy-translator (MIT, 2024)` 完整保留（resources/hooks/{extract,inject,language_switcher} + tools/{renpy_lint_fixer, rpa_unpacker, rpyc_decompiler}）
+- **A5+A6** 新 `tests/test_repo_rename_consistency.py`（4 contract tests / 项目约定 top-level `def test_*`）+ CI workflow `Run repo rename consistency tests` 步（37 → 38）（commit `2e20fa9`；HANDOFF VERIFIED-CLAIMS lockstep 同步 499→503 / 34→35 / 37→38 / 625→629）
+
+### B1-B4 — Track B r51 起始三维度审计
+
+- **B1 retro-verify**：r50 7 findings 落点全部仍存在（grep 7 site 全 hit）；3 核心 suites 全 PASS（test_verify_docs_claims 28 + test_file_safety 21 + test_file_safety_c5 15 = 64 tests）；4 architectural decisions 仍 informational/structural 无 demoting evidence
+- **B2 三并行 Explore agent**（correctness / coverage / security）audit r50 + Track A 共 9 commits：
+
+| Tier | Correctness | Coverage | Security |
+|------|-------------|----------|----------|
+| CRITICAL | 0 | 0 | 0 |
+| HIGH | 0 | 1 | 0 |
+| MEDIUM | 0 | 2 | 0 |
+| LOW | 0 | 2 | 0 |
+
+- **B3 5 Coverage findings 同轮处理**（Round 50 zero-debt rule 第二次执行 — 4 fix + 1 architectural decision）（commit `8a288e6`）：
+  - COVERAGE-MEDIUM-1: SKIP_PARTS skip logic implicit only → 加 `test_skip_parts_excludes_pycache_dir` tempdir fixture（创 `__pycache__/orphan.py` + `build/orphan.py` + 顶层 `real_orphan.py` 作 positive control，验 SKIP_PARTS-bearing loop 只 catch control）
+  - COVERAGE-MEDIUM-2: `UPSTREAM_ATTRIBUTION_FILES` 无 inverse exhaustiveness → 加 `test_upstream_attribution_files_list_is_exhaustive` 全 repo grep `.py` + `.rpy` (skip SKIP_PARTS + self) 找 "anonymousException"，assert found ⊆ listed
+  - COVERAGE-LOW-1: self-skip 不显式 → 加 `test_self_skip_contract_pattern_present_in_self`，钉 invariant "pattern in self ⇒ self-skip needed"
+  - COVERAGE-LOW-2: CI mock-target guard regex shape 无 unit pin → 加 `test_ci_mock_target_guard_catches_known_stale_forms`，三 fragment 钉（`mock\.patch.*os\.fstat` / `patch\.object` + `fstat` / `grep -v "file_safety"`）+ 反向 strict-filter 防回归（`grep -v "core\.file_safety"` 必须 NOT 存在，r50 C4 已删）
+  - COVERAGE-HIGH-1: logger 行为测试 → **architectural decision 文档化于 module docstring**：`logging.getLogger(NAME)` 是 stdlib 纯标识符派发，无 derived behaviour 超出 name equality；静态 orphan grep（`test_logger_namespace_renamed_no_orphan_callsites`）+ pyproject/HANDOFF positive name-string assertion 已完整 pin 重命名；behavioural test 要么 tautological redundant 要么测 Python stdlib，不增 signal-to-noise
+- **B4 mock-target stale trap CLASS 检查**：CI grep step 本地预跑（`grep -rEn "(mock\.patch.*os\.fstat|patch\.object\s*\(\s*[a-zA-Z_.]*os\s*,\s*[\"']fstat[\"'])" tests/*.py | grep -v "file_safety"`）empty — 0 stale mock targets，r50 防御链仍有效
+
+### C1-C4 — Track C docs sync + 5 轮滚动维护
+
+- **C1** `git mv _archive/CHANGELOG_RECENT_r50.md → CHANGELOG_RECENT_r51.md` + 内容 rewrite：删 r46 详细 section（5 轮滚动 cap，保 r47-r51）+ 加 r51 详细 section（本段）+ header 更新（r46-r50 → r47-r51 / r50 末 → r51 末归档快照）
+- **C2** `_archive/EVOLUTION.md` 加 r51 一行
+- **C3** `HANDOFF.md` rewrite 为 r52 起点（VERIFIED-CLAIMS 实测 ground-truth `verify_docs_claims --fast` 后填）+ Repository URL 更新 + 推荐 r52 工作项重新排序
+- **C4** `CLAUDE.md` r50 → r51 段更新（zero-debt closure 现属常态化，连续 11 轮 0 CRITICAL correctness）+ `cp CLAUDE.md .cursorrules` byte-identical
+
+### Round 51 数字与里程碑
+
+- 测试 499 → **507**（+4 A5 contract test + 4 B3 audit-fix tests）
+- test_files 34 → **35**（+1 `tests/test_repo_rename_consistency.py`）
+- ci_steps 37 → **38**（+1 `Run repo rename consistency tests`）
+- assertion_points 625 → **633**（= tests_total + 126 self-test 不变）
+- **连续 11 轮 0 CRITICAL correctness 保持**（r35 - r51；新增 r51）
+- repo 远端 `https://github.com/Dean20030514/Multi-Engine-Game-Translator`
+- 本地目录 `C:\Users\16097\Desktop\Renpy翻译\Multi-Engine Game Translator`（旧 `Renpy汉化（我的）`）
+
+**Push 前 Q5 全套验证**通过：file-size empty + 全独立 suite + meta-runner + verify_docs_claims --full + verify_workflow 全 PASS（待 C4 提交后跑最终 sanity gate 再确认）。
+
+---
+
 ## 已回滚
 
-无（r46-r50 所有 commits 全部保留在 origin/main）。
+无（r47-r51 所有 commits 全部保留在本地 main；r47-r50 已 push origin/main，r51 commits 待用户手动 push）。

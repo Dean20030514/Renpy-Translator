@@ -8,7 +8,7 @@
 
 **当前数字**（测试数 / 文件数 / CI 步骤 / 断言点）：见 [HANDOFF.md](HANDOFF.md) 顶部 `<!-- VERIFIED-CLAIMS-START -->` 块 — **单一声称源**。本文 prose 不再独立声称数字。
 
-**质量水位**：direct-mode 漏翻率 4.01%；tl-mode 翻译成功率 99.97%；连续 10 轮 0 CRITICAL correctness（r35-r50）。
+**质量水位**：direct-mode 漏翻率 4.01%；tl-mode 翻译成功率 99.97%；连续 11 轮 0 CRITICAL correctness（r35-r51）。
 
 ---
 
@@ -106,8 +106,8 @@ scripts/         verify_docs_claims.py / verify_workflow.py / install_hooks.sh
 | 修改翻译模式 / 流水线 / 校验链 / 引擎 / 测试体系 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 调整阈值常量 / 校验规则 / 路线图 | [docs/REFERENCE.md](docs/REFERENCE.md) |
 | 当前 build / 数字 / 推荐下一步 | [HANDOFF.md](HANDOFF.md) |
-| 历史决策（r1-r50） | [_archive/EVOLUTION.md](_archive/EVOLUTION.md) |
-| 最近 5 轮详细变更（r46-r50） | [_archive/CHANGELOG_RECENT_r50.md](_archive/CHANGELOG_RECENT_r50.md) |
+| 历史决策（r1-r51） | [_archive/EVOLUTION.md](_archive/EVOLUTION.md) |
+| 最近 5 轮详细变更（r47-r51） | [_archive/CHANGELOG_RECENT_r51.md](_archive/CHANGELOG_RECENT_r51.md) |
 | 用户面文档（中英双语） | [README.md](README.md) |
 
 ---
@@ -117,7 +117,8 @@ scripts/         verify_docs_claims.py / verify_workflow.py / install_hooks.sh
 - **pre-commit hook 4 件套**（`scripts/install_hooks.sh` 启用）：py_compile + 800 行 cap + meta-runner + `verify_docs_claims --fast`
 - **CI**：6 jobs（matrix `[ubuntu-latest, windows-latest]` × `[3.9, 3.12, 3.13]`）
 - **HANDOFF.md `VERIFIED-CLAIMS` 块**：唯一数字声称源，pre-commit + CI 双层 enforce
-- **Mock target consistency CI guard**：所有 `mock.patch(...os.fstat)` 必须 target `core.file_safety`（防 stale mock trap CLASS）
+- **Mock target consistency CI guard**：所有 `mock.patch(...os.fstat)` / `patch.object(os, "fstat", ...)` 必须 target `core.file_safety`（防 stale mock trap CLASS；r50 C4 filter 放宽到 `file_safety` 兼容 qualified form）
+- **Repo rename consistency CI guard**（r51 起）：`tests/test_repo_rename_consistency.py` 钉自身 repo URL refs（`pyproject.toml` + `renpy_translate.example.json`）+ logger namespace（17 sites `getLogger("multi_engine_translator")`）+ 6 处 anonymousException 上游归属反向 exhaustiveness
 
 ---
 
@@ -126,5 +127,6 @@ scripts/         verify_docs_claims.py / verify_workflow.py / install_hooks.sh
 1. 修改 `CLAUDE.md` 必须同步 `.cursorrules`（byte-identical 契约）
 2. 数字声称（测试数 / 文件数 / CI 步骤 / 断言点）只在 `HANDOFF.md` `VERIFIED-CLAIMS` 块声明，其他文档只引用
 3. 永远不要在文档中**直接**写测试数 / 行数 / 文件数等数字而不先 grep / wc / find / `verify_docs_claims --fast` ground-truth
-4. round 50 起所有 audit findings 同轮 fix，零 deferred
+4. round 50 起所有 audit findings 同轮 fix，零 deferred（r51 第二次执行验证有效）
 5. 大改动遵循三段式：Plan → Implement（小步） → Verify（零问题）
+6. 修改 logger namespace / repo URL self-references 必须保持 `tests/test_repo_rename_consistency.py` 4 contract tests 全 PASS；6 处 `anonymousException renpy-translator (MIT, 2024)` 上游归属永远不能被任何 sed / refactor 误删（r51 加固）

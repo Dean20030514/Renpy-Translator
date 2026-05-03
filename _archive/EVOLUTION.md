@@ -1,8 +1,8 @@
-# 项目演进史 (Round 1 — Round 50)
+# 项目演进史 (Round 1 — Round 51)
 
-> 本文件吸收原 `CLAUDE.md` 的"r31-r50 演进段"与原 `CHANGELOG_RECENT.md`（现归档为 [`_archive/CHANGELOG_RECENT_r50.md`](CHANGELOG_RECENT_r50.md)）的演进摘要，按 round 编号组织，**不含 commit hash**（如需精确改动请查 `git log`）。
+> 本文件吸收原 `CLAUDE.md` 的"r31-r50 演进段"与原 `CHANGELOG_RECENT.md`（现归档为 [`_archive/CHANGELOG_RECENT_r51.md`](CHANGELOG_RECENT_r51.md)）的演进摘要，按 round 编号组织，**不含 commit hash**（如需精确改动请查 `git log`）。
 >
-> - **最近 5 轮详情**：见 [`_archive/CHANGELOG_RECENT_r50.md`](CHANGELOG_RECENT_r50.md)（归档于 round 50 末）
+> - **最近 5 轮详情**：见 [`_archive/CHANGELOG_RECENT_r51.md`](CHANGELOG_RECENT_r51.md)（归档于 round 51 末，保 r47-r51）
 > - **r1-r45 总览表**：见 [`_archive/CHANGELOG_FULL.md`](CHANGELOG_FULL.md)
 > - **r12-r19 引擎扩展方案历史快照**：见 [`_archive/EXPANSION_PLAN_FULL.md`](EXPANSION_PLAN_FULL.md)
 > - **当前状态**：见根目录 [`HANDOFF.md`](../HANDOFF.md) 顶部 `VERIFIED-CLAIMS` 块
@@ -135,9 +135,20 @@
 
 **连续 10 轮 0 CRITICAL correctness 保持**（r35-r50）。
 
+## 阶段十（r51）— Repo Rename Sync + 11th 0-CRITICAL Streak
+
+5 commits（A2 + A3 + A4 + A5/A6 + B3）：
+
+- **本轮触发**：用户在 r50 末已将 GitHub 远端从 `Renpy-Translator` 重命名为 `Multi-Engine-Game-Translator`，本地目录从 `Renpy汉化（我的）` 改名为 `Multi-Engine Game Translator`。Round 51 把项目内 self-references + project-wide logger namespace + docs 全部同步到位。
+- **Track A 仓库重命名 sync** — 本地 `git remote set-url`；`pyproject.toml` 包名 `multi-engine-game-translator` + Repository URL；`renpy_translate.example.json $schema`；README "文档" / "Documentation" table 各加 1 行历史注解；Logger namespace 17 sites `getLogger("renpy_translator")` → `"multi_engine_translator"`（16 模块级 + 1 测试函数内；6 处 anonymousException 上游归属完整保留）；新 `tests/test_repo_rename_consistency.py` 4 contract tests + CI workflow `Run repo rename consistency tests` 步（37 → 38）
+- **Track B r51 起始三维度审计**（zero-debt closure 模式第二次执行）— Correctness 0 / Coverage 5（1 HIGH / 2 MEDIUM / 2 LOW）/ Security 0；4 Coverage findings 同轮 fix（SKIP_PARTS 显式 test + UPSTREAM_ATTRIBUTION inverse exhaustiveness + self-skip invariant + CI mock-target guard regex shape pin）；Coverage HIGH-1 logger 行为测试归 **architectural decision**（`logging.getLogger(NAME)` 是 stdlib 纯标识符派发，静态 orphan grep 是充分契约，behavioural test 要么 tautological 要么测 Python stdlib）
+- **Track C docs sync** — `git mv CHANGELOG_RECENT_r50.md → r51.md` + 内容 rewrite（5 轮滚动删 r46 detail）；本文件加 r51 段；HANDOFF 重写为 r52 起点；CLAUDE.md ↔ `.cursorrules` byte-identical 同步
+
+**连续 11 轮 0 CRITICAL correctness 保持**（r35-r51）。
+
 ---
 
-## 累积技术资产（r1-r50 视角）
+## 累积技术资产（r1-r51 视角）
 
 ### 翻译能力
 - 三种 Ren'Py 翻译模式（direct / tl / retranslate） + screen 补充
@@ -158,15 +169,16 @@
 - HTTPS 持久连接池（节省 ~90s / 600 次调用） + 32 MB 响应硬上限
 
 ### 自动化工程
-- CI：6 jobs（2 OS × 3 Python）× 37 steps
+- CI：6 jobs（2 OS × 3 Python）× 38 steps
 - pre-commit hook 4 件套（py_compile + 800 行 cap + meta-runner + verify_docs_claims --fast）
 - HANDOFF.md VERIFIED-CLAIMS 单一声称源（drift 不可能跨 commit 累积）
 - Mock target consistency CI guard（防 stale mock trap CLASS）
+- Repo rename consistency CI guard（pin 自身 repo URL refs + logger namespace + 上游归属反向 exhaustiveness）
 
-### 文档体系（r50 末）
+### 文档体系（r51 末）
 - 根目录：`README.md` / `CLAUDE.md` (= `.cursorrules`) / `HANDOFF.md` / `CHANGELOG.md` / `CONTRIBUTING.md` / `SECURITY.md`
 - `docs/`：`ARCHITECTURE.md`（架构 + 数据流 + 校验链 + 引擎指南 + 测试体系）+ `REFERENCE.md`（常量 + 错误码 + 路线图）
-- `_archive/`：本文件 + `CHANGELOG_FULL.md`（r1-r45 总览 + r19/r43 正文）+ `CHANGELOG_RECENT_r50.md` + `TEST_PLAN_r50.md`
+- `_archive/`：本文件 + `CHANGELOG_FULL.md`（r1-r45 总览 + r19/r43 正文）+ `CHANGELOG_RECENT_r51.md` + `TEST_PLAN_r50.md`
 
 ---
 
