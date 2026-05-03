@@ -166,6 +166,15 @@ jobs:
         run: python tests/test_override_categories.py
       - name: Run UI whitelist tests
         run: python tests/test_ui_whitelist.py
+      # Round 51 A5: contract test pinning the GitHub repo rename
+      # Renpy-Translator -> Multi-Engine-Game-Translator + the project
+      # logger namespace rename renpy_translator -> multi_engine_translator
+      # (17 sites).  Also guards the 6 upstream attribution refs to
+      # anonymousException's similarly-named MIT project from accidental
+      # bulk-sed removal.  Independent step (kept out of meta-runner) so
+      # a future bulk-rename PR fails with one specific error.
+      - name: Run repo rename consistency tests
+        run: python tests/test_repo_rename_consistency.py
 
       # Internal self-tests (embedded in the module)
       # Round 49 C2: tl_parser self-test entry-point lives in
